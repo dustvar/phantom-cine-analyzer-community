@@ -1,6 +1,6 @@
 Phantom Cine Analyzer Additional Features 1.1.18
 
-Modified: 2026-08-23
+Modified: 2026-08-24
 
 - Renamed the modified application from Phantom Cine Analyzer Playback to
   Phantom Cine Analyzer Additional Features. The bundle identifier remains
@@ -40,6 +40,14 @@ Modified: 2026-08-23
   frame and records detected start/stop boundaries after consecutive scores fall
   below the selected threshold. Its embedded Track-tab progress bar advances
   monotonically across both passes.
+- Fixed Hybrid processing aborting on its first frame when a search window
+  touched an image boundary. Hybrid search windows now shift inward while
+  preserving their requested size and full-frame coordinate mapping. A single
+  unreadable or degenerate frame is treated as a confidence miss; only the
+  configured number of consecutive misses ends that processing direction.
+- Fixed the macOS tracking-method dialog leaving the main Cine viewport gray
+  while awaiting the exact Hybrid point. The modal dialog is explicitly
+  released and the Cine viewport is repainted after the chooser closes.
 - Smart Hybrid processing now completes the forward pass first, then the
   backward pass. Each candidate is compared both with the nearest successfully
   tracked neighboring frame and with the original setup frame. The displayed

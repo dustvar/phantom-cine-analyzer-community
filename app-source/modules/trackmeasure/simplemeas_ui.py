@@ -340,7 +340,16 @@ class TrackingMethodDialog(QDialog):
         layout.addLayout(content_layout)
         layout.addLayout(button_layout)
         dialog.exec()
-        return selected_method['value']
+        result = selected_method['value']
+        # On macOS a modal child can keep the parent viewport in its dimmed
+        # state until the dialog is explicitly released and the event loop gets
+        # a chance to repaint.  Tear it down here instead of leaving the closed
+        # dialog parented to the main window for the rest of the session.
+        dialog.setModal(False)
+        dialog.hide()
+        dialog.setParent(None)
+        dialog.deleteLater()
+        return result
 
 
 class HybridTransformHandle(QGraphicsEllipseItem):
@@ -2736,6 +2745,12 @@ class MainWindow(QWidget):
         self.vm.update_status_text.emit(
             'Step 1 of 2: click the exact point that must stay attached to the object.'
         )
+        # The method chooser is modal on macOS.  Redraw after its nested event
+        # loop has fully unwound so the Cine pixmap cannot remain gray/dimmed
+        # while the user is choosing the exact tracking point.
+        QTimer.singleShot(0, self.vm.redraw_cb)
+        QTimer.singleShot(0, graph.viewport().update)
+        QTimer.singleShot(0, graph.setFocus)
 
     def _on_add_object_toggled(self, checked):
         if not checked and self._hybrid_selection_graph is not None:

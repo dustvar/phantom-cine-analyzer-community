@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from calibration import CalSpace
 from PySide6.QtGui import *
 import numpy as np
-from autotrackalgorithms import AutoTrackAlgorithms
+from autotrackalgorithms import AutoTrackAlgorithms, AutoTrackException
 from collections import OrderedDict
 import logging
 import math
@@ -361,6 +361,32 @@ class AutoTrackTool(TrackTool):
         
         # all done with processing, clean it up
         return template
+
+    @staticmethod
+    def _fit_search_area_to_frame(center, size, frame_size):
+        """Keep a Hybrid search crop inside the image without changing its origin math.
+
+        Search rectangles are allowed to reach an image edge.  The crop is
+        shifted inward (and only reduced when it is larger than the image), so
+        the matcher still receives a full search area and can return correct
+        full-frame coordinates.
+        """
+        frame_width = max(1, int(frame_size[0]))
+        frame_height = max(1, int(frame_size[1]))
+        width = min(frame_width, max(1, int(round(size[0]))))
+        height = min(frame_height, max(1, int(round(size[1]))))
+
+        left = int(float(center[0]) - math.floor(width / 2))
+        top = int(float(center[1]) - math.floor(height / 2))
+        left = int(np.clip(left, 0, frame_width - width))
+        top = int(np.clip(top, 0, frame_height - height))
+        right = left + width
+        bottom = top + height
+        adjusted_center = (
+            left + math.floor(width / 2),
+            top + math.floor(height / 2),
+        )
+        return (left, top), (right, bottom), adjusted_center, (width, height)
     
     def track(self, start_fr, last_fr, template, progress_offset=0, progress_span=100):
         enable_sa = template['search_area_enable']
@@ -481,21 +507,39 @@ class AutoTrackTool(TrackTool):
                 if not enable_sa:
                     sa_center = (math.floor(sa_rng[0]/2), math.floor(sa_rng[1]/2))
 
-                # check if sa and tpl are in range of cine (w, h). if not, break.
-                tl_sa = int(sa_center[0] - math.floor(sa_rng[0]/2)), int(sa_center[1] - math.floor(sa_rng[1]/2))
-                br_sa = int(tl_sa[0] + sa_rng[0]), int(tl_sa[1] + sa_rng[1])
+                # Hybrid search windows may touch an image edge. Shift the
+                # requested window inward while preserving its size and pass
+                # the adjusted center/range to the matcher so its global
+                # coordinate conversion remains exact. Classic retains the
+                # original PCA range validation below.
+                frame_size = (
+                    self.vm.cine_handler.metadata.ImWidth,
+                    self.vm.cine_handler.metadata.ImHeight,
+                )
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    tl_sa, br_sa, sa_center, frame_sa_rng = self._fit_search_area_to_frame(
+                        sa_center, sa_rng, frame_size
+                    )
+                else:
+                    tl_sa = (
+                        int(sa_center[0] - math.floor(sa_rng[0] / 2)),
+                        int(sa_center[1] - math.floor(sa_rng[1] / 2)),
+                    )
+                    br_sa = int(tl_sa[0] + sa_rng[0]), int(tl_sa[1] + sa_rng[1])
+                    frame_sa_rng = sa_rng
                 tl_tpl = int(tpl_center[0] - math.floor(tpl_rng[0]/2)), int(tpl_center[1] - math.floor(tpl_rng[1]/2))
                 br_tpl = int(tl_tpl[0] + tpl_rng[0]), int(tl_tpl[1] + tpl_rng[1])
 
-                not_in_range = [any(x < 0 for x in tl_sa),
-                                br_sa[0] >= self.vm.cine_handler.metadata.ImWidth,
-                                br_sa[1] >= self.vm.cine_handler.metadata.ImHeight,
-                                any(x < 0 for x in tl_tpl),
-                                br_tpl[0] >= self.vm.cine_handler.metadata.ImWidth,
-                                br_tpl[1] >= self.vm.cine_handler.metadata.ImHeight ]
-                
-                if any(not_in_range):
-                    raise SearchAreaOutOfRange('The search area is out of the range of the frame.')
+                if tracking_method != HYBRID_TRACKING_METHOD:
+                    not_in_range = [any(x < 0 for x in tl_sa),
+                                    br_sa[0] >= self.vm.cine_handler.metadata.ImWidth,
+                                    br_sa[1] >= self.vm.cine_handler.metadata.ImHeight,
+                                    any(x < 0 for x in tl_tpl),
+                                    br_tpl[0] >= self.vm.cine_handler.metadata.ImWidth,
+                                    br_tpl[1] >= self.vm.cine_handler.metadata.ImHeight ]
+
+                    if any(not_in_range):
+                        raise SearchAreaOutOfRange('The search area is out of the range of the frame.')
 
                 # crop sa and tpl
                 # if color, debayer the image into a 1 channel mono for tracking. no op for Mono cfa
@@ -525,7 +569,7 @@ class AutoTrackTool(TrackTool):
                                             tpl_img=tpl_img,
                                             sa_img=sa_img,
                                             sa_center=tuple(sa_center),
-                                            sa_rng=sa_rng,
+                                            sa_rng=frame_sa_rng,
                                             reference_angle=reference_angle,
                                             rotation_range=rotation_range,
                                             rotation_step=rotation_step,
@@ -617,6 +661,36 @@ class AutoTrackTool(TrackTool):
                         f'{template["name"]} track complete. Angle: {data.angle_deg:.2f}°'
                     )
 
+            except (SearchAreaOutOfRange, AutoTrackException) as e:
+                if smart_frames:
+                    # A single unreadable/degenerate frame is a miss, not a
+                    # reason to abort the complete video. Consecutive misses
+                    # still establish the user-configured start/end boundary.
+                    logging.warning('Hybrid frame %s could not be matched: %s', fr, e)
+                    self.fail_cnt += 1
+                    template.setdefault('confidence_components', {})[int(fr)] = {
+                        'adjacent': 0.0,
+                        'setup': 0.0,
+                        'combined': 0.0,
+                        'reference_frame': int(t_frame),
+                        'setup_frame': int(anchor_frame),
+                        'error': str(e),
+                    }
+                    if self.fail_cnt >= miss_limit:
+                        direction = 'start' if not forward else 'end'
+                        self.vm.update_status_text.emit(
+                            f'Smart {direction} boundary found for {template["name"]} '
+                            f'after {self.fail_cnt} consecutive misses.'
+                        )
+                        break
+                    self.vm.update_status_text.emit(
+                        f'{template["name"]}: frame could not be matched '
+                        f'({self.fail_cnt}/{miss_limit} consecutive misses).'
+                    )
+                    continue
+                logging.exception(e)
+                self.vm.update_status_text.emit(f'{e}')
+                break
             except Exception as e:
                 logging.exception(e)
                 self.vm.update_status_text.emit(f'{e}')

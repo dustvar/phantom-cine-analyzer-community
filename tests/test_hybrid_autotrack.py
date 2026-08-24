@@ -2,6 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -15,7 +16,7 @@ MODULE_PATH = (
 )
 sys.path.insert(0, str(MODULE_PATH))
 
-from autotrackalgorithms import AutoTrackAlgorithms
+from autotrackalgorithms import AutoTrackAlgorithms, AutoTrackException, Data
 from simplemeas_tools import (
     AutoTrackTool,
     HYBRID_TRACKING_METHOD,
@@ -25,6 +26,69 @@ from simplemeas_tools import (
 
 
 class HybridAutoTrackTest(unittest.TestCase):
+    def test_smart_tracking_recovers_after_one_unmatchable_frame(self):
+        frames = [np.full((61, 61), 40, dtype=np.uint8) for _ in range(3)]
+
+        class SignalSink:
+            def emit(self, *args, **kwargs):
+                pass
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=61, ImHeight=61, CFA='Mono', RealBPP=8,
+                ImageCount=3, FirstImageNo=0,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(), image_tools=ImageTools(),
+            abort_autotrack=False, update_progress=SignalSink(),
+            update_status_text=SignalSink(), track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Recoverable target',
+            'points': np.array([[30.0, 30.0]]), 'frames': np.array([0]),
+            'scores': np.array([1.0]), 'angles': np.array([0.0]),
+            't_points': np.array([[30.0, 30.0]]), 't_frames': np.array([0]),
+            't_angles': np.array([0.0]), 'anchor_frame': 0,
+            'search_area_enable': True, 'search_area': (51, 51),
+            'tpl_rng': (21, 21), 'acceptable_score': 0.5,
+            'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+            'update_template_enable': False, 'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_allowed': False, 'rotation_range': 0.0,
+            'rotation_step': 2.0, 'edge_weight': 0.6,
+            'edge_threshold': 0.30, 'smart_frames': True,
+            'smart_miss_limit': 2,
+        }
+        calls = {'count': 0}
+
+        def match_after_one_failure(*args, **kwargs):
+            calls['count'] += 1
+            if calls['count'] == 1:
+                raise AutoTrackException('synthetic unreadable frame')
+            return Data(
+                norm_xcorr_map=np.ones((1, 1)), x_pos=30.0, y_pos=30.0,
+                confid_val_ij=0.9, angle_deg=0.0,
+            )
+
+        with patch.object(
+            AutoTrackAlgorithms, 'hybrid_pattern_matcher',
+            side_effect=match_after_one_failure,
+        ):
+            result = AutoTrackTool(vm).track(1, 2, track)
+
+        self.assertEqual(result['frames'].tolist(), [0, 2])
+        self.assertIn('error', result['confidence_components'][1])
+        self.assertAlmostEqual(result['confidence_components'][2]['combined'], 0.9)
+
     def test_dense_noise_is_penalized_relative_to_unique_geometry(self):
         clear = np.full((41, 41), 18, dtype=np.uint8)
         cv2.rectangle(clear, (5, 7), (30, 13), 220, -1)
@@ -330,6 +394,67 @@ class HybridAutoTrackTest(unittest.TestCase):
         self.assertAlmostEqual(result['points'][1][0], expected_point[0], delta=1.2)
         self.assertAlmostEqual(result['points'][1][1], expected_point[1], delta=1.2)
         self.assertAlmostEqual(result['angles'][1], 8.0, delta=1.0)
+
+    def test_hybrid_search_area_is_shifted_inside_frame_near_edge(self):
+        pattern = np.full((31, 31), 15, dtype=np.uint8)
+        cv2.rectangle(pattern, (4, 5), (24, 10), 230, -1)
+        cv2.rectangle(pattern, (19, 5), (24, 26), 230, -1)
+        cv2.circle(pattern, (8, 23), 4, 150, -1)
+
+        def make_frame(center):
+            frame = np.full((121, 121), 34, dtype=np.uint8)
+            x0 = int(center[0] - 15)
+            y0 = int(center[1] - 15)
+            frame[y0:y0 + 31, x0:x0 + 31] = pattern
+            return frame
+
+        frames = [make_frame((100, 100)), make_frame((103, 98))]
+
+        class SignalSink:
+            def emit(self, *args, **kwargs):
+                pass
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=121, ImHeight=121, CFA='Mono', RealBPP=8,
+                ImageCount=2, FirstImageNo=0,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(), image_tools=ImageTools(),
+            abort_autotrack=False, update_progress=SignalSink(),
+            update_status_text=SignalSink(), track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Edge target',
+            'points': np.array([[100.0, 100.0]]), 'frames': np.array([0]),
+            'scores': np.array([1.0]), 'angles': np.array([0.0]),
+            't_points': np.array([[100.0, 100.0]]), 't_frames': np.array([0]),
+            't_angles': np.array([0.0]), 'anchor_frame': 0,
+            'search_area_enable': True, 'search_area': (101, 101),
+            'tpl_rng': (31, 31), 'acceptable_score': 0.45,
+            'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+            'update_template_enable': False, 'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_allowed': False, 'rotation_range': 0.0,
+            'rotation_step': 2.0, 'edge_weight': 0.6,
+            'edge_threshold': 0.30, 'smart_frames': True,
+            'smart_miss_limit': 2,
+        }
+
+        result = AutoTrackTool(vm).track(1, 1, track)
+
+        self.assertEqual(result['frames'].tolist(), [0, 1])
+        self.assertAlmostEqual(result['points'][1][0], 103.0, delta=1.0)
+        self.assertAlmostEqual(result['points'][1][1], 98.0, delta=1.0)
 
 
 if __name__ == '__main__':

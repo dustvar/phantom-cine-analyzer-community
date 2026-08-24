@@ -160,6 +160,32 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(len(created), 1)
         graph.close()
 
+    def test_entering_hybrid_point_selection_repaints_the_cine_viewport(self):
+        redraws = []
+        graph = simplemeas_ui.ResizableGraph(QLabel(), SimpleNamespace(
+            current_tool=None,
+            status_bar=QLabel(''),
+            vm=SimpleNamespace(),
+        ))
+        graph.resize(220, 180)
+        graph.show()
+        dummy = SimpleNamespace(
+            _hybrid_selection_graph=None,
+            vm=SimpleNamespace(
+                pending_tracking_method=None,
+                update_status_text=SignalSink(),
+                redraw_cb=lambda: redraws.append(True),
+            ),
+        )
+
+        simplemeas_ui.MainWindow.begin_hybrid_region_selection(dummy, graph)
+        self.app.processEvents()
+
+        self.assertIs(dummy._hybrid_selection_graph, graph)
+        self.assertEqual(dummy.vm.pending_tracking_method, HYBRID_TRACKING_METHOD)
+        self.assertTrue(redraws)
+        graph.close()
+
     def test_wheel_zoom_keeps_center_cursor_near_same_scene_point(self):
         parent = SimpleNamespace(
             current_tool=None,

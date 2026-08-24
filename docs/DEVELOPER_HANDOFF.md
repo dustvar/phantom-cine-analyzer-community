@@ -21,7 +21,7 @@ depend on a private source host.
 | Viewer and clip range | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_viewer_controls.py` |
 | Up to four Cines | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_multi_cine_workspace.py` |
 | Multi-object/autotrack creation | `simplemeas_ui.py`, `simplemeas_tools.py` | `test_tracking_creation_workflow.py` |
-| Hybrid matching | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py` |
+| Hybrid matching and smart boundaries | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py`, `test_tracking_creation_workflow.py` |
 | Public launcher handoff | `launcher-source/` | `test_launcher_source.py` |
 
 Detailed symbol-level notes are in [Playback controls](PLAYBACK_CONTROLS.md)

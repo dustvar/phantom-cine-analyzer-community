@@ -57,6 +57,12 @@ stop that direction after `smart_miss_limit`; accepted points before that
 boundary remain available. This is a pragmatic boundary detector, not proof
 that the physical object is absent.
 
+Hybrid search rectangles that reach an image edge are shifted inward without
+changing their requested size. The matcher receives the adjusted crop origin,
+so reported X/Y coordinates remain in the full Cine coordinate system. An
+unreadable or mathematically degenerate frame counts as a miss instead of
+aborting the pass immediately; the same consecutive-miss limit applies.
+
 ## Tuning and validation
 
 - Increase Neighbor Weight when appearance changes gradually but should remain
@@ -70,4 +76,3 @@ that the physical object is absent.
 Coverage is in `tests/test_hybrid_autotrack.py` and
 `tests/test_tracking_creation_workflow.py`, including directional pass order and
 the adjacent-plus-setup score composition.
-
