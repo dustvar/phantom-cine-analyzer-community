@@ -18,8 +18,9 @@ global reference for that tracking pass.
 The reinforcement patch itself is immutable after setup: its pixels, width,
 height, and point-to-region offset are stored in level object-local coordinates.
 Processing solves only its pose `(X, Y, angle)`. The purple rectangle and edges
-are then transformed into camera coordinates for the main viewport, while the
-top-right template viewer applies the inverse angle so the object stays level.
+are then transformed into camera coordinates for the main viewport. The
+top-right template viewer keeps the original stable Cine crop inside a circular
+mask; a purple radial marker and numeric label show the tracked angle.
 
 ## Processing order
 

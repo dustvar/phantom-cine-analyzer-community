@@ -34,7 +34,8 @@ and [Hybrid tracking](HYBRID_TRACKING.md).
   check.
 - Hybrid reinforcement pixels and point offsets live in object-local
   coordinates. Only the per-frame X/Y/angle pose may change; UI overlays use
-  that pose directly, and the top-right preview applies its inverse rotation.
+  an explicit OpenCV-to-Qt sign conversion. The top-right preview preserves the
+  native Cine crop and draws a circular angle indicator over it.
   Pose is always solved from the frozen setup-frame patch; the nearest accepted
   frame provides only search/angle continuity and the adjacent confidence term.
 - Playback and dual-confidence changes are outside `TrackingGraph` and

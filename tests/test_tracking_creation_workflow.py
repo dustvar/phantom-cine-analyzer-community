@@ -106,6 +106,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         )
         self.assertIsNotNone(item.scale_handle)
         self.assertIsNotNone(item.rotate_handle)
+        self.assertEqual(item.rotation(), -8.0)
         item.setRotation(12.0)
         item.commit_changes()
         self.assertEqual(commits, [item])
@@ -141,13 +142,18 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         item = simplemeas_ui.HybridRegionItem(
             QRectF(0, 0, 41, 31), (62, 58), 0.0, 0, dummy, editable=True
         )
+        item.setRotation(-25.0)
 
         simplemeas_ui.MainWindow.commit_hybrid_region(dummy, item)
         self.app.processEvents()
 
         self.assertEqual(track['points'].tolist(), [[40.0, 50.0]])
         self.assertEqual(track['t_points'].tolist(), [[40.0, 50.0]])
-        self.assertEqual(tuple(track['template_offset']), (22.0, 8.0))
+        self.assertAlmostEqual(track['angles'][0], 25.0)
+        expected_offset = simplemeas_ui.MainWindow._rotate_tracking_offset(
+            (22.0, 8.0), -25.0
+        )
+        np.testing.assert_allclose(track['template_offset'], expected_offset)
 
     def test_rotating_hybrid_uses_diagonal_sized_search_window(self):
         dummy = SimpleNamespace(
@@ -163,7 +169,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
 
         self.assertEqual(size, (157, 157))
 
-    def test_hybrid_template_view_receives_pose_for_level_preview(self):
+    def test_hybrid_template_view_receives_pose_for_circular_preview(self):
         emitted = []
         dummy = SimpleNamespace(
             active_object=None,
@@ -185,6 +191,52 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(
             emitted[0][1]['current_point'],
             {'point': (42, 47), 'angle': 73.5},
+        )
+
+    def test_hybrid_preview_is_circular_and_preserves_16_bit_crop(self):
+        source = np.tile(
+            np.linspace(1000, 50000, 220, dtype=np.uint16),
+            (180, 1),
+        )
+        graph = simplemeas_ui.QGraphicsView()
+        graph.setScene(simplemeas_ui.QGraphicsScene(graph))
+        dummy = SimpleNamespace(
+            workspace_panes=[],
+            zoom_levels=[1.0],
+            zoom_slider=SimpleNamespace(value=lambda: 0),
+            vm=SimpleNamespace(raw_enabled=False),
+            magnifier=None,
+            theme_accent='#f47efa',
+        )
+        dummy._decorate_hybrid_preview = (
+            lambda pixmap, angle:
+                simplemeas_ui.MainWindow._decorate_hybrid_preview(
+                    dummy, pixmap, angle
+                )
+        )
+
+        simplemeas_ui.MainWindow._draw_image_to_graph(
+            dummy,
+            graph,
+            source,
+            16,
+            'Mono',
+            {'point': (110, 90), 'angle': 37.5},
+        )
+
+        items = graph.scene().items()
+        self.assertEqual(len(items), 1)
+        preview = items[0].pixmap().toImage().convertToFormat(
+            simplemeas_ui.QImage.Format.Format_RGBA8888
+        )
+        self.assertEqual(preview.width(), simplemeas_ui.MINIGRAPH_SIZE)
+        self.assertEqual(preview.height(), simplemeas_ui.MINIGRAPH_SIZE)
+        self.assertEqual(preview.pixelColor(0, 0).alpha(), 0)
+        self.assertGreater(
+            preview.pixelColor(
+                preview.width() // 2, preview.height() // 2
+            ).alpha(),
+            0,
         )
 
     def test_canvas_routes_second_hybrid_click_to_exact_point_creation(self):

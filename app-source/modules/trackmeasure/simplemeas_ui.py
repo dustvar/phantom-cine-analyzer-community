@@ -405,7 +405,10 @@ class HybridRegionItem(QGraphicsRectItem):
         self._drag_start_rotation = float(angle)
         self.setPos(QPointF(center[0], center[1]))
         self.setTransformOriginPoint(QPointF(0, 0))
-        self.setRotation(float(angle))
+        # OpenCV reports positive angles counter-clockwise in image
+        # coordinates, while Qt's positive QGraphicsItem rotation appears
+        # clockwise on the y-down scene. Convert only at the UI boundary.
+        self.setRotation(-float(angle))
         pen = QPen(QColor('#f47efa'), 2)
         pen.setCosmetic(True)
         self.setPen(pen)
@@ -2906,7 +2909,9 @@ class MainWindow(QWidget):
         )
         center = item.pos()
         center_point = np.array([float(center.x()), float(center.y())])
-        angle = ((float(item.rotation()) + 180.0) % 360.0) - 180.0
+        # Convert the visible Qt rotation back into the OpenCV tracking
+        # convention before storing it with the object's pose.
+        angle = ((-float(item.rotation()) + 180.0) % 360.0) - 180.0
         anchor_frame = int(track.get('anchor_frame', track['t_frames'][0]))
         point_indices = np.flatnonzero(track['frames'] == anchor_frame)
         template_indices = np.flatnonzero(track['t_frames'] == anchor_frame)
@@ -3237,14 +3242,77 @@ class MainWindow(QWidget):
             return self.graph
         return self.findChild(QWidget, graph_name)
 
+    def _decorate_hybrid_preview(self, pixmap, angle):
+        """Mask the stable template crop to a circle and draw its pose."""
+        decorated = QPixmap(pixmap.size())
+        decorated.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(decorated)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        inset = 3.0
+        circle = QRectF(
+            inset,
+            inset,
+            max(1.0, decorated.width() - (2.0 * inset)),
+            max(1.0, decorated.height() - (2.0 * inset)),
+        )
+        clip_path = QPainterPath()
+        clip_path.addEllipse(circle)
+        painter.save()
+        painter.setClipPath(clip_path)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.restore()
+
+        accent = QColor(self.theme_accent)
+        pose_pen = QPen(accent, 3)
+        pose_pen.setCosmetic(True)
+        painter.setPen(pose_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(circle)
+
+        center = circle.center()
+        # Match the OpenCV angle to Qt's y-down painter coordinates.
+        display_radians = math.radians(-float(angle))
+        radius = max(4.0, (min(circle.width(), circle.height()) / 2.0) - 10.0)
+        endpoint = QPointF(
+            center.x() + (radius * math.cos(display_radians)),
+            center.y() + (radius * math.sin(display_radians)),
+        )
+        painter.drawLine(center, endpoint)
+        painter.setBrush(accent)
+        painter.drawEllipse(endpoint, 4.0, 4.0)
+
+        label_rect = QRectF(
+            16.0,
+            decorated.height() - 29.0,
+            max(1.0, decorated.width() - 32.0),
+            22.0,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 175))
+        painter.drawRoundedRect(label_rect, 6.0, 6.0)
+        font = painter.font()
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QPen(QColor('#ffffff')))
+        painter.drawText(
+            label_rect,
+            Qt.AlignmentFlag.AlignCenter,
+            f'Angle {float(angle):+.1f}°',
+        )
+        painter.end()
+        return decorated
+
     def _draw_image_to_graph(self, graph, img, bpp, cfa, current_point=None):
         if graph is None or img is None:
             return
         graph.scene().clear()
         is_main_graph = graph in [pane.graph for pane in self.workspace_panes]
+        is_hybrid_preview = isinstance(current_point, dict)
         preview_angle = 0.0
         preview_point = current_point
-        if isinstance(current_point, dict):
+        if is_hybrid_preview:
             preview_angle = float(current_point.get('angle', 0.0))
             preview_point = current_point.get('point')
         if (
@@ -3257,27 +3325,18 @@ class MainWindow(QWidget):
             current_point = (int(preview_point[0]), int(preview_point[1]))
             graph_size = (MINIGRAPH_SIZE, MINIGRAPH_SIZE)
 
-            if abs(preview_angle) > 1e-9:
-                # Level the Hybrid object in its local coordinate system. The
-                # main viewport remains in camera coordinates; only the small
-                # template viewer rotates with the tracked pose.
-                crop_size = max(1, zoom_size // 2)
-                img = AutoTrackAlgorithms.extract_oriented_patch(
-                    img,
-                    current_point,
-                    (crop_size, crop_size),
-                    -preview_angle,
-                )
-            else:
-                border_sz = zoom_size // 4
-                img_border = cv2.copyMakeBorder(
-                    img, border_sz, border_sz, border_sz, border_sz,
-                    cv2.BORDER_CONSTANT, None, value=[0, 0, 0]
-                )
-                img = img_border[
-                    current_point[1]: current_point[1] + zoom_size // 2,
-                    current_point[0]: current_point[0] + zoom_size // 2,
-                ]
+            # Preserve the original 16-bit-safe crop. Rotating this buffer
+            # required a float conversion that QImage then interpreted as
+            # Grayscale16, producing the noisy/static preview seen on Cines.
+            border_sz = zoom_size // 4
+            img_border = cv2.copyMakeBorder(
+                img, border_sz, border_sz, border_sz, border_sz,
+                cv2.BORDER_CONSTANT, None, value=[0, 0, 0]
+            )
+            img = img_border[
+                current_point[1]: current_point[1] + zoom_size // 2,
+                current_point[0]: current_point[0] + zoom_size // 2,
+            ]
             if img.size != 0:
                 img = cv2.resize(img, graph_size, interpolation=cv2.INTER_CUBIC)
 
@@ -3291,6 +3350,12 @@ class MainWindow(QWidget):
         img = np.copy(img)
         q_img = QImage(img, img.shape[1], img.shape[0], bytes_per_line, fmt)
         pixmap = QPixmap.fromImage(q_img)
+        if is_hybrid_preview and not is_main_graph:
+            pixmap = self._decorate_hybrid_preview(pixmap, preview_angle)
+            graph.setToolTip(
+                'Hybrid pose: the image crop stays fixed while the purple '
+                'marker shows the tracked angle.'
+            )
         graph.scene().addPixmap(pixmap)
         if current_point is None:
             graph.scene().setSceneRect(QRectF(pixmap.rect()))

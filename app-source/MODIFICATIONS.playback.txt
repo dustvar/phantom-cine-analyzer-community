@@ -72,10 +72,11 @@ Modified: 2026-08-24
   when the local lock is weak. Rotated rectangular templates use an expanded,
   masked matching canvas so their corners are not clipped during full turns.
   The axis-aligned search window is sized from the template diagonal.
-- The top-right Hybrid template viewer now counter-rotates by the tracked pose,
-  keeping the object level while the main Cine viewport remains in camera
-  coordinates. The purple edge preview is generated in the same local frame
-  before being transformed with the reinforcement region.
+- Corrected the OpenCV-to-Qt angle conversion so the Hybrid reinforcement
+  rectangle visually rotates with, rather than opposite, the tracked object.
+  The top-right Hybrid viewer now preserves the proven native Cine crop inside
+  a circular mask and overlays a rotating purple pose marker plus numeric angle,
+  avoiding float/16-bit reinterpretation noise.
 - Fixed a native PySide crash when creating or editing a Hybrid reinforcement
   region. Scene-clearing redraws are now deferred until the active graphics
   mouse event has returned, preventing Qt from dispatching through a deleted
