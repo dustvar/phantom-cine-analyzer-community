@@ -1,0 +1,51 @@
+{
+    "run_main": "launch_app",
+    "main_alias": "Track & Measure",
+    "length_units": "pix",
+    "known_length": 1.0,
+    "image_scale": 1.0,
+    "time_units": "s",
+    "time_scale": 1,
+    "autogen_report_name": false,
+    "delimiter": ",",
+    "cache_enabled": true,
+    "max_cache_ram_mb": 512,
+    "_strategy_config": {
+        "known_length": {
+            "strategy": "FloatStrategy",
+            "min_value": 0.0
+        },
+        "image_scale": {
+            "strategy": "FloatStrategy",
+            "min_value": 0.0
+        },
+        "autogen_report_name": {
+            "strategy": "BooleanStrategy"
+        },
+        "time_scale": {
+            "strategy": "ListStrategy",
+            "allowed_values": [
+                1,
+                1000.0,
+                1000000.0
+            ]
+        },
+        "time_units": {
+            "strategy": "ListStrategy",
+            "allowed_values": [
+                "s",
+                "ms",
+                "\u03bcs",
+                "us"
+            ]
+        },
+        "cache_enabled": {
+            "strategy": "BooleanStrategy"
+        },
+        "max_cache_ram_mb": {
+            "strategy": "IntegerStrategy",
+            "min_value": 64,
+            "max_value": 8192
+        }
+    }
+}

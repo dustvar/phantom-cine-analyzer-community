@@ -1,0 +1,46 @@
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Python and Conda environments
+.venv/
+venv/
+env/
+.conda/
+
+# Node/build output
+node_modules/
+dist/
+out/
+launcher-build/
+launcher-source/temp/
+launcher-source/.vscode/
+launcher-source/.gitlab-ci.yml
+
+# Signing material and local secrets
+.env
+.env.*
+launcher-source/scripts/mac_certs/
+*.p12
+*.pem
+*.key
+*.cer
+*.certSigningRequest
+
+# Large/runtime artifacts
+*.cine
+cines/
+*.app/
+*.dmg
+*.zip
+*.tar.gz
+*.exe
+args.json
+PhantomCineAnalyzer-1-1-18-mac-x64/
+Miniforge3-*
+PhantomCineAnalyzer\ 1.1.18*
