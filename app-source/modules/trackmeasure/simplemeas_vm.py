@@ -723,6 +723,7 @@ class SimpleMeasVM(QObject):
             params = ['start', 'end', 'search_area', 'tpl_rng', 'subpixel_size', 'subpixel_type', 'frames_enable', 
                       'search_area_enable', 'tpl_rng_enable', 'update_template_enable', 'acceptable_score',
                       'tracking_method', 'rotation_range', 'rotation_step', 'edge_weight',
+                      'adjacent_confidence_weight',
                       'edge_threshold', 'rotation_allowed', 'smart_frames', 'smart_miss_limit',
                       'search_area_multiplier']
             for id, t in self.track_data.items():

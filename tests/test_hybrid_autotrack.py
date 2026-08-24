@@ -1,0 +1,336 @@
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+import cv2
+import numpy as np
+
+
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / 'app-source'
+    / 'modules'
+    / 'trackmeasure'
+)
+sys.path.insert(0, str(MODULE_PATH))
+
+from autotrackalgorithms import AutoTrackAlgorithms
+from simplemeas_tools import (
+    AutoTrackTool,
+    HYBRID_TRACKING_METHOD,
+    TrackTool,
+    _rotate_tracking_offset,
+)
+
+
+class HybridAutoTrackTest(unittest.TestCase):
+    def test_dense_noise_is_penalized_relative_to_unique_geometry(self):
+        clear = np.full((41, 41), 18, dtype=np.uint8)
+        cv2.rectangle(clear, (5, 7), (30, 13), 220, -1)
+        cv2.rectangle(clear, (24, 7), (30, 33), 220, -1)
+        cv2.circle(clear, (11, 29), 5, 145, -1)
+        clear_search = np.full((121, 121), 35, dtype=np.uint8)
+        clear_search[40:81, 40:81] = clear
+        clear_result = AutoTrackAlgorithms.hybrid_pattern_matcher(
+            clear, clear_search, (60, 60), (121, 121),
+            rotation_range=0.0, edge_weight=0.6, edge_threshold=0.30,
+        )
+
+        rng = np.random.default_rng(20)
+        noise = rng.integers(0, 256, (41, 41), dtype=np.uint8)
+        noisy_search = rng.integers(0, 256, (121, 121), dtype=np.uint8)
+        noisy_search[40:81, 40:81] = noise
+        noise_result = AutoTrackAlgorithms.hybrid_pattern_matcher(
+            noise, noisy_search, (60, 60), (121, 121),
+            rotation_range=0.0, edge_weight=0.6, edge_threshold=0.30,
+        )
+
+        self.assertGreater(clear_result.confid_val_ij, 0.75)
+        self.assertLess(noise_result.confid_val_ij, 0.65)
+        self.assertGreater(noise_result.edge_density, clear_result.edge_density)
+        self.assertGreater(clear_result.confid_val_ij, noise_result.confid_val_ij)
+
+    def test_hybrid_matcher_recovers_position_and_rotation_under_contrast_change(self):
+        template = np.full((41, 41), 18, dtype=np.uint8)
+        cv2.rectangle(template, (5, 7), (30, 13), 220, -1)
+        cv2.rectangle(template, (24, 7), (30, 33), 220, -1)
+        cv2.circle(template, (11, 29), 5, 145, -1)
+        cv2.line(template, (8, 17), (20, 25), 250, 2)
+
+        expected_angle = 11.5
+        rotated = AutoTrackAlgorithms._rotate_image(template, expected_angle)
+        rng = np.random.default_rng(7)
+        search = np.tile(np.linspace(32, 68, 121, dtype=np.float32), (121, 1))
+        search += rng.normal(0, 3.0, search.shape)
+
+        expected_center = (77.0, 55.0)
+        top_left_x = int(expected_center[0] - ((template.shape[1] - 1) / 2.0))
+        top_left_y = int(expected_center[1] - ((template.shape[0] - 1) / 2.0))
+        patch = 42.0 + rotated.astype(np.float32) * 0.72
+        search[
+            top_left_y:top_left_y + template.shape[0],
+            top_left_x:top_left_x + template.shape[1],
+        ] = patch
+        search = np.clip(search, 0, 255).astype(np.uint8)
+
+        result = AutoTrackAlgorithms.hybrid_pattern_matcher(
+            template,
+            search,
+            sa_center=(60, 60),
+            sa_rng=(121, 121),
+            reference_angle=0.0,
+            rotation_range=18.0,
+            rotation_step=2.0,
+            edge_weight=0.6,
+        )
+
+        self.assertAlmostEqual(result.x_pos, expected_center[0], delta=1.0)
+        self.assertAlmostEqual(result.y_pos, expected_center[1], delta=1.0)
+        self.assertAlmostEqual(result.angle_deg, expected_angle, delta=1.0)
+        self.assertGreater(result.confid_val_ij, 0.65)
+        self.assertGreater(result.edge_score, 0.55)
+        self.assertEqual(result.method, 'Hybrid')
+
+    def test_track_points_keep_position_score_and_angle_aligned(self):
+        track = {
+            'points': np.array([[10.0, 10.0]]),
+            'frames': np.array([0]),
+            'scores': np.array([1.0]),
+            'angles': np.array([0.0]),
+            't_points': np.array([[10.0, 10.0]]),
+            't_frames': np.array([0]),
+            't_angles': np.array([0.0]),
+        }
+        tool = TrackTool(vm=None)
+        tool.add_point_to_template(
+            track, (14.0, 13.0), 2, score=0.91, angle=8.5, update_track_template=True
+        )
+        tool.add_point_to_template(
+            track, (12.0, 11.0), 1, score=0.88, angle=4.0, update_track_template=False
+        )
+
+        self.assertEqual(track['frames'].tolist(), [0, 1, 2])
+        self.assertEqual(track['angles'].tolist(), [0.0, 4.0, 8.5])
+        self.assertEqual(track['t_frames'].tolist(), [0, 2])
+        self.assertEqual(track['t_angles'].tolist(), [0.0, 8.5])
+
+    def test_dual_reference_score_uses_neighbor_and_original_setup(self):
+        setup_pattern = np.full((31, 31), 20, dtype=np.uint8)
+        cv2.rectangle(setup_pattern, (3, 4), (24, 9), 230, -1)
+        cv2.rectangle(setup_pattern, (19, 4), (24, 26), 230, -1)
+        cv2.circle(setup_pattern, (8, 23), 4, 145, -1)
+
+        changed_pattern = np.full((31, 31), 20, dtype=np.uint8)
+        cv2.circle(changed_pattern, (15, 15), 10, 230, 4)
+        cv2.line(changed_pattern, (5, 25), (25, 5), 170, 3)
+
+        def make_frame(pattern):
+            frame = np.full((101, 101), 35, dtype=np.uint8)
+            frame[35:66, 35:66] = pattern
+            return frame
+
+        frames = [
+            make_frame(setup_pattern),
+            make_frame(changed_pattern),
+            make_frame(changed_pattern),
+        ]
+
+        class SignalSink:
+            def emit(self, *args, **kwargs):
+                pass
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=101, ImHeight=101, CFA='Mono', RealBPP=8,
+                ImageCount=3, FirstImageNo=0,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(), image_tools=ImageTools(),
+            abort_autotrack=False, update_progress=SignalSink(),
+            update_status_text=SignalSink(), track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Dual reference target',
+            'points': np.array([[50.0, 50.0]]), 'frames': np.array([0]),
+            'scores': np.array([1.0]), 'angles': np.array([0.0]),
+            't_points': np.array([[50.0, 50.0]]), 't_frames': np.array([0]),
+            't_angles': np.array([0.0]), 'anchor_frame': 0,
+            'template_offset': (0.0, 0.0),
+            'search_area_enable': True, 'search_area': (81, 81),
+            'tpl_rng': (31, 31), 'acceptable_score': 0.0,
+            'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+            'update_template_enable': False, 'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_range': 0.0, 'rotation_step': 2.0,
+            'edge_weight': 0.6, 'edge_threshold': 0.30,
+            'adjacent_confidence_weight': 0.65,
+        }
+
+        result = AutoTrackTool(vm).track(1, 2, track)
+        frame_two = result['confidence_components'][2]
+
+        self.assertEqual(frame_two['reference_frame'], 1)
+        self.assertEqual(frame_two['setup_frame'], 0)
+        self.assertGreater(frame_two['adjacent'], frame_two['setup'])
+        self.assertLess(frame_two['combined'], frame_two['adjacent'])
+        expected = (frame_two['adjacent'] ** 0.65) * (frame_two['setup'] ** 0.35)
+        self.assertAlmostEqual(frame_two['combined'], expected, places=5)
+
+    def test_auto_track_tool_records_pose_for_a_moving_rotating_object(self):
+        pattern = np.full((31, 31), 15, dtype=np.uint8)
+        cv2.rectangle(pattern, (4, 5), (24, 10), 230, -1)
+        cv2.rectangle(pattern, (19, 5), (24, 26), 230, -1)
+        cv2.circle(pattern, (8, 23), 4, 150, -1)
+
+        def make_frame(center, angle, contrast=1.0):
+            frame = np.full((121, 121), 34, dtype=np.float32)
+            rotated = AutoTrackAlgorithms._rotate_image(pattern, angle).astype(np.float32)
+            patch = 30.0 + contrast * rotated
+            x0 = int(center[0] - 15)
+            y0 = int(center[1] - 15)
+            frame[y0:y0 + 31, x0:x0 + 31] = patch
+            return np.clip(frame, 0, 255).astype(np.uint8)
+
+        frames = [make_frame((60, 60), 0.0), make_frame((70, 55), 8.0, 0.72)]
+
+        class SignalSink:
+            def emit(self, *args, **kwargs):
+                pass
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=121,
+                ImHeight=121,
+                CFA='Mono',
+                RealBPP=8,
+                ImageCount=2,
+                FirstImageNo=0,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(),
+            image_tools=ImageTools(),
+            abort_autotrack=False,
+            update_progress=SignalSink(),
+            update_status_text=SignalSink(),
+            track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Pose target',
+            'points': np.array([[60.0, 60.0]]),
+            'frames': np.array([0]),
+            'scores': np.array([1.0]),
+            'angles': np.array([0.0]),
+            't_points': np.array([[60.0, 60.0]]),
+            't_frames': np.array([0]),
+            't_angles': np.array([0.0]),
+            'search_area_enable': True,
+            'search_area': (101, 101),
+            'tpl_rng': (31, 31),
+            'acceptable_score': 0.5,
+            'subpixel_size': '1.0 pix',
+            'subpixel_type': 'cubic',
+            'update_template_enable': False,
+            'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_range': 15.0,
+            'rotation_step': 2.0,
+            'edge_weight': 0.6,
+        }
+
+        result = AutoTrackTool(vm).track(1, 1, track)
+
+        self.assertEqual(result['frames'].tolist(), [0, 1])
+        self.assertAlmostEqual(result['points'][1][0], 70.0, delta=1.0)
+        self.assertAlmostEqual(result['points'][1][1], 55.0, delta=1.0)
+        self.assertAlmostEqual(result['angles'][1], 8.0, delta=1.0)
+
+    def test_reinforcement_region_tracks_a_separate_attached_point(self):
+        pattern = np.full((31, 31), 15, dtype=np.uint8)
+        cv2.rectangle(pattern, (4, 5), (24, 10), 230, -1)
+        cv2.rectangle(pattern, (19, 5), (24, 26), 230, -1)
+        cv2.circle(pattern, (8, 23), 4, 150, -1)
+        template_offset = np.array((10.0, 0.0))
+
+        def make_frame(center, angle):
+            frame = np.full((121, 121), 34, dtype=np.float32)
+            rotated = AutoTrackAlgorithms._rotate_image(pattern, angle).astype(np.float32)
+            x0 = int(center[0] - 15)
+            y0 = int(center[1] - 15)
+            frame[y0:y0 + 31, x0:x0 + 31] = 30.0 + rotated
+            return np.clip(frame, 0, 255).astype(np.uint8)
+
+        initial_reinforcement = np.array((60.0, 60.0))
+        next_reinforcement = np.array((70.0, 55.0))
+        initial_point = initial_reinforcement - _rotate_tracking_offset(template_offset, 0.0)
+        expected_point = next_reinforcement - _rotate_tracking_offset(template_offset, 8.0)
+        frames = [
+            make_frame(initial_reinforcement, 0.0),
+            make_frame(next_reinforcement, 8.0),
+        ]
+
+        class SignalSink:
+            def emit(self, *args, **kwargs):
+                pass
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=121, ImHeight=121, CFA='Mono', RealBPP=8,
+                ImageCount=2, FirstImageNo=0,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(), image_tools=ImageTools(),
+            abort_autotrack=False, update_progress=SignalSink(),
+            update_status_text=SignalSink(), track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Offset target',
+            'points': np.array([initial_point]), 'frames': np.array([0]),
+            'scores': np.array([1.0]), 'angles': np.array([0.0]),
+            't_points': np.array([initial_point]), 't_frames': np.array([0]),
+            't_angles': np.array([0.0]), 'template_offset': tuple(template_offset),
+            'search_area_enable': True, 'search_area': (101, 101),
+            'tpl_rng': (31, 31), 'acceptable_score': 0.5,
+            'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+            'update_template_enable': False, 'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_range': 15.0, 'rotation_step': 2.0,
+            'edge_weight': 0.6, 'edge_threshold': 0.30,
+        }
+
+        result = AutoTrackTool(vm).track(1, 1, track)
+
+        self.assertAlmostEqual(result['points'][1][0], expected_point[0], delta=1.2)
+        self.assertAlmostEqual(result['points'][1][1], expected_point[1], delta=1.2)
+        self.assertAlmostEqual(result['angles'][1], 8.0, delta=1.0)
+
+
+if __name__ == '__main__':
+    unittest.main()

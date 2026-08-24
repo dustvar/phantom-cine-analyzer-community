@@ -166,6 +166,8 @@ class TrackTool(BaseTool):
                      'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
                      'rotation_allowed': is_hybrid, 'smart_frames': is_hybrid,
                      'smart_miss_limit': 3, 'search_area_multiplier': 3.0,
+                     'adjacent_confidence_weight': 0.65,
+                     'confidence_components': {},
                      'template_angle': 0.0, 'template_offset': (0.0, 0.0),
                      'anchor_frame': int(frame_id)}
             self.vm.track_data[new_id] = new_t
@@ -297,18 +299,18 @@ class AutoTrackTool(TrackTool):
                 # of consecutive low-confidence frames. The anchor is not
                 # matched against itself, because a self-correlation always
                 # looks artificially perfect and is not useful confidence data.
-                if anchor_fr > 0:
+                final_frame = self.vm.cine_handler.metadata.ImageCount - 1
+                if anchor_fr < final_frame:
                     template = self.track(
-                        anchor_fr - 1, 0, template,
+                        anchor_fr + 1, final_frame, template,
                         progress_offset=0, progress_span=50,
                     )
                 else:
                     self.vm.update_progress.emit(50)
-                final_frame = self.vm.cine_handler.metadata.ImageCount - 1
-                if anchor_fr < final_frame:
+                if anchor_fr > 0:
                     template = self.track(
-                        anchor_fr + 1,
-                        final_frame,
+                        anchor_fr - 1,
+                        0,
                         template,
                         progress_offset=50,
                         progress_span=50,
@@ -374,6 +376,9 @@ class AutoTrackTool(TrackTool):
         rotation_step = template.get('rotation_step', 2.0)
         edge_weight = template.get('edge_weight', 0.6)
         edge_threshold = template.get('edge_threshold', None)
+        adjacent_confidence_weight = float(np.clip(
+            template.get('adjacent_confidence_weight', 0.65), 0.0, 1.0
+        ))
         template_offset = np.asarray(
             template.get('template_offset', (0.0, 0.0)), dtype=float
         )
@@ -390,6 +395,29 @@ class AutoTrackTool(TrackTool):
             template['angles'] = np.zeros(len(template['points']), dtype=float)
         if 't_angles' not in template or len(template['t_angles']) != len(template['t_points']):
             template['t_angles'] = np.zeros(len(template['t_points']), dtype=float)
+
+        cfa = self.vm.cine_handler.metadata.CFA
+        bpp = self.vm.cine_handler.metadata.RealBPP
+        setup_patch = None
+        if tracking_method == HYBRID_TRACKING_METHOD:
+            anchor_frame = int(template.get('anchor_frame', template['frames'][0]))
+            anchor_matches = np.flatnonzero(template['frames'] == anchor_frame)
+            if anchor_matches.size == 0:
+                raise AutoTrackException('Hybrid setup frame is missing its tracked point.')
+            anchor_index = int(anchor_matches[0])
+            anchor_point = np.asarray(template['points'][anchor_index], dtype=float)
+            anchor_angle = float(template['angles'][anchor_index])
+            anchor_center = anchor_point + _rotate_tracking_offset(
+                template_offset, anchor_angle
+            )
+            anchor_img = self.vm.cine_handler.get_img(anchor_frame)
+            anchor_img = self.vm.image_tools.debayer(
+                np.array(anchor_img, dtype=np.float32), cfa, bpp, force_mono=1
+            )
+            setup_patch = AutoTrackAlgorithms.extract_oriented_patch(
+                anchor_img, anchor_center, tpl_rng, anchor_angle
+            )
+            template.setdefault('confidence_components', {})
 
         forward = start_fr <= last_fr
         fr_rng = range(start_fr, last_fr+1) if forward else range(start_fr, last_fr-1, -1)
@@ -427,19 +455,29 @@ class AutoTrackTool(TrackTool):
                     if p_arr.size > 0:
                         p_index = np.min(p_arr)
 
-                t_frame = template['t_frames'][t_index]
-                tracked_template_point = np.asarray(template['t_points'][t_index], dtype=float)
-                reference_angle = float(template['t_angles'][t_index])
                 previous_angle = float(template['angles'][p_index])
-                tpl_center = tracked_template_point
                 sa_center = np.asarray(template['points'][p_index], dtype=float)
                 if tracking_method == HYBRID_TRACKING_METHOD:
+                    # Hybrid always uses the nearest successfully tracked frame
+                    # in the processing direction as its local reference.
+                    t_frame = int(template['frames'][p_index])
+                    tracked_template_point = np.asarray(
+                        template['points'][p_index], dtype=float
+                    )
+                    reference_angle = previous_angle
                     tpl_center = tracked_template_point + _rotate_tracking_offset(
                         template_offset, reference_angle
                     )
                     sa_center = sa_center + _rotate_tracking_offset(
                         template_offset, previous_angle
                     )
+                else:
+                    t_frame = template['t_frames'][t_index]
+                    tracked_template_point = np.asarray(
+                        template['t_points'][t_index], dtype=float
+                    )
+                    reference_angle = float(template['t_angles'][t_index])
+                    tpl_center = tracked_template_point
                 if not enable_sa:
                     sa_center = (math.floor(sa_rng[0]/2), math.floor(sa_rng[1]/2))
 
@@ -460,13 +498,12 @@ class AutoTrackTool(TrackTool):
                     raise SearchAreaOutOfRange('The search area is out of the range of the frame.')
 
                 # crop sa and tpl
-                cfa = self.vm.cine_handler.metadata.CFA
-                bpp = self.vm.cine_handler.metadata.RealBPP
-
                 # if color, debayer the image into a 1 channel mono for tracking. no op for Mono cfa
-                sa_img = self.vm.cine_handler.get_img(fr)
-                sa_img = self.vm.image_tools.debayer(np.array(sa_img, dtype=np.float32), cfa, bpp, force_mono=1)
-                sa_img = sa_img[tl_sa[1]:br_sa[1], tl_sa[0]:br_sa[0]]
+                current_img = self.vm.cine_handler.get_img(fr)
+                current_img = self.vm.image_tools.debayer(
+                    np.array(current_img, dtype=np.float32), cfa, bpp, force_mono=1
+                )
+                sa_img = current_img[tl_sa[1]:br_sa[1], tl_sa[0]:br_sa[0]]
 
                 # if color, debayer the image into a 1 channel mono for tracking. no op for Mono cfa
                 tpl_img = self.vm.cine_handler.get_img(t_frame)
@@ -494,6 +531,41 @@ class AutoTrackTool(TrackTool):
                                             rotation_step=rotation_step,
                                             edge_weight=edge_weight,
                                             edge_threshold=edge_threshold)
+                    adjacent_score = float(data.confid_val_ij)
+                    candidate_center = (float(data.x_pos), float(data.y_pos))
+                    candidate_patch = AutoTrackAlgorithms.extract_oriented_patch(
+                        current_img,
+                        candidate_center,
+                        tpl_rng,
+                        data.angle_deg,
+                    )
+                    setup_data = AutoTrackAlgorithms.hybrid_pattern_matcher(
+                        tpl_img=setup_patch,
+                        sa_img=candidate_patch,
+                        sa_center=((tpl_rng[0] - 1) / 2.0, (tpl_rng[1] - 1) / 2.0),
+                        sa_rng=tpl_rng,
+                        reference_angle=0.0,
+                        rotation_range=0.0,
+                        rotation_step=rotation_step,
+                        edge_weight=edge_weight,
+                        edge_threshold=edge_threshold,
+                    )
+                    setup_score = float(setup_data.confid_val_ij)
+                    setup_confidence_weight = 1.0 - adjacent_confidence_weight
+                    combined_score = (
+                        (max(0.0, adjacent_score) ** adjacent_confidence_weight)
+                        * (max(0.0, setup_score) ** setup_confidence_weight)
+                    )
+                    data.adjacent_score = adjacent_score
+                    data.setup_score = setup_score
+                    data.confid_val_ij = combined_score
+                    template['confidence_components'][int(fr)] = {
+                        'adjacent': round(adjacent_score, 6),
+                        'setup': round(setup_score, 6),
+                        'combined': round(combined_score, 6),
+                        'reference_frame': int(t_frame),
+                        'setup_frame': int(anchor_frame),
+                    }
                 else:
                     data = AutoTrackAlgorithms.template_matcher(
                                             tpl_img=tpl_img, 
@@ -534,9 +606,16 @@ class AutoTrackTool(TrackTool):
                             )
                             break
                         raise ObjectLostException('The object has been lost. Please select a new point and start processing again.')
-                self.vm.update_status_text.emit(
-                    f'{template["name"]} track complete. Angle: {data.angle_deg:.2f}°'
-                )
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    self.vm.update_status_text.emit(
+                        f'{template["name"]}: confidence {score:.3f} '
+                        f'(neighbor {data.adjacent_score:.3f}, setup {data.setup_score:.3f}); '
+                        f'angle {data.angle_deg:.2f}°'
+                    )
+                else:
+                    self.vm.update_status_text.emit(
+                        f'{template["name"]} track complete. Angle: {data.angle_deg:.2f}°'
+                    )
 
             except Exception as e:
                 logging.exception(e)

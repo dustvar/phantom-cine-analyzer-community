@@ -2150,6 +2150,14 @@ class MainWindow(QWidget):
         self.hybrid_edge_weight.setSingleStep(0.05)
         self.hybrid_edge_weight.setValue(0.60)
         hybrid_advanced_form.addRow('Edge Weight', self.hybrid_edge_weight)
+        self.hybrid_neighbor_weight = QDoubleSpinBox()
+        self.hybrid_neighbor_weight.setRange(0.0, 1.0)
+        self.hybrid_neighbor_weight.setSingleStep(0.05)
+        self.hybrid_neighbor_weight.setValue(0.65)
+        self.hybrid_neighbor_weight.setToolTip(
+            'Weight given to the nearest successfully tracked frame. The remaining weight uses the original setup frame.'
+        )
+        hybrid_advanced_form.addRow('Neighbor Weight', self.hybrid_neighbor_weight)
         self.hybrid_edge_threshold = QDoubleSpinBox()
         self.hybrid_edge_threshold.setRange(0.02, 1.0)
         self.hybrid_edge_threshold.setSingleStep(0.02)
@@ -2894,6 +2902,7 @@ class MainWindow(QWidget):
             self.hybrid_rotation_range,
             self.hybrid_rotation_step,
             self.hybrid_edge_weight,
+            self.hybrid_neighbor_weight,
             self.hybrid_edge_threshold,
             self.hybrid_search_multiplier,
             self.hybrid_miss_limit,
@@ -2906,6 +2915,9 @@ class MainWindow(QWidget):
         self.hybrid_rotation_range.setValue(float(track.get('rotation_range', 15.0)))
         self.hybrid_rotation_step.setValue(float(track.get('rotation_step', 2.0)))
         self.hybrid_edge_weight.setValue(float(track.get('edge_weight', 0.60)))
+        self.hybrid_neighbor_weight.setValue(float(
+            track.get('adjacent_confidence_weight', 0.65)
+        ))
         self.hybrid_edge_threshold.setValue(float(track.get('edge_threshold', 0.30)))
         self.hybrid_search_multiplier.setValue(float(track.get('search_area_multiplier', 3.0)))
         self.hybrid_miss_limit.setValue(int(track.get('smart_miss_limit', 3)))
@@ -2928,6 +2940,7 @@ class MainWindow(QWidget):
             'rotation_range': self.hybrid_rotation_range.value(),
             'rotation_step': self.hybrid_rotation_step.value(),
             'edge_weight': self.hybrid_edge_weight.value(),
+            'adjacent_confidence_weight': self.hybrid_neighbor_weight.value(),
             'edge_threshold': self.hybrid_edge_threshold.value(),
             'search_area_multiplier': self.hybrid_search_multiplier.value(),
             'smart_miss_limit': self.hybrid_miss_limit.value(),
@@ -3722,6 +3735,7 @@ class MainWindow(QWidget):
             t.setdefault('rotation_range', 15.0)
             t.setdefault('rotation_step', 2.0)
             t.setdefault('edge_weight', 0.6)
+            t.setdefault('adjacent_confidence_weight', 0.65)
             t.setdefault('edge_threshold', 0.30)
             t.setdefault('rotation_allowed', True)
             t.setdefault('smart_frames', False)
@@ -4097,6 +4111,7 @@ class MainWindow(QWidget):
             self.hybrid_rotation_range,
             self.hybrid_rotation_step,
             self.hybrid_edge_weight,
+            self.hybrid_neighbor_weight,
             self.hybrid_edge_threshold,
             self.hybrid_search_multiplier,
         ):

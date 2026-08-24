@@ -42,6 +42,6 @@ Home/End jump to bounds, and I/O set In/Out.
 ## Verification
 
 `tests/test_viewer_controls.py` covers transport construction, stepping,
-direction changes, clip boundaries, and keyboard behavior. The graph source is
-not part of this implementation and should remain unchanged during integration.
-
+direction changes, clip boundaries, and keyboard behavior. The graph classes
+are not part of the transport implementation and should remain untouched when
+integrating this playback feature by itself.

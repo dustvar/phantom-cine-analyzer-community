@@ -22,6 +22,8 @@ class Data:
     edge_density: float = field(default=None)
     edge_f1: float = field(default=None)
     continuity_score: float = field(default=None)
+    adjacent_score: float = field(default=None)
+    setup_score: float = field(default=None)
     method: str = field(default='Classic')
 
 class AutoTrackAlgorithms:

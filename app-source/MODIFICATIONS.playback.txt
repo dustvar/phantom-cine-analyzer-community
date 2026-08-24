@@ -37,6 +37,12 @@ Modified: 2026-08-23
   frame and records detected start/stop boundaries after consecutive scores fall
   below the selected threshold. Its embedded Track-tab progress bar advances
   monotonically across both passes.
+- Smart Hybrid processing now completes the forward pass first, then the
+  backward pass. Each candidate is compared both with the nearest successfully
+  tracked neighboring frame and with the original setup frame. The displayed
+  confidence is their weighted geometric mean (65% neighbor and 35% setup by
+  default), with Neighbor Weight available under Advanced and both component
+  scores retained for diagnostics.
 - Added a per-object Hybrid tracking method that combines normalized intensity
   correlation with edge geometry and a coarse-to-fine rotation search. Hybrid
   confidence also accounts for edge-map saturation, edge overlap, peak
@@ -62,8 +68,10 @@ Modified: 2026-08-23
   accent palette and saves the selected accent for later launches.
 - Playback stops safely at the selected clip boundary, when loading a new cine,
   or when closing the window.
-- Preserved the original TrackingGraph and TrackingGraphWindow source unchanged
-  while adding the transport controls.
+- Added the transport controls without changing TrackingGraph or
+  TrackingGraphWindow. Separate graph changes are limited to the requested
+  multi-Cine overlay and Angle/Angular Speed modes; existing graph calculations
+  and visual styling are otherwise retained.
 
 This modified version remains subject to LICENSE.cineanalyzer.txt included in
 the application docs directory.
