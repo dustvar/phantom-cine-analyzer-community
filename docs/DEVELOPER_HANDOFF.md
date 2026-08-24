@@ -32,6 +32,11 @@ and [Hybrid tracking](HYBRID_TRACKING.md).
 - **Intensity (Classic)** follows the original PCA point/template correlation
   path. Hybrid-specific state and scoring must stay behind the tracking-method
   check.
+- Hybrid reinforcement pixels and point offsets live in object-local
+  coordinates. Only the per-frame X/Y/angle pose may change; UI overlays use
+  that pose directly, and the top-right preview applies its inverse rotation.
+  Pose is always solved from the frozen setup-frame patch; the nearest accepted
+  frame provides only search/angle continuity and the adjacent confidence term.
 - Playback and dual-confidence changes are outside `TrackingGraph` and
   `TrackingGraphWindow`. The feature checkpoint changes those classes only for
   the separately requested multi-Cine overlay and Angle/Angular Speed modes;

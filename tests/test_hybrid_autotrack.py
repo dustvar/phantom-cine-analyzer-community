@@ -26,6 +26,72 @@ from simplemeas_tools import (
 
 
 class HybridAutoTrackTest(unittest.TestCase):
+    def test_pose_accumulates_across_the_180_degree_boundary(self):
+        pattern = np.full((51, 51), 15, dtype=np.uint8)
+        cv2.rectangle(pattern, (5, 6), (38, 12), 230, -1)
+        cv2.rectangle(pattern, (31, 6), (38, 42), 230, -1)
+        cv2.circle(pattern, (11, 39), 5, 150, -1)
+        expected_angles = [160.0, 175.0, 190.0, 210.0]
+
+        def make_frame(angle):
+            frame = np.full((181, 181), 34, dtype=np.uint8)
+            rotated = AutoTrackAlgorithms._rotate_image_expanded(pattern, angle)
+            height, width = rotated.shape
+            top = 90 - (height // 2)
+            left = 90 - (width // 2)
+            frame[top:top + height, left:left + width] = rotated
+            return frame
+
+        frames = [make_frame(angle) for angle in expected_angles]
+
+        class SignalSink:
+            def emit(self, *args, **kwargs):
+                pass
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=181, ImHeight=181, CFA='Mono', RealBPP=8,
+                ImageCount=len(frames), FirstImageNo=0,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(), image_tools=ImageTools(),
+            abort_autotrack=False, update_progress=SignalSink(),
+            update_status_text=SignalSink(), track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Full-turn target',
+            'points': np.array([[90.0, 90.0]]), 'frames': np.array([0]),
+            'scores': np.array([1.0]), 'angles': np.array([160.0]),
+            't_points': np.array([[90.0, 90.0]]), 't_frames': np.array([0]),
+            't_angles': np.array([160.0]), 'anchor_frame': 0,
+            'search_area_enable': True, 'search_area': (171, 171),
+            'tpl_rng': (51, 51), 'acceptable_score': 0.4,
+            'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+            'update_template_enable': False, 'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_allowed': True, 'rotation_range': 180.0,
+            'rotation_step': 2.0, 'edge_weight': 0.6,
+            'edge_threshold': 0.30, 'smart_frames': True,
+            'smart_miss_limit': 3, 'template_offset': (0.0, 0.0),
+            'adjacent_confidence_weight': 0.65,
+        }
+
+        result = AutoTrackTool(vm).track(1, len(frames) - 1, track)
+
+        self.assertEqual(result['frames'].tolist(), [0, 1, 2, 3])
+        for actual, expected in zip(result['angles'], expected_angles):
+            self.assertAlmostEqual(actual, expected, delta=3.0)
+        self.assertGreater(result['angles'][-1], 180.0)
+
     def test_smart_tracking_recovers_after_one_unmatchable_frame(self):
         frames = [np.full((61, 61), 40, dtype=np.uint8) for _ in range(3)]
 
@@ -240,9 +306,29 @@ class HybridAutoTrackTest(unittest.TestCase):
             'adjacent_confidence_weight': 0.65,
         }
 
-        result = AutoTrackTool(vm).track(1, 2, track)
+        matcher_templates = []
+        real_matcher = AutoTrackAlgorithms.hybrid_pattern_matcher
+
+        def record_matcher_template(*args, **kwargs):
+            matcher_templates.append(np.array(kwargs['tpl_img'], copy=True))
+            return real_matcher(*args, **kwargs)
+
+        with patch.object(
+            AutoTrackAlgorithms,
+            'hybrid_pattern_matcher',
+            side_effect=record_matcher_template,
+        ):
+            result = AutoTrackTool(vm).track(1, 2, track)
         frame_two = result['confidence_components'][2]
 
+        # There are three matcher calls per frame: pose from the setup model,
+        # then adjacent/setup confidence diagnostics. The primary model for
+        # both frames must be the same immutable setup-frame patch.
+        np.testing.assert_array_equal(matcher_templates[0], matcher_templates[3])
+        self.assertGreater(
+            np.mean(np.abs(matcher_templates[4] - matcher_templates[3])),
+            1.0,
+        )
         self.assertEqual(frame_two['reference_frame'], 1)
         self.assertEqual(frame_two['setup_frame'], 0)
         self.assertGreater(frame_two['adjacent'], frame_two['setup'])

@@ -15,6 +15,12 @@ geometry-aware workflow described here.
 The setup frame, exact point, reinforcement patch, and initial angle remain the
 global reference for that tracking pass.
 
+The reinforcement patch itself is immutable after setup: its pixels, width,
+height, and point-to-region offset are stored in level object-local coordinates.
+Processing solves only its pose `(X, Y, angle)`. The purple rectangle and edges
+are then transformed into camera coordinates for the main viewport, while the
+top-right template viewer applies the inverse angle so the object stays level.
+
 ## Processing order
 
 Smart processing starts immediately after the setup frame and moves forward to
@@ -23,17 +29,28 @@ to the beginning. Each pass uses the nearest successfully accepted frame in its
 own direction as the adjacent reference. This avoids jumping across a failed or
 unprocessed frame while still allowing the tracker to grow outward naturally.
 
+Rotation is enabled with a ±180° range by default. Adjacent frames first search
+near the preceding pose for speed and continuity; a weak local result triggers
+a full-range recovery search. Angles are accumulated rather than wrapped at
+180°, so a physical turn can continue through 190°, 270°, 360°, and beyond.
+Rectangular templates rotate on an expanded masked canvas during matching, so
+the reference geometry is not clipped at 90°.
+
 ## Confidence score
 
-For candidate frame `t`, two complete Hybrid matches are calculated:
+For candidate frame `t`, pose is solved against the frozen setup-frame model.
+The preceding accepted frame supplies the search center and angle continuity,
+but never replaces that model. After pose is found, two confidence comparisons
+are calculated on level object-local patches:
 
 - `S_adjacent`: candidate reinforcement geometry versus the nearest accepted
   neighboring frame in the processing direction.
 - `S_setup`: the same candidate geometry versus the original setup frame.
 
-Each match already incorporates normalized intensity correlation, edge overlap,
-edge density/saturation, peak uniqueness, motion continuity, and any configured
-rotation search. The default combined score is a weighted geometric mean:
+Each comparison incorporates normalized intensity correlation, edge overlap,
+edge density/saturation, and peak uniqueness. The primary pose search also
+incorporates motion and angular continuity. The default combined score is a
+weighted geometric mean:
 
 ```text
 confidence = S_adjacent^0.65 × S_setup^0.35
@@ -62,6 +79,8 @@ changing their requested size. The matcher receives the adjusted crop origin,
 so reported X/Y coordinates remain in the full Cine coordinate system. An
 unreadable or mathematically degenerate frame counts as a miss instead of
 aborting the pass immediately; the same consecutive-miss limit applies.
+When rotation is enabled, the search rectangle is based on the template's
+diagonal so the unchanged local rectangle fits at every orientation.
 
 ## Tuning and validation
 

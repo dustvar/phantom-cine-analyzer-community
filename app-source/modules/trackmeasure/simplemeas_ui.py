@@ -830,7 +830,7 @@ class AutoTrackDialog(QDialog):
         self.rotation_range.setRange(0.0, 180.0)
         self.rotation_range.setSingleStep(1.0)
         self.rotation_range.setSuffix('°')
-        self.rotation_range.setValue(15.0)
+        self.rotation_range.setValue(180.0)
         self.rotation_step_label = QLabel('Rotation Step')
         self.rotation_step = QDoubleSpinBox()
         self.rotation_step.setRange(0.25, 15.0)
@@ -976,7 +976,7 @@ class AutoTrackDialog(QDialog):
     def refresh_params(self, start=0, end=0, search_area=(0,0), tpl_rng=(0,0), subpixel_size='1.0', subpixel_interp='Cubic',
                        frames_enable=False, search_area_enable=True, tpl_rng_enable=True, update_template_enable=True, 
                        acceptable_score = 0.8, tpl_score = 0.9, name='',
-                       tracking_method=HYBRID_TRACKING_METHOD, rotation_range=15.0,
+                       tracking_method=HYBRID_TRACKING_METHOD, rotation_range=180.0,
                        rotation_step=2.0, edge_weight=0.6):
         self.start_frame.setValue(start)
         self.end_frame.setValue(end)
@@ -997,7 +997,9 @@ class AutoTrackDialog(QDialog):
         self.frames_enable.setChecked(frames_enable)
         self.sa_enable.setChecked(search_area_enable)
         self.tpl_enable.setChecked(tpl_rng_enable)
-        self.update_template_enable.setChecked(update_template_enable)
+        self.update_template_enable.setChecked(
+            update_template_enable if tracking_method != HYBRID_TRACKING_METHOD else False
+        )
         self.set_roi_ranges((self.active_metadata.ImWidth, self.active_metadata.ImHeight)) # redundant?
         self.setWindowTitle(f"AutoTrack Configuration ({name})")
 
@@ -1067,6 +1069,13 @@ class AutoTrackDialog(QDialog):
 
     def on_tracking_method_changed(self, method):
         hybrid_enabled = method == HYBRID_TRACKING_METHOD
+        if hybrid_enabled:
+            self.update_template_enable.setChecked(False)
+        self.update_template_enable.setEnabled(not hybrid_enabled)
+        self.update_template_enable.setToolTip(
+            'Hybrid keeps the setup-frame geometry fixed; only X, Y, and angle change.'
+            if hybrid_enabled else ''
+        )
         self.rotation_range.setEnabled(hybrid_enabled)
         self.rotation_range_label.setEnabled(hybrid_enabled)
         self.rotation_step.setEnabled(hybrid_enabled)
@@ -2146,7 +2155,7 @@ class MainWindow(QWidget):
         self.hybrid_rotation_range.setRange(0.0, 180.0)
         self.hybrid_rotation_range.setSingleStep(1.0)
         self.hybrid_rotation_range.setSuffix('°')
-        self.hybrid_rotation_range.setValue(15.0)
+        self.hybrid_rotation_range.setValue(180.0)
         hybrid_advanced_form.addRow('Rotation Range', self.hybrid_rotation_range)
         self.hybrid_rotation_step = QDoubleSpinBox()
         self.hybrid_rotation_step.setRange(0.25, 15.0)
@@ -2184,7 +2193,11 @@ class MainWindow(QWidget):
         self.hybrid_miss_limit.setValue(3)
         hybrid_advanced_form.addRow('Low-score Frames', self.hybrid_miss_limit)
         self.hybrid_update_template = QCheckBox('Update template as appearance changes')
-        self.hybrid_update_template.setChecked(True)
+        self.hybrid_update_template.setChecked(False)
+        self.hybrid_update_template.setEnabled(False)
+        self.hybrid_update_template.setToolTip(
+            'Hybrid keeps the setup-frame geometry fixed; only X, Y, and angle change.'
+        )
         hybrid_advanced_form.addRow(self.hybrid_update_template)
         self.hybrid_advanced_panel.setVisible(False)
         hybrid_settings_layout.addWidget(self.hybrid_advanced_panel)
@@ -2767,6 +2780,20 @@ class MainWindow(QWidget):
         value = max(minimum, int(round(value)))
         return value if value % 2 else value + 1
 
+    def _hybrid_search_dimensions(self, template_size, multiplier, rotation_allowed=True):
+        """Size the axis-aligned search window for the unchanged rotating ROI."""
+        width = float(template_size[0])
+        height = float(template_size[1])
+        if rotation_allowed:
+            diagonal = math.ceil(math.hypot(width, height))
+            width = height = diagonal
+        max_width = int(self.vm.cine_handler.metadata.ImWidth) - 1
+        max_height = int(self.vm.cine_handler.metadata.ImHeight) - 1
+        return (
+            self._odd_dimension(min(max_width, width * float(multiplier))),
+            self._odd_dimension(min(max_height, height * float(multiplier))),
+        )
+
     @staticmethod
     def _rotate_tracking_offset(offset, angle_deg):
         dx, dy = float(offset[0]), float(offset[1])
@@ -2802,19 +2829,18 @@ class MainWindow(QWidget):
             np.clip(min(image_width, image_height) * 0.08, 31, 101)
         )
         search_multiplier = 3.0
-        max_width = image_width - 1
-        max_height = image_height - 1
         track.update({
             'tracking_method': HYBRID_TRACKING_METHOD,
             'tpl_rng': (default_size, default_size),
-            'search_area': (
-                self._odd_dimension(min(max_width, default_size * search_multiplier)),
-                self._odd_dimension(min(max_height, default_size * search_multiplier)),
+            'search_area': self._hybrid_search_dimensions(
+                (default_size, default_size), search_multiplier, True
             ),
             'template_angle': 0.0,
             'template_offset': (0.0, 0.0),
             'rotation_allowed': True,
+            'rotation_range': 180.0,
             'edge_threshold': 0.30,
+            'update_template_enable': False,
             'smart_frames': True,
             'smart_miss_limit': 3,
             'search_area_multiplier': search_multiplier,
@@ -2886,11 +2912,8 @@ class MainWindow(QWidget):
         track['tpl_rng'] = template_size
         track['template_angle'] = angle
         multiplier = float(track.get('search_area_multiplier', 3.0))
-        max_width = int(self.vm.cine_handler.metadata.ImWidth) - 1
-        max_height = int(self.vm.cine_handler.metadata.ImHeight) - 1
-        track['search_area'] = (
-            self._odd_dimension(min(max_width, template_size[0] * multiplier)),
-            self._odd_dimension(min(max_height, template_size[1] * multiplier)),
+        track['search_area'] = self._hybrid_search_dimensions(
+            template_size, multiplier, track.get('rotation_allowed', True)
         )
         self.vm.new_track_data.emit(self.vm.track_data, object_id)
         # Redraw after the current graphics-item mouse event returns; clearing a
@@ -2927,7 +2950,7 @@ class MainWindow(QWidget):
         self.hybrid_match_threshold.setValue(float(track.get('acceptable_score', 0.60)))
         self.hybrid_smart_frames.setChecked(bool(track.get('smart_frames', True)))
         self.hybrid_rotation_allowed.setChecked(bool(track.get('rotation_allowed', True)))
-        self.hybrid_rotation_range.setValue(float(track.get('rotation_range', 15.0)))
+        self.hybrid_rotation_range.setValue(float(track.get('rotation_range', 180.0)))
         self.hybrid_rotation_step.setValue(float(track.get('rotation_step', 2.0)))
         self.hybrid_edge_weight.setValue(float(track.get('edge_weight', 0.60)))
         self.hybrid_neighbor_weight.setValue(float(
@@ -2936,7 +2959,7 @@ class MainWindow(QWidget):
         self.hybrid_edge_threshold.setValue(float(track.get('edge_threshold', 0.30)))
         self.hybrid_search_multiplier.setValue(float(track.get('search_area_multiplier', 3.0)))
         self.hybrid_miss_limit.setValue(int(track.get('smart_miss_limit', 3)))
-        self.hybrid_update_template.setChecked(bool(track.get('update_template_enable', True)))
+        self.hybrid_update_template.setChecked(False)
         del blockers
         rotation_enabled = self.hybrid_rotation_allowed.isChecked()
         self.hybrid_rotation_range.setEnabled(rotation_enabled)
@@ -2959,15 +2982,14 @@ class MainWindow(QWidget):
             'edge_threshold': self.hybrid_edge_threshold.value(),
             'search_area_multiplier': self.hybrid_search_multiplier.value(),
             'smart_miss_limit': self.hybrid_miss_limit.value(),
-            'update_template_enable': self.hybrid_update_template.isChecked(),
+            'update_template_enable': False,
         })
         self.hybrid_rotation_range.setEnabled(track['rotation_allowed'])
         self.hybrid_rotation_step.setEnabled(track['rotation_allowed'])
-        max_width = int(self.vm.cine_handler.metadata.ImWidth) - 1
-        max_height = int(self.vm.cine_handler.metadata.ImHeight) - 1
-        track['search_area'] = (
-            self._odd_dimension(min(max_width, track['tpl_rng'][0] * track['search_area_multiplier'])),
-            self._odd_dimension(min(max_height, track['tpl_rng'][1] * track['search_area_multiplier'])),
+        track['search_area'] = self._hybrid_search_dimensions(
+            track['tpl_rng'],
+            track['search_area_multiplier'],
+            track['rotation_allowed'],
         )
         self.vm.redraw_cb()
 
@@ -3203,14 +3225,42 @@ class MainWindow(QWidget):
             return
         graph.scene().clear()
         is_main_graph = graph in [pane.graph for pane in self.workspace_panes]
-        if not is_main_graph and current_point is not None and current_point[0] is not None and current_point[1] is not None:
+        preview_angle = 0.0
+        preview_point = current_point
+        if isinstance(current_point, dict):
+            preview_angle = float(current_point.get('angle', 0.0))
+            preview_point = current_point.get('point')
+        if (
+            not is_main_graph
+            and preview_point is not None
+            and preview_point[0] is not None
+            and preview_point[1] is not None
+        ):
             zoom_size = int(MINIGRAPH_SIZE / self.zoom_levels[self.zoom_slider.value()])
-            current_point = (int(current_point[0]), int(current_point[1]))
-            border_sz = zoom_size // 4
+            current_point = (int(preview_point[0]), int(preview_point[1]))
             graph_size = (MINIGRAPH_SIZE, MINIGRAPH_SIZE)
 
-            img_border = cv2.copyMakeBorder(img, border_sz, border_sz, border_sz, border_sz, cv2.BORDER_CONSTANT, None, value=[0,0,0])
-            img = img_border[current_point[1]: current_point[1] + zoom_size//2, current_point[0]: current_point[0] + zoom_size//2]
+            if abs(preview_angle) > 1e-9:
+                # Level the Hybrid object in its local coordinate system. The
+                # main viewport remains in camera coordinates; only the small
+                # template viewer rotates with the tracked pose.
+                crop_size = max(1, zoom_size // 2)
+                img = AutoTrackAlgorithms.extract_oriented_patch(
+                    img,
+                    current_point,
+                    (crop_size, crop_size),
+                    -preview_angle,
+                )
+            else:
+                border_sz = zoom_size // 4
+                img_border = cv2.copyMakeBorder(
+                    img, border_sz, border_sz, border_sz, border_sz,
+                    cv2.BORDER_CONSTANT, None, value=[0, 0, 0]
+                )
+                img = img_border[
+                    current_point[1]: current_point[1] + zoom_size // 2,
+                    current_point[0]: current_point[0] + zoom_size // 2,
+                ]
             if img.size != 0:
                 img = cv2.resize(img, graph_size, interpolation=cv2.INTER_CUBIC)
 
@@ -3335,7 +3385,7 @@ class MainWindow(QWidget):
                 image,
                 center,
                 template_size,
-                angle,
+                -angle,
             )
             if patch.ndim == 3:
                 patch = cv2.cvtColor(patch, cv2.COLOR_RGB2GRAY)
@@ -3747,7 +3797,7 @@ class MainWindow(QWidget):
         if self.vm.active_object in self.vm.track_data:
             t = self.vm.track_data.get(self.vm.active_object)
             t.setdefault('tracking_method', HYBRID_TRACKING_METHOD)
-            t.setdefault('rotation_range', 15.0)
+            t.setdefault('rotation_range', 180.0)
             t.setdefault('rotation_step', 2.0)
             t.setdefault('edge_weight', 0.6)
             t.setdefault('adjacent_confidence_weight', 0.65)

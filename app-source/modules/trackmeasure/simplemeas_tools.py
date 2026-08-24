@@ -161,8 +161,8 @@ class TrackTool(BaseTool):
                      'end': int(self.vm.cine_handler.metadata.FirstImageNo + self.vm.cine_handler.metadata.ImageCount - 1), 
                      'search_area':(101,101), 'tpl_rng': (31,31), 'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
                      'frames_enable': True, 'search_area_enable': True, 'tpl_rng_enable':True, 
-                     'update_template_enable': True, 'acceptable_score': 0.6, 'tpl_score': 0.8,
-                     'tracking_method': tracking_method, 'rotation_range': 15.0,
+                     'update_template_enable': not is_hybrid, 'acceptable_score': 0.6, 'tpl_score': 0.8,
+                     'tracking_method': tracking_method, 'rotation_range': 180.0,
                      'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
                      'rotation_allowed': is_hybrid, 'smart_frames': is_hybrid,
                      'smart_miss_limit': 3, 'search_area_multiplier': 3.0,
@@ -398,7 +398,7 @@ class AutoTrackTool(TrackTool):
         update_tpl = template['update_template_enable']
         tpl_score = template['tpl_score']
         tracking_method = template.get('tracking_method', HYBRID_TRACKING_METHOD)
-        rotation_range = template.get('rotation_range', 15.0)
+        rotation_range = template.get('rotation_range', 180.0)
         rotation_step = template.get('rotation_step', 2.0)
         edge_weight = template.get('edge_weight', 0.6)
         edge_threshold = template.get('edge_threshold', None)
@@ -441,7 +441,7 @@ class AutoTrackTool(TrackTool):
                 np.array(anchor_img, dtype=np.float32), cfa, bpp, force_mono=1
             )
             setup_patch = AutoTrackAlgorithms.extract_oriented_patch(
-                anchor_img, anchor_center, tpl_rng, anchor_angle
+                anchor_img, anchor_center, tpl_rng, -anchor_angle
             )
             template.setdefault('confidence_components', {})
 
@@ -553,11 +553,11 @@ class AutoTrackTool(TrackTool):
                 tpl_img = self.vm.cine_handler.get_img(t_frame)
                 tpl_img = self.vm.image_tools.debayer(np.array(tpl_img, dtype=np.float32), cfa, bpp, force_mono=1)
                 if tracking_method == HYBRID_TRACKING_METHOD:
-                    tpl_img = AutoTrackAlgorithms.extract_oriented_patch(
+                    adjacent_patch = AutoTrackAlgorithms.extract_oriented_patch(
                         tpl_img,
                         tpl_center,
                         tpl_rng,
-                        reference_angle,
+                        -reference_angle,
                     )
                 else:
                     # Preserve the original PCA Classic template crop exactly.
@@ -565,8 +565,12 @@ class AutoTrackTool(TrackTool):
 
                 # run cross correlation to get expected location
                 if tracking_method == HYBRID_TRACKING_METHOD:
+                    # Solve pose from the immutable setup-frame model. The
+                    # preceding accepted frame supplies only the search center,
+                    # angle continuity, and adjacent confidence diagnostic; it
+                    # never replaces the reference geometry.
                     data = AutoTrackAlgorithms.hybrid_pattern_matcher(
-                                            tpl_img=tpl_img,
+                                            tpl_img=setup_patch,
                                             sa_img=sa_img,
                                             sa_center=tuple(sa_center),
                                             sa_rng=frame_sa_rng,
@@ -575,14 +579,25 @@ class AutoTrackTool(TrackTool):
                                             rotation_step=rotation_step,
                                             edge_weight=edge_weight,
                                             edge_threshold=edge_threshold)
-                    adjacent_score = float(data.confid_val_ij)
                     candidate_center = (float(data.x_pos), float(data.y_pos))
                     candidate_patch = AutoTrackAlgorithms.extract_oriented_patch(
                         current_img,
                         candidate_center,
                         tpl_rng,
-                        data.angle_deg,
+                        -data.angle_deg,
                     )
+                    adjacent_data = AutoTrackAlgorithms.hybrid_pattern_matcher(
+                        tpl_img=adjacent_patch,
+                        sa_img=candidate_patch,
+                        sa_center=((tpl_rng[0] - 1) / 2.0, (tpl_rng[1] - 1) / 2.0),
+                        sa_rng=tpl_rng,
+                        reference_angle=0.0,
+                        rotation_range=0.0,
+                        rotation_step=rotation_step,
+                        edge_weight=edge_weight,
+                        edge_threshold=edge_threshold,
+                    )
+                    adjacent_score = float(adjacent_data.confid_val_ij)
                     setup_data = AutoTrackAlgorithms.hybrid_pattern_matcher(
                         tpl_img=setup_patch,
                         sa_img=candidate_patch,

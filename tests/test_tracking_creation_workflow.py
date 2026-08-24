@@ -29,6 +29,7 @@ from simplemeas_tools import (
     TrackTool,
 )
 import simplemeas_ui
+import simplemeas_vm
 
 
 class SignalSink:
@@ -75,8 +76,22 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['tracking_method'], HYBRID_TRACKING_METHOD)
         self.assertTrue(track['smart_frames'])
         self.assertTrue(track['rotation_allowed'])
+        self.assertEqual(track['rotation_range'], 180.0)
         self.assertEqual(track['edge_threshold'], 0.30)
         self.assertEqual(track['scores'][0], 'N/A')
+
+    def test_hybrid_advanced_dialog_keeps_setup_geometry_frozen(self):
+        dialog = simplemeas_ui.AutoTrackDialog()
+        dialog.update_template_enable.setChecked(True)
+
+        dialog.on_tracking_method_changed(HYBRID_TRACKING_METHOD)
+
+        self.assertFalse(dialog.update_template_enable.isChecked())
+        self.assertFalse(dialog.update_template_enable.isEnabled())
+        self.assertIn('setup-frame geometry fixed', dialog.update_template_enable.toolTip())
+
+        dialog.on_tracking_method_changed(CLASSIC_TRACKING_METHOD)
+        self.assertTrue(dialog.update_template_enable.isEnabled())
 
     def test_hybrid_region_exposes_scale_and_rotation_handles(self):
         commits = []
@@ -119,6 +134,9 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             ),
             _odd_dimension=simplemeas_ui.MainWindow._odd_dimension,
             _rotate_tracking_offset=simplemeas_ui.MainWindow._rotate_tracking_offset,
+            _hybrid_search_dimensions=lambda size, multiplier, rotation_allowed=True: (
+                157, 157
+            ),
         )
         item = simplemeas_ui.HybridRegionItem(
             QRectF(0, 0, 41, 31), (62, 58), 0.0, 0, dummy, editable=True
@@ -130,6 +148,44 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['points'].tolist(), [[40.0, 50.0]])
         self.assertEqual(track['t_points'].tolist(), [[40.0, 50.0]])
         self.assertEqual(tuple(track['template_offset']), (22.0, 8.0))
+
+    def test_rotating_hybrid_uses_diagonal_sized_search_window(self):
+        dummy = SimpleNamespace(
+            vm=SimpleNamespace(cine_handler=SimpleNamespace(metadata=SimpleNamespace(
+                ImWidth=200, ImHeight=160,
+            ))),
+            _odd_dimension=simplemeas_ui.MainWindow._odd_dimension,
+        )
+
+        size = simplemeas_ui.MainWindow._hybrid_search_dimensions(
+            dummy, (41, 31), 3.0, True
+        )
+
+        self.assertEqual(size, (157, 157))
+
+    def test_hybrid_template_view_receives_pose_for_level_preview(self):
+        emitted = []
+        dummy = SimpleNamespace(
+            active_object=None,
+            active_frame=3,
+            _template='qt_template_img',
+            track_data={0: {
+                'tracking_method': HYBRID_TRACKING_METHOD,
+                'frames': np.array([1, 3]),
+                'points': np.array([[20.0, 25.0], [42.0, 47.0]]),
+                'angles': np.array([12.0, 73.5]),
+            }},
+            _draw_frame=lambda graph, **kwargs: emitted.append((graph, kwargs)),
+        )
+
+        simplemeas_vm.SimpleMeasVM._refresh_template(dummy, 0)
+
+        self.assertEqual(emitted[0][0], 'qt_template_img')
+        self.assertEqual(emitted[0][1]['index'], 3)
+        self.assertEqual(
+            emitted[0][1]['current_point'],
+            {'point': (42, 47), 'angle': 73.5},
+        )
 
     def test_canvas_routes_second_hybrid_click_to_exact_point_creation(self):
         created = []

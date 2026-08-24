@@ -62,6 +62,20 @@ Modified: 2026-08-24
   anchor unscored instead of reporting a meaningless perfect self-match. It
   records X, Y, confidence and angle for every accepted frame while retaining
   the Classic intensity-only method as an option.
+- Fixed Hybrid pose accumulation so the reinforcement geometry is stored once
+  in level, object-local coordinates and remains rigid throughout processing.
+  Each accepted frame now moves and rotates that unchanged region in X, Y and
+  unwrapped angle; the separately selected reporting point follows the same
+  rigid transform instead of remaining fixed in camera coordinates.
+- Hybrid rotation is enabled with a ±180° range by default. The matcher first
+  searches near the preceding frame's angle and falls back to the full range
+  when the local lock is weak. Rotated rectangular templates use an expanded,
+  masked matching canvas so their corners are not clipped during full turns.
+  The axis-aligned search window is sized from the template diagonal.
+- The top-right Hybrid template viewer now counter-rotates by the tracked pose,
+  keeping the object level while the main Cine viewport remains in camera
+  coordinates. The purple edge preview is generated in the same local frame
+  before being transformed with the reinforcement region.
 - The main Cine viewport supports cursor-centered scroll-wheel zoom from 1x to
   20x and preserves that zoom while frames redraw.
 - Added per-object Rotation Range, Rotation Step and Edge Weight controls, plus

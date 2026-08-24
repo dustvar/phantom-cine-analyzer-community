@@ -712,7 +712,7 @@ class SimpleMeasVM(QObject):
             if row in self.track_data:
                 self.active_object = row
                 self.track_fig_calculations()
-                self._draw_frame(self._template, current_point=self.track_data[self.active_object]['points'][0])
+                self._refresh_template(self.active_object)
 
     def update_autotrack_params_cb(self, parameter, value):
         if self.active_object is not None:
@@ -883,15 +883,24 @@ class SimpleMeasVM(QObject):
     def _refresh_template(self, template_id):
         if template_id != None:
             self.active_object = template_id
+            template = self.track_data[self.active_object]
             pt = None
-            arr = np.argwhere(self.track_data[self.active_object]['frames']<=self.active_frame)[:,0]
+            arr = np.argwhere(template['frames'] <= self.active_frame)[:, 0]
             if arr.size > 0: 
                 index = np.max(arr)
-                pt = tuple(self.track_data[self.active_object]['points'][index])
+                pt = tuple(template['points'][index])
                 pt = (int(pt[0]), int(pt[1]))
-                fr = self.track_data[self.active_object]['frames'][index]
+                fr = template['frames'][index]
             if pt is not None:
-                self._draw_frame(self._template, index=fr, current_point=pt)
+                preview_point = pt
+                if template.get('tracking_method') == HYBRID_TRACKING_METHOD:
+                    angle = 0.0
+                    if 'angles' in template and index < len(template['angles']):
+                        angle = float(template['angles'][index])
+                    preview_point = {'point': pt, 'angle': angle}
+                self._draw_frame(
+                    self._template, index=fr, current_point=preview_point
+                )
         
     def _draw_frame(self, graph=None, index=None, current_point=None):
         if index is None: 

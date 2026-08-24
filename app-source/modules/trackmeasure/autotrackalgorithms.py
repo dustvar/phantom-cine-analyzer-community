@@ -107,6 +107,51 @@ class AutoTrackAlgorithms:
         )
 
     @staticmethod
+    def _rotate_image_expanded(
+        image, angle_deg, interpolation=cv2.INTER_LINEAR, return_mask=False
+    ):
+        """Rotate a matching template without clipping its corners."""
+        arr = np.asarray(image)
+        height, width = arr.shape[:2]
+        center = ((width - 1) / 2.0, (height - 1) / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, float(angle_deg), 1.0)
+        cosine = abs(float(matrix[0, 0]))
+        sine = abs(float(matrix[0, 1]))
+        rotated_width = max(
+            1, int(math.ceil((height * sine + width * cosine) - 1e-9))
+        )
+        rotated_height = max(
+            1, int(math.ceil((height * cosine + width * sine) - 1e-9))
+        )
+        matrix[0, 2] += ((rotated_width - 1) / 2.0) - center[0]
+        matrix[1, 2] += ((rotated_height - 1) / 2.0) - center[1]
+
+        border_pixels = np.concatenate((
+            arr[0].reshape(-1), arr[-1].reshape(-1),
+            arr[:, 0].reshape(-1), arr[:, -1].reshape(-1),
+        ))
+        border_value = float(np.median(border_pixels)) if border_pixels.size else 0.0
+        rotated = cv2.warpAffine(
+            arr,
+            matrix,
+            (rotated_width, rotated_height),
+            flags=interpolation,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=border_value,
+        )
+        if not return_mask:
+            return rotated
+        valid_mask = cv2.warpAffine(
+            np.full((height, width), 255, dtype=np.uint8),
+            matrix,
+            (rotated_width, rotated_height),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        return rotated, valid_mask
+
+    @staticmethod
     def _subpixel_peak(score_map, row, col):
         """Quadratic peak refinement, limited to half a pixel per axis."""
         def offset(before, center, after):
@@ -175,7 +220,7 @@ class AutoTrackAlgorithms:
         sa_center: tuple,
         sa_rng: tuple,
         reference_angle: float = 0.0,
-        rotation_range: float = 15.0,
+        rotation_range: float = 180.0,
         rotation_step: float = 2.0,
         edge_weight: float = 0.6,
         edge_threshold: float = None,
@@ -224,10 +269,27 @@ class AutoTrackAlgorithms:
                 return max(0.12, 0.20 - 0.08 * ((density - 0.45) / 0.55))
 
             def evaluate(relative_angle):
-                rotated_tpl = AutoTrackAlgorithms._rotate_image(tpl_u8, relative_angle)
-                rotated_edges_raw = AutoTrackAlgorithms._edge_image(
-                    rotated_tpl, threshold=edge_threshold, dilate=False
+                # The reinforcement patch is stored level in object-local
+                # coordinates. Search absolute pose around the prior frame's
+                # angle so the returned angle accumulates through full turns.
+                absolute_angle = float(reference_angle) + float(relative_angle)
+                rotated_tpl, rotated_mask = AutoTrackAlgorithms._rotate_image_expanded(
+                    tpl_u8, absolute_angle, return_mask=True
                 )
+                if (
+                    rotated_tpl.shape[0] > sa_u8.shape[0]
+                    or rotated_tpl.shape[1] > sa_u8.shape[1]
+                ):
+                    return None
+                local_edges_raw = AutoTrackAlgorithms._edge_image(
+                    tpl_u8, threshold=edge_threshold, dilate=False
+                )
+                rotated_edges_raw = AutoTrackAlgorithms._rotate_image_expanded(
+                    local_edges_raw,
+                    absolute_angle,
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                rotated_edges_raw[rotated_mask == 0] = 0
                 rotated_edges = cv2.dilate(
                     rotated_edges_raw,
                     np.ones((3, 3), dtype=np.uint8),
@@ -236,12 +298,22 @@ class AutoTrackAlgorithms:
                 tpl_float = rotated_tpl.astype(np.float32) / 255.0
                 tpl_edges = rotated_edges.astype(np.float32) / 255.0
 
-                intensity_map = cv2.matchTemplate(sa_float, tpl_float, cv2.TM_CCOEFF_NORMED)
+                intensity_map = cv2.matchTemplate(
+                    sa_float,
+                    tpl_float,
+                    cv2.TM_CCOEFF_NORMED,
+                    mask=rotated_mask,
+                )
                 intensity_map = np.nan_to_num(intensity_map, nan=-1.0, posinf=-1.0, neginf=-1.0)
                 intensity_unit = np.clip((intensity_map + 1.0) / 2.0, 0.0, 1.0)
 
                 if np.count_nonzero(rotated_edges) >= 8 and np.count_nonzero(sa_edges) >= 8:
-                    edge_map = cv2.matchTemplate(sa_edges, tpl_edges, cv2.TM_CCORR_NORMED)
+                    edge_map = cv2.matchTemplate(
+                        sa_edges,
+                        tpl_edges,
+                        cv2.TM_CCORR_NORMED,
+                        mask=rotated_mask,
+                    )
                     edge_map = np.nan_to_num(edge_map, nan=0.0, posinf=0.0, neginf=0.0)
                     edge_map = np.clip(edge_map, 0.0, 1.0)
                 else:
@@ -254,7 +326,8 @@ class AutoTrackAlgorithms:
 
                 candidate_edges = sa_edges_raw[row:row + tpl_h, col:col + tpl_w]
                 template_mask = rotated_edges_raw > 0
-                candidate_mask = candidate_edges > 0
+                valid_template_mask = rotated_mask > 0
+                candidate_mask = (candidate_edges > 0) & valid_template_mask
                 template_count = int(np.count_nonzero(template_mask))
                 candidate_count = int(np.count_nonzero(candidate_mask))
                 if template_count and candidate_count:
@@ -278,8 +351,9 @@ class AutoTrackAlgorithms:
                 else:
                     edge_f1 = 0.0
 
-                template_density = template_count / float(max(1, template_mask.size))
-                candidate_density = candidate_count / float(max(1, candidate_mask.size))
+                valid_count = int(np.count_nonzero(valid_template_mask))
+                template_density = template_count / float(max(1, valid_count))
+                candidate_density = candidate_count / float(max(1, valid_count))
                 edge_density = max(template_density, candidate_density)
                 density_quality = edge_density_quality(edge_density)
 
@@ -315,17 +389,25 @@ class AutoTrackAlgorithms:
                 distance = float(np.linalg.norm(candidate_center - search_center))
                 continuity_scale = max(1.0, 0.30 * min(sa_u8.shape[:2]))
                 continuity = 0.85 + 0.15 * math.exp(-((distance / continuity_scale) ** 2))
+                rotation_scale = max(1.0, min(30.0, rotation_range or 1.0))
+                rotation_continuity = 0.98 + 0.02 * math.exp(
+                    -((float(relative_angle) / rotation_scale) ** 2)
+                )
                 score = (
                     raw_similarity
                     * density_quality
                     * (0.78 + 0.22 * peak_uniqueness)
                     * continuity
+                    * rotation_continuity
                 )
                 return {
                     'relative_angle': float(relative_angle),
+                    'absolute_angle': absolute_angle,
                     'score': float(score),
                     'row': int(row),
                     'col': int(col),
+                    'template_height': int(tpl_h),
+                    'template_width': int(tpl_w),
                     'combined': combined,
                     'intensity': intensity_score,
                     'edge': edge_correlation,
@@ -334,34 +416,66 @@ class AutoTrackAlgorithms:
                     'edge_density': float(edge_density),
                     'edge_f1': float(edge_f1),
                     'continuity': float(continuity),
+                    'rotation_continuity': float(rotation_continuity),
                 }
 
+            def scan_angles(angles):
+                nonlocal best
+                for relative_angle in angles:
+                    candidate = evaluate(relative_angle)
+                    if candidate is None:
+                        continue
+                    if best is None or candidate['score'] > best['score']:
+                        best = candidate
+
+            active_coarse_step = rotation_step
             if rotation_range == 0:
-                coarse_angles = [0.0]
+                scan_angles([0.0])
+            elif rotation_range > 30.0:
+                # Adjacent Cine frames normally rotate only a few degrees.
+                # Search close to the prior pose first, then retain the full
+                # ±180° recovery path for abrupt motion or a weak local lock.
+                local_range = min(20.0, rotation_range)
+                scan_angles(np.arange(
+                    -local_range,
+                    local_range + (rotation_step * 0.5),
+                    rotation_step,
+                ))
+                if best is None or best['score'] < 0.72:
+                    active_coarse_step = max(rotation_step, 4.0)
+                    scan_angles(np.arange(
+                        -rotation_range,
+                        rotation_range + (active_coarse_step * 0.5),
+                        active_coarse_step,
+                    ))
             else:
-                coarse_angles = np.arange(
+                scan_angles(np.arange(
                     -rotation_range,
                     rotation_range + (rotation_step * 0.5),
                     rotation_step,
-                )
-            for relative_angle in coarse_angles:
-                candidate = evaluate(relative_angle)
-                if best is None or candidate['score'] > best['score']:
-                    best = candidate
+                ))
 
-            if rotation_range > 0 and rotation_step > 0.5:
-                fine_step = max(0.25, rotation_step / 4.0)
-                fine_start = max(-rotation_range, best['relative_angle'] - rotation_step)
-                fine_stop = min(rotation_range, best['relative_angle'] + rotation_step)
+            if best is None:
+                raise ValueError('Rotated template does not fit inside the search area')
+
+            if rotation_range > 0 and active_coarse_step > 0.5:
+                fine_step = max(0.25, active_coarse_step / 4.0)
+                fine_start = max(
+                    -rotation_range, best['relative_angle'] - active_coarse_step
+                )
+                fine_stop = min(
+                    rotation_range, best['relative_angle'] + active_coarse_step
+                )
                 for relative_angle in np.arange(fine_start, fine_stop + (fine_step * 0.5), fine_step):
                     candidate = evaluate(relative_angle)
-                    if candidate['score'] > best['score']:
+                    if candidate is not None and candidate['score'] > best['score']:
                         best = candidate
 
             dx, dy = AutoTrackAlgorithms._subpixel_peak(
                 best['combined'], best['row'], best['col']
             )
-            tpl_h, tpl_w = tpl_u8.shape[:2]
+            tpl_h = best['template_height']
+            tpl_w = best['template_width']
             sa_tl = (
                 float(sa_center[0]) - math.floor(sa_rng[0] / 2),
                 float(sa_center[1]) - math.floor(sa_rng[1] / 2),
@@ -374,7 +488,7 @@ class AutoTrackAlgorithms:
                 x_pos=float(x_pos),
                 y_pos=float(y_pos),
                 confid_val_ij=best['score'],
-                angle_deg=float(reference_angle + best['relative_angle']),
+                angle_deg=float(best['absolute_angle']),
                 intensity_score=best['intensity'],
                 edge_score=best['edge'],
                 raw_similarity=best['raw_similarity'],
