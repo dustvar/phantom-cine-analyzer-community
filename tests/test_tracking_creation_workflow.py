@@ -203,6 +203,9 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
                 return True
 
             def create_hybrid_track_at(self, point):
+                # The real callback redraws the Cine and clears this scene.
+                # This is only safe after mousePressEvent has returned.
+                graph.scene().clear()
                 created.append(point)
 
         graph = simplemeas_ui.ResizableGraph(QLabel(), Parent())
@@ -213,6 +216,8 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             graph.viewport(), simplemeas_ui.Qt.MouseButton.LeftButton,
             pos=graph.viewport().rect().center(),
         )
+        self.assertEqual(created, [])
+        self.app.processEvents()
         self.assertEqual(len(created), 1)
         graph.close()
 

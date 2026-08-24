@@ -76,6 +76,10 @@ Modified: 2026-08-24
   keeping the object level while the main Cine viewport remains in camera
   coordinates. The purple edge preview is generated in the same local frame
   before being transformed with the reinforcement region.
+- Fixed a native PySide crash when creating or editing a Hybrid reinforcement
+  region. Scene-clearing redraws are now deferred until the active graphics
+  mouse event has returned, preventing Qt from dispatching through a deleted
+  graphics-item wrapper.
 - The main Cine viewport supports cursor-centered scroll-wheel zoom from 1x to
   20x and preserves that zoom while frames redraw.
 - Added per-object Rotation Range, Rotation Step and Edge Weight controls, plus

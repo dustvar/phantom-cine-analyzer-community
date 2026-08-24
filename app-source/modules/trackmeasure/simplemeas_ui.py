@@ -387,7 +387,9 @@ class HybridTransformHandle(QGraphicsEllipseItem):
 
     def mouseReleaseEvent(self, event):
         self.owner.update_handle_drag(self.kind, event.scenePos())
-        self.owner.commit_changes()
+        # Committing redraws the scene and can delete this graphics item. Let
+        # Qt finish dispatching the release event before that redraw occurs.
+        QTimer.singleShot(0, self.owner.commit_changes)
         event.accept()
 
 
@@ -446,7 +448,9 @@ class HybridRegionItem(QGraphicsRectItem):
 
     def mouseReleaseEvent(self, event):
         super().mouseReleaseEvent(event)
-        self.commit_changes()
+        # The commit replaces scene items. Doing that inside this item's event
+        # handler can leave PySide/Shiboken holding a freed C++ wrapper.
+        QTimer.singleShot(0, self.commit_changes)
 
     def commit_changes(self):
         self.parent_window.commit_hybrid_region(self)
@@ -562,7 +566,15 @@ class ResizableGraph(QGraphicsView):
             if self.parent.is_hybrid_region_selection_active(self):
                 scene_pos = self.mapToScene(event_pos)
                 if self._within_bounds(scene_pos):
-                    self.parent.create_hybrid_track_at(scene_pos)
+                    # Hybrid creation redraws and clears the QGraphicsScene.
+                    # Defer it until this mouse event has fully returned so Qt
+                    # cannot continue dispatch through a deleted scene item.
+                    safe_scene_pos = QPointF(scene_pos)
+                    QTimer.singleShot(
+                        0,
+                        lambda point=safe_scene_pos:
+                            self.parent.create_hybrid_track_at(point),
+                    )
                     event.accept()
                     return
 
@@ -586,7 +598,12 @@ class ResizableGraph(QGraphicsView):
                 self.scene().removeItem(self._hybrid_drag_preview)
             self._hybrid_drag_start = None
             self._hybrid_drag_preview = None
-            self.parent.finish_hybrid_region_selection(self, rect)
+            safe_rect = QRectF(rect)
+            QTimer.singleShot(
+                0,
+                lambda region=safe_rect:
+                    self.parent.finish_hybrid_region_selection(self, region),
+            )
             event.accept()
             return
         QGraphicsView.mouseReleaseEvent(self, event)
