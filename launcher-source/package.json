@@ -1,0 +1,26 @@
+{
+  "name": "phantomcineanalyzer",
+  "productName": "PhantomCineAnalyzer",
+  "version": "1.1.18",
+  "description": "Phantom Cine Analyzer. High-speed video analysis and measurement.",
+  "desktop": {
+    "name": "Phantom Cine Analyzer",
+    "comment": "Phantom Cine Analyzer"
+  },
+  "main": "src/main/main.js",
+  "homepage": "https://www.phantomhighspeed.com/resourcesandsupport/phantomresources/pcasoftware",
+  "author": {
+    "name": "Vision Research",
+    "email": "support@phantomhighspeed.com"
+  },
+  "license": "SEE LICENSE IN ../LICENSE",
+  "dependencies": {
+    "del-cli": "^5.1.0",
+    "ncp": "^2.0.0",
+    "readline-sync": "^1.4.10",
+    "vscode-jsonrpc": "^8.2.1"
+  },
+  "optionalDependencies": {
+    "dmg-license": "^1.0.11"
+  }
+}

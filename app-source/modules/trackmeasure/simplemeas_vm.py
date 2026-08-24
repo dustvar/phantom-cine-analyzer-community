@@ -68,32 +68,41 @@ class SimpleMeasVM(QObject):
     trigger_time_changed = Signal(str)
     time_from_trigger_changed = Signal(str)
     request_choose_cine = Signal(str)
+    workspace_changed = Signal(object, int)
     #endregion
     
     #region ACCESSORS
     @property
     def length_units(self):
-        val = self.config.get('length_units')
-        if val is not None: self._length_units = val
+        if not getattr(self, 'workspace_contexts', []):
+            val = self.config.get('length_units')
+            if val is not None: self._length_units = val
         return self._length_units
     @length_units.setter
     def length_units(self, new_length_units):
         self.config.set('length_units', new_length_units)
         self._length_units = new_length_units
         self._area_units = f'sq-{new_length_units}'
+        if 0 <= getattr(self, 'active_cine_index', -1) < len(getattr(self, 'workspace_contexts', [])):
+            self.workspace_contexts[self.active_cine_index]['_length_units'] = new_length_units
+            self.workspace_contexts[self.active_cine_index]['_area_units'] = self._area_units
     @property
     def known_length(self):
-        val = self.config.get('known_length')
-        if val is not None: self._known_length = val
+        if not getattr(self, 'workspace_contexts', []):
+            val = self.config.get('known_length')
+            if val is not None: self._known_length = val
         return self._known_length
     @known_length.setter
     def known_length(self, new_known_length):
         self.config.set('known_length', new_known_length)
         self._known_length = new_known_length
+        if 0 <= getattr(self, 'active_cine_index', -1) < len(getattr(self, 'workspace_contexts', [])):
+            self.workspace_contexts[self.active_cine_index]['_known_length'] = new_known_length
     @property
     def image_scale(self):
-        val = self.config.get('image_scale')
-        if val is not None: self._image_scale = val
+        if not getattr(self, 'workspace_contexts', []):
+            val = self.config.get('image_scale')
+            if val is not None: self._image_scale = val
         return self._image_scale
     @image_scale.setter
     def image_scale(self, new_image_scale):
@@ -101,6 +110,8 @@ class SimpleMeasVM(QObject):
             self.config.set('image_scale', new_image_scale)
             self.cal.update_cal(1, new_image_scale)
             self._image_scale = new_image_scale
+            if 0 <= getattr(self, 'active_cine_index', -1) < len(getattr(self, 'workspace_contexts', [])):
+                self.workspace_contexts[self.active_cine_index]['_image_scale'] = new_image_scale
         except ValueError as e:
             self.update_status_text.emit(f'Error setting image scale: {e}')
             logging.exception(e)
@@ -109,23 +120,29 @@ class SimpleMeasVM(QObject):
             logging.exception(e)
     @property
     def time_units(self):
-        val = self.config.get('time_units')
-        if val is not None: self._time_units = val
+        if not getattr(self, 'workspace_contexts', []):
+            val = self.config.get('time_units')
+            if val is not None: self._time_units = val
         return self._time_units
     @time_units.setter
     def time_units(self, new_time_units):
         self.config.set('time_units', new_time_units)
         self._time_units = new_time_units
+        if 0 <= getattr(self, 'active_cine_index', -1) < len(getattr(self, 'workspace_contexts', [])):
+            self.workspace_contexts[self.active_cine_index]['_time_units'] = new_time_units
     @property
     def time_scale(self):
-        val = self.config.get('time_scale')
-        if val is not None: self._time_scale = val
+        if not getattr(self, 'workspace_contexts', []):
+            val = self.config.get('time_scale')
+            if val is not None: self._time_scale = val
         return self._time_scale
     @time_scale.setter
     def time_scale(self, new_time_scale):
         self.config.set('time_scale', new_time_scale)
         self.cal.update_time(new_time_scale)
         self._time_scale = new_time_scale
+        if 0 <= getattr(self, 'active_cine_index', -1) < len(getattr(self, 'workspace_contexts', [])):
+            self.workspace_contexts[self.active_cine_index]['_time_scale'] = new_time_scale
     @property
     def autogen_report_name(self):
         val = self.config.get('autogen_report_name')
@@ -144,6 +161,8 @@ class SimpleMeasVM(QObject):
             max_frame = self.cine_handler.metadata.ImageCount - 1
             new_active_frame = max(0, min(new_active_frame, max_frame))
         self._active_frame = new_active_frame
+        if hasattr(self, 'workspace_contexts') and 0 <= getattr(self, 'active_cine_index', -1) < len(self.workspace_contexts):
+            self.workspace_contexts[self.active_cine_index]['_active_frame'] = new_active_frame
         self.active_frame_changed.emit(new_active_frame)
     @property
     def mouse_pos(self):
@@ -267,12 +286,16 @@ class SimpleMeasVM(QObject):
         self.abort_autotrack = False
         self.playback_speed = 1
         self.n_diff = 4
+        self.workspace_contexts = []
+        self.active_cine_index = -1
+        self.initial_cine_paths = []
         
         # private properties
         self._image_scale = 1
         self._area_units = ''
         self._active_track_tool = None
         self.track_type = 'Auto'
+        self.pending_tracking_method = None
         self._raw_enabled = False
 
         self._graph = 'main_graph'
@@ -324,62 +347,187 @@ class SimpleMeasVM(QObject):
         else: self.n_diff = val
         
         # check args for info to save into class data
-        if 'cine_path' in args:
-            self.cine_path = args['cine_path']
+        requested_paths = args.get('cine_paths', [])
+        if isinstance(requested_paths, str):
+            requested_paths = [requested_paths]
+        if not requested_paths and args.get('cine_path'):
+            requested_paths = [args['cine_path']]
+        self.initial_cine_paths = list(dict.fromkeys(
+            p for p in requested_paths if isinstance(p, str) and p
+        ))[:4]
+        if self.initial_cine_paths:
+            self.cine_path = self.initial_cine_paths[0]
+
+    _workspace_state_fields = (
+        'cine_handler', 'cine_path', 'image_tools', 'cal', 'track_data', 'meas_data',
+        'active_tool', 'active_object', '_active_track_tool', '_active_frame', 'zoom_pos',
+        'transformed_img', 'abort_autotrack', '_image_brightness', '_image_contrast',
+        '_image_gamma', '_toggle_ftone', '_raw_enabled', '_processed_cache',
+        '_processed_cache_size_bytes', '_current_processing_params', '_image_scale',
+        '_known_length', '_length_units', '_area_units', '_time_units', '_time_scale'
+    )
+
+    def _new_workspace_context(self, handler, cine_path):
+        metadata = handler.metadata
+        return {
+            'cine_handler': handler,
+            'cine_path': cine_path,
+            'image_tools': ImageTools(),
+            'cal': Calibration(),
+            'track_data': {},
+            'meas_data': {'_curr_i': 0},
+            'active_tool': None,
+            'active_object': None,
+            '_active_track_tool': None,
+            '_active_frame': 0,
+            'zoom_pos': (0, 0),
+            'transformed_img': None,
+            'abort_autotrack': False,
+            '_image_brightness': metadata.Bright,
+            '_image_contrast': metadata.Contrast,
+            '_image_gamma': metadata.Gamma,
+            '_toggle_ftone': True,
+            '_raw_enabled': False,
+            '_processed_cache': {},
+            '_processed_cache_size_bytes': 0,
+            '_current_processing_params': None,
+            '_image_scale': self._image_scale,
+            '_known_length': self._known_length,
+            '_length_units': self._length_units,
+            '_area_units': self._area_units,
+            '_time_units': self._time_units,
+            '_time_scale': self._time_scale,
+        }
+
+    def sync_active_workspace_context(self):
+        if not (0 <= self.active_cine_index < len(self.workspace_contexts)):
+            return
+        context = self.workspace_contexts[self.active_cine_index]
+        for field in self._workspace_state_fields:
+            context[field] = getattr(self, field)
+
+    def _restore_workspace_context(self, index):
+        context = self.workspace_contexts[index]
+        for field in self._workspace_state_fields:
+            setattr(self, field, context[field])
+        self.cal.update_cal(1, self._image_scale)
+        self.cal.update_time(self._time_scale)
+        self.active_cine_index = index
+
+    def workspace_summaries(self):
+        self.sync_active_workspace_context()
+        return [
+            {
+                'index': index,
+                'path': context['cine_path'],
+                'frame_count': context['cine_handler'].metadata.ImageCount,
+                'active_frame': context['_active_frame'],
+            }
+            for index, context in enumerate(self.workspace_contexts)
+        ]
+
+    def close_workspace(self):
+        handlers = []
+        for context in self.workspace_contexts:
+            handler = context.get('cine_handler')
+            if handler is not None and handler not in handlers:
+                handlers.append(handler)
+        if not handlers and getattr(self, 'cine_handler', None) is not None:
+            handlers.append(self.cine_handler)
+        for handler in handlers:
+            try:
+                handler.close()
+            except Exception:
+                logging.exception('Failed to close a Cine workspace handler')
+
+    def load_cine_workspace_cb(self, cine_paths):
+        paths = list(dict.fromkeys(
+            p for p in (cine_paths or []) if isinstance(p, str) and p
+        ))[:4]
+        if not paths:
+            return False
+
+        logging.info('Loading Cine workspace: %s', paths)
+        new_contexts = []
+        try:
+            for cine_path in paths:
+                handler = CineHandler()
+                handler.load_cine(cine_path)
+                new_contexts.append(self._new_workspace_context(handler, cine_path))
+        except Exception as e:
+            for context in new_contexts:
+                try:
+                    context['cine_handler'].close()
+                except Exception:
+                    pass
+            logging.exception('Failed to load Cine workspace')
+            self.update_status_text.emit(f'Error loading Cine workspace: {e}')
+            return False
+
+        self.close_workspace()
+        self.workspace_contexts = new_contexts
+        self.active_cine_index = -1
+        self.workspace_changed.emit(self.workspace_summaries(), 0)
+        self.activate_cine_cb(0, save_current=False)
+        logging.info('Cine workspace loaded successfully with %s file(s)', len(paths))
+        return True
+
+    def activate_cine_cb(self, index, save_current=True):
+        if not (0 <= index < len(self.workspace_contexts)):
+            return False
+        if save_current:
+            self.sync_active_workspace_context()
+        self._restore_workspace_context(index)
+
+        metadata = self.cine_handler.metadata
+        self.report_handler.active_report.cine_path = self.cine_path
+        self.workspace_changed.emit(self.workspace_summaries(), index)
+        self.new_cine_load.emit(self.cine_path, metadata)
+        self.first_frame = f'{metadata.FirstImageNo}'
+        self.last_frame = f'{metadata.ImageCount + metadata.FirstImageNo - 1}'
+        self.trigger_time = metadata.TriggerTime_displ
+        self.image_brightness = self._image_brightness
+        self.image_contrast = self._image_contrast
+        self.image_gamma = self._image_gamma
+        self.toggle_ftone = self._toggle_ftone
+        self.image_scale_text = self.format_scale_text(self.image_scale)
+        self.new_track_data.emit(self.track_data, self.active_object)
+        self.track_fig_changed.emit(self.track_data)
+        self.draw_all()
+        return True
+
+    def workspace_frame(self, index):
+        if not (0 <= index < len(self.workspace_contexts)):
+            return None
+        current_index = self.active_cine_index
+        self.sync_active_workspace_context()
+        self._restore_workspace_context(index)
+        frame_index = int(np.clip(self._active_frame, 0, self.cine_handler.metadata.ImageCount - 1))
+        processing_params = (
+            self.image_brightness, self.image_contrast, self.image_gamma,
+            self.toggle_ftone, self.raw_enabled, frame_index
+        )
+        if self._cache_enabled and processing_params in self._processed_cache:
+            img = self._processed_cache[processing_params]
+        else:
+            img = self._apply_image_tools(self.cine_handler.get_img(frame_index))
+            if self._cache_enabled:
+                self._processed_cache[processing_params] = img
+                self._processed_cache_size_bytes += img.nbytes
+        self.transformed_img = img
+        img = np.copy(img)
+        display_cfa = 'Mono' if self.raw_enabled else self.cine_handler.metadata.CFA
+        result = (img, self.cine_handler.metadata.RealBPP, display_cfa)
+        self.sync_active_workspace_context()
+        if 0 <= current_index < len(self.workspace_contexts):
+            self._restore_workspace_context(current_index)
+        return result
 
         
     #region EVENT CALLBACKS
     # add a '_cb' to the end of all callback functions for readability
     def load_cine_cb(self, cine_path):
-        # setup self
-        logging.info(f'Loading new cine file from "{cine_path}"')
-        
-        try:
-                
-            self.cine_handler.load_cine(cine_path)
-            self.cine_path = cine_path
-            self.image_tools = ImageTools()
-            
-            #clear cache
-            if self._cache_enabled:
-                self._processed_cache.clear()
-                self._processed_cache_size_bytes = 0
-                self._current_processing_params = None
-            
-            self.new_cine_load.emit(cine_path, self.cine_handler.metadata)
-            self.first_frame = f"{self.cine_handler.metadata.FirstImageNo}"
-            self.last_frame = f"{self.cine_handler.metadata.ImageCount + self.cine_handler.metadata.FirstImageNo - 1}"
-            self.trigger_time = self.cine_handler.metadata.TriggerTime_displ
-            self.report_handler.active_report.cine_path = self.cine_path
-
-            # reset data stores
-            self.track_data = {}
-            self.meas_data = {}
-            self.meas_data['_curr_i'] = 0
-            self.active_tool = None
-            self.active_frame = 0
-            self.active_object = None
-
-            # Set slider values based on metadata
-            self.image_brightness = self.cine_handler.metadata.Bright
-            self.image_contrast = self.cine_handler.metadata.Contrast
-            self.image_gamma = self.cine_handler.metadata.Gamma
-
-            # Enable toggles by default when new cine is loaded
-            self.toggle_ftone = True
-
-            # update UI
-            self.image_scale_text = self.format_scale_text(self.image_scale)
-            self.reset_image_tools_cb() 
-            self.draw_all()        
-            self.clear_track()
-            
-            logging.info(f"Cine loaded successfully: {self.cine_handler.metadata.ImageCount} frames")
-            
-        except Exception as e:
-            logging.info(f"Error loading cine file: {e}")
-            logging.exception(f"Failed to load cine file: {cine_path}")
-            self.update_status_text.emit(f"Error loading cine file: {e}")
+        return self.load_cine_workspace_cb([cine_path])
             
 
     def graph_click_cb(self, mouse_pos):
@@ -545,6 +693,8 @@ class SimpleMeasVM(QObject):
             self.track_data[self.active_object]['points'] = self.track_data[self.active_object]['points'][ind]
             self.track_data[self.active_object]['frames'] = self.track_data[self.active_object]['frames'][ind]
             self.track_data[self.active_object]['scores'] = self.track_data[self.active_object]['scores'][ind]
+            if 'angles' in self.track_data[self.active_object]:
+                self.track_data[self.active_object]['angles'] = self.track_data[self.active_object]['angles'][ind]
         self.track_fig_calculations()
         self.redraw_cb()
         self.new_track_data.emit(self.track_data, self.active_object)
@@ -571,7 +721,10 @@ class SimpleMeasVM(QObject):
     def apply_params_to_all(self):
         if len(self.track_data) > 1:
             params = ['start', 'end', 'search_area', 'tpl_rng', 'subpixel_size', 'subpixel_type', 'frames_enable', 
-                      'search_area_enable', 'tpl_rng_enable', 'update_template_enable', 'acceptable_score']
+                      'search_area_enable', 'tpl_rng_enable', 'update_template_enable', 'acceptable_score',
+                      'tracking_method', 'rotation_range', 'rotation_step', 'edge_weight',
+                      'edge_threshold', 'rotation_allowed', 'smart_frames', 'smart_miss_limit',
+                      'search_area_multiplier']
             for id, t in self.track_data.items():
                 if t['enabled'] and id != self.active_object:
                     for p in params:
@@ -680,8 +833,8 @@ class SimpleMeasVM(QObject):
 #region PUBLIC FUNCTIONS
     def init_ui(self):
         # if value in self.cine_path, load it up
-        if self.cine_path != '':
-            self.load_cine_cb(self.cine_path)
+        if self.initial_cine_paths:
+            self.load_cine_workspace_cb(self.initial_cine_paths)
 
         self.update_status_text.emit('')
         self.image_scale_text = self.format_scale_text(self.image_scale)
@@ -860,10 +1013,15 @@ class SimpleMeasVM(QObject):
         if self.track_data != {}:
             t = self.track_data[self.active_object] if obj is None else obj
             time_from_start_values = []
+            time_from_trigger_values = []
             for frame in t['frames']:
                 timestamp_data = self.cine_handler.get_timestamp(frame)
                 time_from_start_values.append(timestamp_data['time_from_start'])
+                time_from_trigger_values.append(
+                    timestamp_data.get('time_from_trig', timestamp_data['time_from_start'])
+                )
             t['frame_ts'] = self.cal.time_transform(np.array(time_from_start_values))
+            t['frame_ts_trig'] = self.cal.time_transform(np.array(time_from_trigger_values))
             rel_id = t['relative_to'] if 'relative_to' in t else None
             if rel_id != None:
                 rel_obj = self.track_data[rel_id]
@@ -907,6 +1065,16 @@ class SimpleMeasVM(QObject):
             t['X-Acceleration'] = self._n_diff(t['X-Speed'], self.n_diff) / frame_diff[self.n_diff:]
             t['Y-Acceleration'] = self._n_diff(t['Y-Speed'], self.n_diff) / frame_diff[self.n_diff:]
             t['Acceleration'] = np.sqrt(np.square(t['X-Acceleration']) + np.square(t['Y-Acceleration'])) / frame_diff[self.n_diff:]
+
+            angles = np.asarray(t.get('angles', np.zeros(len(t['frames']))), dtype=float)
+            if len(angles) != len(t['frames']):
+                angles = np.zeros(len(t['frames']), dtype=float)
+            # Unwrap across +/-180 so angular motion remains continuous.
+            t['Angle'] = np.rad2deg(np.unwrap(np.deg2rad(angles)))
+            if len(t['Angle']) > self.n_diff:
+                t['Angular Speed'] = self._n_diff(t['Angle'], self.n_diff) / frame_diff
+            else:
+                t['Angular Speed'] = np.array([])
             
             self.track_fig_changed.emit(self.track_data)
 

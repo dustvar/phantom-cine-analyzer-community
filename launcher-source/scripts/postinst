@@ -1,0 +1,74 @@
+#!/bin/bash
+set -e
+
+# Function for colored output
+print_status() {
+    local color=$1
+    local message=$2
+    case $color in
+        "green") echo -e "\033[0;32m$message\033[0m" ;;
+        "red") echo -e "\033[0;31m$message\033[0m" ;;
+        "blue") echo -e "\033[0;34m$message\033[0m" ;;
+        *) echo "$message" ;;
+    esac
+}
+
+# This script runs after the .deb is installed
+print_status "blue" "Starting post-installation setup..."
+
+INSTALL_DIR="/opt/PhantomCineAnalyzer"
+#SCRIPT="$INSTALL_DIR/install-PCA-env.sh"
+ERROR_LOG="/var/log/phantomcineanalyzer-install.log"
+
+# Ensure install directory exists and is accessible
+if [[ ! -d "$INSTALL_DIR" ]]; then
+    print_status "red" "Installation directory not found at $INSTALL_DIR"
+    exit 1
+fi
+
+
+# 2. Install icon
+ICON_SRC="$INSTALL_DIR/public/images/portal.png"
+ICON_DST="/usr/share/icons/hicolor/256x256/apps/phantomcineanalyzer.png"
+if [ -f "$ICON_SRC" ]; then
+    install -Dm644 "$ICON_SRC" "$ICON_DST"
+    gtk-update-icon-cache /usr/share/icons/hicolor || true
+else
+    echo "Icon not found at $ICON_SRC"
+fi
+
+# 3. Add 'PCA' to launch the app
+BIN_TARGET="/usr/local/bin/PCA"
+APP_EXEC="$INSTALL_DIR/phantomcineanalyzer"
+if [ -f "$APP_EXEC" ]; then
+    ln -sf "$APP_EXEC" "$BIN_TARGET"
+else
+    echo "Application executable not found at $APP_EXEC"
+fi
+
+# 4. Set correct permissions and ownership
+if [ -d "$INSTALL_DIR" ]; then
+    print_status "blue" "Setting permissions on installation directory..."
+    
+    # Set directory permissions
+    chmod -R 755 "$INSTALL_DIR"
+    
+    # Ensure proper ownership
+    if [ -n "$SUDO_USER" ]; then
+        chown -R "$SUDO_USER:$SUDO_USER" "$INSTALL_DIR"
+        print_status "green" "Set ownership to user: $SUDO_USER"
+    fi
+    
+    # Ensure executables are properly marked
+    find "$INSTALL_DIR" -type f -name "*.sh" -exec chmod +x {} \;
+    find "$INSTALL_DIR" -type f -name "phantomcineanalyzer" -exec chmod +x {} \;
+    
+    print_status "green" "Permissions setup completed"
+else
+    print_status "red" "Install directory not found at $INSTALL_DIR"
+    echo "$(date): Installation failed - directory not found" >> "$ERROR_LOG"
+    exit 1
+fi
+
+print_status "green" "Post-installation setup completed successfully!"
+exit 0

@@ -3,7 +3,7 @@
     "main_alias": "Track & Measure",
     "length_units": "pix",
     "known_length": 1.0,
-    "image_scale": 1.0,
+    "image_scale": 3.0,
     "time_units": "s",
     "time_scale": 1,
     "autogen_report_name": false,

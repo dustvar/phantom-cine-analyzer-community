@@ -120,6 +120,22 @@ QPushButton:disabled {
     color: #777777;
 }
 
+/* Keep the full tracking-method names visible at macOS display scaling. */
+QPushButton#hybrid_method_button {
+    min-width: 300px;
+    max-width: 300px;
+}
+
+QPushButton#classic_method_button {
+    min-width: 250px;
+    max-width: 250px;
+}
+
+QPushButton#tracking_method_cancel_button {
+    min-width: 140px;
+    max-width: 140px;
+}
+
 QPushButton#auto_track_button,
 QPushButton#man_track_button {
     border: 0px;
@@ -159,13 +175,190 @@ QPushButton#qt_add_object_button {
 }
 
 QPushButton#cine_upload_button {
-    max-width: 100px;
+    max-width: 110px;
+}
+
+QToolButton#qt_theme_button {
+    background-color: #333333;
+    border: 2px solid #f47efa;
+    border-radius: 5px;
+    padding: 2px;
+}
+
+QLabel#workspace_count_label {
+    color: #f47efa;
+    font-weight: bold;
+    min-width: 48px;
+}
+
+QFrame#cine_workspace_pane {
+    background-color: #191919;
+    border: 1px solid #444444;
+    border-radius: 5px;
+}
+
+QFrame#cine_workspace_pane[activePane="true"] {
+    border: 3px solid #f47efa;
+}
+
+QLabel#cine_workspace_title {
+    color: #dedede;
+    background-color: #2b2b2b;
+    font-weight: bold;
+    padding: 3px 6px;
+    border-radius: 2px;
+}
+
+QFrame#cine_workspace_pane[activePane="true"] QLabel#cine_workspace_title {
+    color: #ffffff;
+    background-color: #512953;
 }
 
 QPushButton#qt_zoom_in,
 QPushButton#qt_zoom_out {
     min-width: 30px;
     min-height: 30px;
+}
+
+QWidget#viewer_controls {
+    background-color: #2b2b2b;
+    border: 1px solid #512953;
+    border-radius: 5px;
+}
+
+QFrame#pcc_transport_controls {
+    background-color: #222222;
+    border: 1px solid #512953;
+    border-radius: 6px;
+}
+
+QFrame#hybrid_settings_panel {
+    background-color: #262126;
+    border: 1px solid #512953;
+    border-radius: 6px;
+}
+
+QLabel#hybrid_settings_title {
+    color: #f47efa;
+    font-weight: bold;
+}
+
+QToolButton#hybrid_advanced_button {
+    color: #f47efa;
+    background: transparent;
+    border: 0;
+    padding: 3px;
+    font-weight: bold;
+}
+
+QToolButton#hybrid_advanced_button:hover {
+    color: #ffffff;
+}
+
+QPushButton#hybrid_process_button {
+    background-color: #512953;
+    border: 1px solid #f47efa;
+}
+
+QProgressBar#hybrid_progress_bar {
+    min-height: 18px;
+    color: #ffffff;
+    border: 1px solid #512953;
+    border-radius: 4px;
+    background-color: #1f1f1f;
+}
+
+QProgressBar#hybrid_progress_bar::chunk {
+    background-color: #A460A8;
+    border-radius: 3px;
+}
+
+QToolButton#pcc_transport_button {
+    background-color: #512953;
+    border: 1px solid #f47efa;
+    border-radius: 5px;
+    padding: 1px;
+}
+
+QToolButton#pcc_transport_button:hover {
+    background-color: #A460A8;
+}
+
+QToolButton#pcc_transport_button:checked,
+QToolButton#pcc_transport_button:pressed {
+    background-color: #9A4E9E;
+    border: 2px solid #f47efa;
+}
+
+QToolButton#pcc_transport_button:disabled {
+    background-color: #333333;
+    border-color: #555555;
+}
+
+QToolButton#qt_transport_button {
+    min-width: 30px;
+    max-width: 34px;
+    min-height: 28px;
+    max-height: 30px;
+    padding: 1px;
+    border: 1px solid #f47efa;
+    border-radius: 3px;
+}
+
+QToolButton#qt_transport_button:pressed {
+    background-color: #512953;
+}
+
+QToolButton#qt_speed_button {
+    min-width: 54px;
+    max-width: 58px;
+    min-height: 30px;
+    max-height: 34px;
+    padding: 2px;
+    color: #ffffff;
+    font-weight: bold;
+    border: 1px solid #f47efa;
+    border-radius: 4px;
+}
+
+QToolButton#qt_speed_button:checked,
+QToolButton#qt_speed_button:pressed {
+    background-color: #9A4E9E;
+}
+
+QToolButton#qt_viewer_play_button {
+    min-width: 54px;
+    max-width: 58px;
+    min-height: 50px;
+    max-height: 54px;
+    padding: 2px;
+    background-color: #512953;
+    border: 2px solid #f47efa;
+    border-radius: 27px;
+}
+
+QToolButton#qt_viewer_play_button:checked,
+QToolButton#qt_viewer_play_button:pressed {
+    background-color: #9A4E9E;
+}
+
+QPushButton#qt_clip_button {
+    min-width: 62px;
+    max-width: 78px;
+    min-height: 24px;
+    max-height: 26px;
+    font-size: 11px;
+}
+
+QLabel#clip_range_label {
+    min-width: 90px;
+    color: #f47efa;
+    font-family: "Courier New";
+    font-weight: bold;
+}
+
+ClipRangeSlider#qt_clip_range {
+    background: transparent;
 }
 
 QPushButton#qt_user_manual_button {
@@ -206,7 +399,7 @@ QMenu::item:disabled {
 
 QTabWidget#cine_info_tab {
     /* font-weight: bold; */
-    min-width: 250px;
+    min-width: 280px;
 }
 
 QTabBar {

@@ -89,6 +89,7 @@ def launch():
     vm = simplemeas_vm.SimpleMeasVM(main_window, mm, rh, cm, ch, cfg)
     main_window.vm = vm
     main_window.connect_events()
+    main_window.initialize_theme()
     vm.init_ui()
 
     main_window.show()

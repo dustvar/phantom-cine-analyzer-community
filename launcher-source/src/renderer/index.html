@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <link rel="stylesheet" href="./styles.css">
+    <meta charset="UTF-8" />
+    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'" />
+    <meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'" />
+</head>
+
+<body>
+    <div class="grid-container">
+        <div class="flex-container-modules">
+            <div class="grid-cineFile">
+                <input type="file" id="cinePath" accept=".cine" multiple/>
+                <input type="button" id="cinePathBrowse" value="Choose up to 4 Cines"/>
+                <input type="text" id="cinePathDisplay" readonly />
+            </div>
+            <div id="cineSelectionSummary" aria-live="polite">No Cine files selected</div>
+            <div class="grid-Modules">
+                <div class="box">
+                    <h2>Select Module</h2>
+                    <ul id="test_list"></ul>
+                </div>
+            </div>
+            <div class="grid-buttons">
+                <button id="runModule" class="ui-button">
+                    <div>Run</div>
+                    <img src="../../public/images/play-32.ico" class="icon">
+                </button>
+
+                <button id="addModule" class="ui-button">
+                    <img src="../../public/images/add-32.ico" class="icon">
+                </button>
+
+                <button id="refreshModules" class="ui-button">
+                    <img src="../../public/images/refresh-32.ico" class="icon">
+                </button>
+            </div>
+
+            <div class="grid-about">
+                <figure id="about-button">
+                    <img id="ui-logo" src="../../public/images/PortalLogo.png" alt="">
+                    <figcaption>About</figcaption>
+                </figure>
+                <div class="flex-container-about" id="about-panel">
+                    <button class="ui-button" id="open-manual">Manual</button>
+                    <button class="ui-button" id="open-changelog">Changelog</button>
+                    <button class="ui-button" id="open-license">License</button>
+                    <div class="break"></div>
+                    <img src="../../public/images/Ametek_Logo_White.png" id="ametek-logo">
+                </div>
+            </div>
+        </div>
+        <div class="flex-container-console">
+            <div class="consoleOut" id="consoleWindow"></div>
+            <input type="text" class="consoleIn" id="consoleInput" value="> " />
+        </div>
+    </div>
+</body>
+
+<script src="./renderer.js"></script>
+
+</html>

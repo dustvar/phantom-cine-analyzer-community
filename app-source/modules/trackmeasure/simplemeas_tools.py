@@ -8,6 +8,20 @@ import logging
 import math
 
 SUBPIXEL_VALS = {'1.0 pix': 1, '1/2 pix': 2, '1/3 pix': 3, '1/4 pix': 4, '1/5 pix': 5, '1/6 pix': 6, '1/7 pix': 7, '1/8 pix': 8, '1/9 pix': 9, '1/10 pix': 10}
+HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
+CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
+
+
+def _rotate_tracking_offset(offset, angle_deg):
+    """Rotate a point-to-template offset using the tracker's image convention."""
+    dx, dy = float(offset[0]), float(offset[1])
+    radians = math.radians(float(angle_deg))
+    cosine = math.cos(radians)
+    sine = math.sin(radians)
+    return np.array([
+        (cosine * dx) + (sine * dy),
+        (-sine * dx) + (cosine * dy),
+    ], dtype=float)
 
 class BaseTool(ABC):
     def __init__(self, vm):
@@ -136,15 +150,24 @@ class TrackTool(BaseTool):
             # make a new object
             self.track_select = False
             new_id = len(self.vm.track_data)
+            tracking_method = getattr(self.vm, 'pending_tracking_method', None) or CLASSIC_TRACKING_METHOD
+            is_hybrid = tracking_method == HYBRID_TRACKING_METHOD
             score = 'N/A' 
             new_t = {'id': new_id, 'name': f'Object {new_id}', 'points': np.array([point]), 'frames': np.array([frame_id]), 
-                     'scores': np.array([score]), 't_points': np.array([point]), 't_frames': np.array([frame_id]), 'notes': {}, 
+                     'scores': np.array([score]), 'angles': np.array([0.0]),
+                     't_points': np.array([point]), 't_frames': np.array([frame_id]), 't_angles': np.array([0.0]), 'notes': {}, 
                      'origin_frame': None, 'relative_to': None, 'enabled': True, 'color': self.colors_hex_codes[new_id % len(self.colors_hex_codes)], 
                      'start': int(self.vm.cine_handler.metadata.FirstImageNo), 
                      'end': int(self.vm.cine_handler.metadata.FirstImageNo + self.vm.cine_handler.metadata.ImageCount - 1), 
                      'search_area':(101,101), 'tpl_rng': (31,31), 'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
                      'frames_enable': True, 'search_area_enable': True, 'tpl_rng_enable':True, 
-                     'update_template_enable': True, 'acceptable_score': 0.8, 'tpl_score': 0.9}
+                     'update_template_enable': True, 'acceptable_score': 0.6, 'tpl_score': 0.8,
+                     'tracking_method': tracking_method, 'rotation_range': 15.0,
+                     'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
+                     'rotation_allowed': is_hybrid, 'smart_frames': is_hybrid,
+                     'smart_miss_limit': 3, 'search_area_multiplier': 3.0,
+                     'template_angle': 0.0, 'template_offset': (0.0, 0.0),
+                     'anchor_frame': int(frame_id)}
             self.vm.track_data[new_id] = new_t
             self.vm.active_object = new_id
             self.draw_all(points=point)
@@ -193,7 +216,7 @@ class TrackTool(BaseTool):
     def process_template(self, template, point, frame_id):
         pass
 
-    def add_point_to_template(self, t, point, frame_id, score='N/A', update_track_template=True):
+    def add_point_to_template(self, t, point, frame_id, score='N/A', update_track_template=True, angle=0.0):
         """
         will always add a new point to the template dictionaries lists: points, frameID and score.
         if update_track_template: it will additionally add to the 't_<keyname>' for the track template lists
@@ -201,11 +224,17 @@ class TrackTool(BaseTool):
 
         point_key = 'points'
         frame_key = 'frames'
+        angle_key = 'angles'
+        if 'angles' not in t or len(t['angles']) != len(t['points']):
+            t['angles'] = np.zeros(len(t['points']), dtype=float)
+        if 't_angles' not in t or len(t['t_angles']) != len(t['t_points']):
+            t['t_angles'] = np.zeros(len(t['t_points']), dtype=float)
 
         for i in range(2):
             if i == 1:
                 point_key = f't_{point_key}'
                 frame_key = f't_{frame_key}'
+                angle_key = 't_angles'
                 if not update_track_template: break 
         
             m_arr = np.argwhere(t[frame_key]==frame_id)
@@ -214,18 +243,21 @@ class TrackTool(BaseTool):
                 # replace if match at frame id
                 t[point_key][m] = np.array(point)
                 t[frame_key][m] = frame_id
+                t[angle_key][m] = float(angle)
                 if i == 0:
                     t['scores'][m] = score
             else:
                 # append new point
                 t[point_key] = np.append(t[point_key], np.array([point]), axis=0)
                 t[frame_key] = np.append(t[frame_key], frame_id)
+                t[angle_key] = np.append(t[angle_key], float(angle))
                 if i == 0:
                     t['scores'] = np.append(t['scores'], score)
             # sort by frame id
             ind = np.argsort(t[frame_key])
             t[point_key] = t[point_key][ind]
             t[frame_key] = t[frame_key][ind]
+            t[angle_key] = t[angle_key][ind]
             if i == 0:
                 t['scores'] = t['scores'][ind]
 
@@ -249,6 +281,52 @@ class AutoTrackTool(TrackTool):
         if point == (-1,-1):
             # parameterize dictionary items
             self.vm.update_status_text.emit(f'Start autotrack of object {template["name"]}')
+            smart_frames = bool(
+                template.get('smart_frames', False)
+                and template.get('tracking_method') == HYBRID_TRACKING_METHOD
+            )
+            if smart_frames:
+                anchor_fr = int(template.get('anchor_frame', template['frames'][0]))
+                anchor_fr = int(np.clip(
+                    anchor_fr,
+                    0,
+                    self.vm.cine_handler.metadata.ImageCount - 1,
+                ))
+                # Search away from the user-confirmed anchor in both directions.
+                # Each direction stops independently after the configured number
+                # of consecutive low-confidence frames. The anchor is not
+                # matched against itself, because a self-correlation always
+                # looks artificially perfect and is not useful confidence data.
+                if anchor_fr > 0:
+                    template = self.track(
+                        anchor_fr - 1, 0, template,
+                        progress_offset=0, progress_span=50,
+                    )
+                else:
+                    self.vm.update_progress.emit(50)
+                final_frame = self.vm.cine_handler.metadata.ImageCount - 1
+                if anchor_fr < final_frame:
+                    template = self.track(
+                        anchor_fr + 1,
+                        final_frame,
+                        template,
+                        progress_offset=50,
+                        progress_span=50,
+                    )
+                else:
+                    self.vm.update_progress.emit(100)
+                if len(template['frames']):
+                    first_image = int(self.vm.cine_handler.metadata.FirstImageNo)
+                    template['start'] = first_image + int(np.min(template['frames']))
+                    template['end'] = first_image + int(np.max(template['frames']))
+                    template['smart_detected_start'] = template['start']
+                    template['smart_detected_end'] = template['end']
+                self.vm.update_status_text.emit(
+                    f'{template["name"]} smart range: '
+                    f'{template["start"]} to {template["end"]}'
+                )
+                return template
+
             enable_fr = template['frames_enable']
             start_fr = template['start'] - int(self.vm.cine_handler.metadata.FirstImageNo)
             last_fr = template['end'] - int(self.vm.cine_handler.metadata.FirstImageNo)
@@ -282,7 +360,7 @@ class AutoTrackTool(TrackTool):
         # all done with processing, clean it up
         return template
     
-    def track(self, start_fr, last_fr, template):
+    def track(self, start_fr, last_fr, template, progress_offset=0, progress_span=100):
         enable_sa = template['search_area_enable']
         sa_rng = template['search_area'] if enable_sa else (self.vm.cine_handler.metadata.ImWidth - 1, self.vm.cine_handler.metadata.ImHeight - 1)
         tpl_rng = template['tpl_rng']
@@ -291,6 +369,27 @@ class AutoTrackTool(TrackTool):
         subpixel_type = template['subpixel_type']
         update_tpl = template['update_template_enable']
         tpl_score = template['tpl_score']
+        tracking_method = template.get('tracking_method', HYBRID_TRACKING_METHOD)
+        rotation_range = template.get('rotation_range', 15.0)
+        rotation_step = template.get('rotation_step', 2.0)
+        edge_weight = template.get('edge_weight', 0.6)
+        edge_threshold = template.get('edge_threshold', None)
+        template_offset = np.asarray(
+            template.get('template_offset', (0.0, 0.0)), dtype=float
+        )
+        if not template.get('rotation_allowed', True):
+            rotation_range = 0.0
+        smart_frames = bool(
+            template.get('smart_frames', False)
+            and tracking_method == HYBRID_TRACKING_METHOD
+        )
+        miss_limit = int(template.get('smart_miss_limit', 3)) if smart_frames else 5
+        miss_limit = max(1, miss_limit)
+        self.fail_cnt = 0
+        if 'angles' not in template or len(template['angles']) != len(template['points']):
+            template['angles'] = np.zeros(len(template['points']), dtype=float)
+        if 't_angles' not in template or len(template['t_angles']) != len(template['t_points']):
+            template['t_angles'] = np.zeros(len(template['t_points']), dtype=float)
 
         forward = start_fr <= last_fr
         fr_rng = range(start_fr, last_fr+1) if forward else range(start_fr, last_fr-1, -1)
@@ -300,7 +399,12 @@ class AutoTrackTool(TrackTool):
                 self._curr_fr = fr
                 if self.vm.abort_autotrack:
                     break
-                progress = int((i+1)/len(fr_rng)*100 + 0.5)
+                progress = int(
+                    float(progress_offset)
+                    + ((i + 1) / len(fr_rng)) * float(progress_span)
+                    + 0.5
+                )
+                progress = int(np.clip(progress, 0, 100))
                 self.vm.update_progress.emit(progress)
 
                 # get most recent template point and frame
@@ -324,8 +428,18 @@ class AutoTrackTool(TrackTool):
                         p_index = np.min(p_arr)
 
                 t_frame = template['t_frames'][t_index]
-                tpl_center = template['t_points'][t_index]
-                sa_center = template['points'][p_index]
+                tracked_template_point = np.asarray(template['t_points'][t_index], dtype=float)
+                reference_angle = float(template['t_angles'][t_index])
+                previous_angle = float(template['angles'][p_index])
+                tpl_center = tracked_template_point
+                sa_center = np.asarray(template['points'][p_index], dtype=float)
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    tpl_center = tracked_template_point + _rotate_tracking_offset(
+                        template_offset, reference_angle
+                    )
+                    sa_center = sa_center + _rotate_tracking_offset(
+                        template_offset, previous_angle
+                    )
                 if not enable_sa:
                     sa_center = (math.floor(sa_rng[0]/2), math.floor(sa_rng[1]/2))
 
@@ -357,30 +471,72 @@ class AutoTrackTool(TrackTool):
                 # if color, debayer the image into a 1 channel mono for tracking. no op for Mono cfa
                 tpl_img = self.vm.cine_handler.get_img(t_frame)
                 tpl_img = self.vm.image_tools.debayer(np.array(tpl_img, dtype=np.float32), cfa, bpp, force_mono=1)
-                tpl_img = tpl_img[tl_tpl[1]:br_tpl[1], tl_tpl[0]:br_tpl[0]]
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    tpl_img = AutoTrackAlgorithms.extract_oriented_patch(
+                        tpl_img,
+                        tpl_center,
+                        tpl_rng,
+                        reference_angle,
+                    )
+                else:
+                    # Preserve the original PCA Classic template crop exactly.
+                    tpl_img = tpl_img[tl_tpl[1]:br_tpl[1], tl_tpl[0]:br_tpl[0]]
 
                 # run cross correlation to get expected location
-                data = AutoTrackAlgorithms.template_matcher(
-                                        tpl_img=tpl_img, 
-                                        sa_img=sa_img, 
-                                        sa_center=tuple(sa_center),
-                                        sa_rng=sa_rng,
-                                        sub_pixel=subpixel,
-                                        sub_pixel_type=subpixel_type)
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    data = AutoTrackAlgorithms.hybrid_pattern_matcher(
+                                            tpl_img=tpl_img,
+                                            sa_img=sa_img,
+                                            sa_center=tuple(sa_center),
+                                            sa_rng=sa_rng,
+                                            reference_angle=reference_angle,
+                                            rotation_range=rotation_range,
+                                            rotation_step=rotation_step,
+                                            edge_weight=edge_weight,
+                                            edge_threshold=edge_threshold)
+                else:
+                    data = AutoTrackAlgorithms.template_matcher(
+                                            tpl_img=tpl_img, 
+                                            sa_img=sa_img, 
+                                            sa_center=tuple(sa_center),
+                                            sa_rng=sa_rng,
+                                            sub_pixel=subpixel,
+                                            sub_pixel_type=subpixel_type)
+                    data.angle_deg = reference_angle
 
                 score = round(float(data.confid_val_ij), 3)
-                point = (data.x_pos, data.y_pos)
+                point = np.array((data.x_pos, data.y_pos), dtype=float)
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    # The matcher follows the reinforcement geometry. Convert
+                    # its pose back to the exact point selected by the user.
+                    point -= _rotate_tracking_offset(template_offset, data.angle_deg)
+                point = tuple(point)
 
                 # add pt to list if score is above limit
                 if score >= score_limit:
                     update_temp =  (update_tpl and score < tpl_score)
-                    template = self.add_point_to_template(template, point, fr, score, update_track_template=update_temp)
+                    template = self.add_point_to_template(
+                        template,
+                        point,
+                        fr,
+                        score,
+                        update_track_template=update_temp,
+                        angle=data.angle_deg,
+                    )
                     self.fail_cnt = 0
                 else:
                     self.fail_cnt += 1
-                    if self.fail_cnt == 5:
+                    if self.fail_cnt >= miss_limit:
+                        if smart_frames:
+                            direction = 'start' if not forward else 'end'
+                            self.vm.update_status_text.emit(
+                                f'Smart {direction} boundary found for {template["name"]}.'
+                            )
+                            break
                         raise ObjectLostException('The object has been lost. Please select a new point and start processing again.')
-                self.vm.update_status_text.emit(f'{template["name"]} track complete.')
+                self.vm.update_status_text.emit(
+                    f'{template["name"]} track complete. Angle: {data.angle_deg:.2f}°'
+                )
 
             except Exception as e:
                 logging.exception(e)

@@ -1,0 +1,69 @@
+Phantom Cine Analyzer 1.1.18 Playback modification
+
+Modified: 2026-08-23
+
+- Added a dedicated Viewer above Track with non-destructive In/Out playback
+  brackets and jump-to-start/end controls.
+- Replaced the single scrubber Play/Pause control with a compact purple
+  PCC-style seven-button transport in Viewer, Track, 2 Pt, 3 Pt, 2 Line, and
+  Area modes. Its top row is reverse play, pause, and forward play; its bottom
+  row is 4x reverse, previous frame, next frame, and 4x forward.
+- Continuous playback switches immediately to the most recently pressed mode.
+  Either single-frame button pauses playback first and moves exactly one frame.
+- Aligned the first and last frame labels with the actual left and right ends of
+  the scrubber, added spacing after the transport block, and positioned the
+  active-frame label from the slider's real handle geometry.
+- The right-side Info/Adjustments/Track panel now opens by default, restores
+  automatically after leaving Viewer, and cannot collapse below 280 pixels.
+- Added Space for forward Play/Pause, J/Shift+J for normal/4x reverse,
+  L/Shift+L for normal/4x forward, Left/Right for single-frame stepping,
+  Home/End for clip bounds, and I/O for Set In/Set Out.
+- Fixed Open Autotrack Dialog so the row that was right-clicked becomes the
+  active object before the dialog opens. Right-clicking the color cell is also
+  supported, and an existing dialog is brought to the foreground reliably.
+- Added an explicit method chooser when creating an Auto object. Intensity
+  (Classic) retains the original PCA point, crop and correlation workflow;
+  Hybrid (Edge + Intensity) uses a two-step tracked-point and reinforcement
+  region workflow. The chooser is sized so both method names remain readable.
+- Hybrid regions have adjacent purple scale and rotation handles. The selected
+  region displays the exact edge pixels used by the geometry score as purple
+  lines over the Cine image. Moving the region no longer moves the exact point
+  selected by the user; its offset rotates with the object pose.
+- Added an embedded Hybrid menu in the Track tab with a primary match threshold,
+  Smart process frame start/stop, a collapsible Advanced section, and controls
+  for rotation, edge weighting, edge threshold, search area, low-score frame
+  tolerance and template updating.
+- Smart processing searches forward and backward from the user-confirmed anchor
+  frame and records detected start/stop boundaries after consecutive scores fall
+  below the selected threshold. Its embedded Track-tab progress bar advances
+  monotonically across both passes.
+- Added a per-object Hybrid tracking method that combines normalized intensity
+  correlation with edge geometry and a coarse-to-fine rotation search. Hybrid
+  confidence also accounts for edge-map saturation, edge overlap, peak
+  uniqueness, and motion continuity so dense background noise is not reported
+  as a high-quality lock. Smart processing also leaves the user-confirmed
+  anchor unscored instead of reporting a meaningless perfect self-match. It
+  records X, Y, confidence and angle for every accepted frame while retaining
+  the Classic intensity-only method as an option.
+- The main Cine viewport supports cursor-centered scroll-wheel zoom from 1x to
+  20x and preserves that zoom while frames redraw.
+- Added per-object Rotation Range, Rotation Step and Edge Weight controls, plus
+  Angle and Angular Speed plots and an Angle column in the points table.
+- Added a four-Cine workspace. The launcher accepts one to four Cine files and
+  Track & Measure arranges them automatically as one pane, two side-by-side
+  panes, or a 2x2 grid.
+- Added an accent-colored active-pane boundary. Clicking an inactive pane makes
+  it active without placing a measurement point; tracking objects, templates,
+  frames, adjustments, calibration, and clip bounds remain isolated per Cine.
+- Tracking charts combine enabled objects from every loaded Cine, prefix legend
+  labels with C1-C4, use a different line style for each Cine, and align the
+  time axis to each file's trigger timestamp.
+- Added a color-wheel button beside the Cine path. It changes the application's
+  accent palette and saves the selected accent for later launches.
+- Playback stops safely at the selected clip boundary, when loading a new cine,
+  or when closing the window.
+- Preserved the original TrackingGraph and TrackingGraphWindow source unchanged
+  while adding the transport controls.
+
+This modified version remains subject to LICENSE.cineanalyzer.txt included in
+the application docs directory.
