@@ -22,6 +22,7 @@ depend on a private source host.
 | Up to four Cines | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_multi_cine_workspace.py` |
 | Multi-object/autotrack creation | `simplemeas_ui.py`, `simplemeas_tools.py` | `test_tracking_creation_workflow.py` |
 | Hybrid matching and smart boundaries | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py`, `test_tracking_creation_workflow.py` |
+| Hybrid 0.1 px / 0.1° pose refinement | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py` |
 | Public launcher handoff | `launcher-source/` | `test_launcher_source.py` |
 
 Detailed symbol-level notes are in [Playback controls](PLAYBACK_CONTROLS.md)
@@ -38,6 +39,10 @@ and [Hybrid tracking](HYBRID_TRACKING.md).
   native Cine crop and draws a circular angle indicator over it.
   Pose is always solved from the frozen setup-frame patch; the nearest accepted
   frame provides only search/angle continuity and the adjacent confidence term.
+- Hybrid's broad angular search remains coarse for runtime, followed by a local
+  0.1° scan. Translation uses quadratic correlation-peak refinement and is
+  stored at 0.1-pixel resolution. Do not describe resolution as guaranteed
+  absolute accuracy without validation against representative footage.
 - Playback and dual-confidence changes are outside `TrackingGraph` and
   `TrackingGraphWindow`. The feature checkpoint changes those classes only for
   the separately requested multi-Cine overlay and Angle/Angular Speed modes;

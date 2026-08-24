@@ -77,6 +77,14 @@ Modified: 2026-08-24
   The top-right Hybrid viewer now preserves the proven native Cine crop inside
   a circular mask and overlays a rotating purple pose marker plus numeric angle,
   avoiding float/16-bit reinterpretation noise.
+- Fixed Remove All Points leaving Auto Track in a stale creation state. Removing
+  the final object now cancels stale Hybrid selection state, re-arms Add Object,
+  and repaints the Cine after the next method chooser instead of leaving a gray
+  viewport.
+- Hybrid X/Y output now uses quadratic correlation-peak refinement and is stored
+  at 0.1-pixel resolution by default. A final local 0.1° scan follows the coarse
+  rotation search, and accepted angles are stored at 0.1° resolution. Classic
+  tracking and its original interpolation controls are unchanged.
 - Fixed a native PySide crash when creating or editing a Hybrid reinforcement
   region. Scene-clearing redraws are now deferred until the active graphics
   mouse event has returned, preventing Qt from dispatching through a deleted

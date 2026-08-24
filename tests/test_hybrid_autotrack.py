@@ -188,7 +188,7 @@ class HybridAutoTrackTest(unittest.TestCase):
         cv2.circle(template, (11, 29), 5, 145, -1)
         cv2.line(template, (8, 17), (20, 25), 250, 2)
 
-        expected_angle = 11.5
+        expected_angle = 11.3
         rotated = AutoTrackAlgorithms._rotate_image(template, expected_angle)
         rng = np.random.default_rng(7)
         search = np.tile(np.linspace(32, 68, 121, dtype=np.float32), (121, 1))
@@ -218,6 +218,18 @@ class HybridAutoTrackTest(unittest.TestCase):
         self.assertAlmostEqual(result.x_pos, expected_center[0], delta=1.0)
         self.assertAlmostEqual(result.y_pos, expected_center[1], delta=1.0)
         self.assertAlmostEqual(result.angle_deg, expected_angle, delta=1.0)
+        # Hybrid resolves its final pose at explicit tenths. The deterministic
+        # synthetic target lands between the old 0.5° grid points and also
+        # exercises the quadratic subpixel translation refinement.
+        self.assertAlmostEqual(result.x_pos * 10.0, round(result.x_pos * 10.0), places=6)
+        self.assertAlmostEqual(result.y_pos * 10.0, round(result.y_pos * 10.0), places=6)
+        self.assertAlmostEqual(
+            result.angle_deg * 10.0,
+            round(result.angle_deg * 10.0),
+            places=6,
+        )
+        self.assertGreater(abs(result.x_pos - round(result.x_pos)), 0.05)
+        self.assertGreater(abs((result.angle_deg * 2.0) - round(result.angle_deg * 2.0)), 0.05)
         self.assertGreater(result.confid_val_ij, 0.65)
         self.assertGreater(result.edge_score, 0.55)
         self.assertEqual(result.method, 'Hybrid')

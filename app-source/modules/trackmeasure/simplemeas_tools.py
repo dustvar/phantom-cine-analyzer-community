@@ -159,11 +159,14 @@ class TrackTool(BaseTool):
                      'origin_frame': None, 'relative_to': None, 'enabled': True, 'color': self.colors_hex_codes[new_id % len(self.colors_hex_codes)], 
                      'start': int(self.vm.cine_handler.metadata.FirstImageNo), 
                      'end': int(self.vm.cine_handler.metadata.FirstImageNo + self.vm.cine_handler.metadata.ImageCount - 1), 
-                     'search_area':(101,101), 'tpl_rng': (31,31), 'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+                     'search_area':(101,101), 'tpl_rng': (31,31),
+                     'subpixel_size': '1/10 pix' if is_hybrid else '1.0 pix',
+                     'subpixel_type': 'cubic',
                      'frames_enable': True, 'search_area_enable': True, 'tpl_rng_enable':True, 
                      'update_template_enable': not is_hybrid, 'acceptable_score': 0.6, 'tpl_score': 0.8,
                      'tracking_method': tracking_method, 'rotation_range': 180.0,
                      'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
+                     'position_precision': 0.1, 'angle_precision': 0.1,
                      'rotation_allowed': is_hybrid, 'smart_frames': is_hybrid,
                      'smart_miss_limit': 3, 'search_area_multiplier': 3.0,
                      'adjacent_confidence_weight': 0.65,
@@ -402,6 +405,8 @@ class AutoTrackTool(TrackTool):
         rotation_step = template.get('rotation_step', 2.0)
         edge_weight = template.get('edge_weight', 0.6)
         edge_threshold = template.get('edge_threshold', None)
+        position_precision = template.get('position_precision', 0.1)
+        angle_precision = template.get('angle_precision', 0.1)
         adjacent_confidence_weight = float(np.clip(
             template.get('adjacent_confidence_weight', 0.65), 0.0, 1.0
         ))
@@ -578,7 +583,9 @@ class AutoTrackTool(TrackTool):
                                             rotation_range=rotation_range,
                                             rotation_step=rotation_step,
                                             edge_weight=edge_weight,
-                                            edge_threshold=edge_threshold)
+                                            edge_threshold=edge_threshold,
+                                            position_precision=position_precision,
+                                            angle_precision=angle_precision)
                     candidate_center = (float(data.x_pos), float(data.y_pos))
                     candidate_patch = AutoTrackAlgorithms.extract_oriented_patch(
                         current_img,

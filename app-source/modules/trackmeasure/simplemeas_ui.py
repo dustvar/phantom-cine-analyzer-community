@@ -587,6 +587,12 @@ class ResizableGraph(QGraphicsView):
                     self.parent.create_classic_track_at(self.mapToScene(event_pos))
                 elif method == HYBRID_TRACKING_METHOD:
                     self.parent.begin_hybrid_region_selection(self)
+                # Native modal dialogs can temporarily dim the OpenGL-backed
+                # viewport on macOS. Repaint after the dialog event loop has
+                # completely returned, including after Cancel.
+                redraw_cb = getattr(self.parent.vm, 'redraw_cb', None)
+                if callable(redraw_cb):
+                    QTimer.singleShot(0, redraw_cb)
                 event.accept()
                 return
             self.graph_click(event.pos())
@@ -2754,7 +2760,10 @@ class MainWindow(QWidget):
             and self.vm is not None
             and self.vm.track_type == 'Auto'
             and self.vm.active_tool is not None
-            and getattr(self.vm.active_tool, 'track_select', False)
+            and (
+                getattr(self.vm.active_tool, 'track_select', False)
+                or not self.vm.track_data
+            )
             and self._hybrid_selection_graph is None
         )
 
@@ -2859,6 +2868,8 @@ class MainWindow(QWidget):
             'template_offset': (0.0, 0.0),
             'rotation_allowed': True,
             'rotation_range': 180.0,
+            'position_precision': 0.1,
+            'angle_precision': 0.1,
             'edge_threshold': 0.30,
             'update_template_enable': False,
             'smart_frames': True,
@@ -2912,6 +2923,7 @@ class MainWindow(QWidget):
         # Convert the visible Qt rotation back into the OpenCV tracking
         # convention before storing it with the object's pose.
         angle = ((-float(item.rotation()) + 180.0) % 360.0) - 180.0
+        angle = round(angle * 10.0) / 10.0
         anchor_frame = int(track.get('anchor_frame', track['t_frames'][0]))
         point_indices = np.flatnonzero(track['frames'] == anchor_frame)
         template_indices = np.flatnonzero(track['t_frames'] == anchor_frame)
@@ -3753,8 +3765,24 @@ class MainWindow(QWidget):
             self.track_table.setRowCount(0)
             self.vm.active_object = None 
             self.refresh_track_keys()
+        if not self.vm.track_data:
+            # Removing the final object should leave Track mode ready to create
+            # another object. Clear any stale two-step Hybrid state and keep the
+            # Cine pixmap alive across the next tracking-method dialog.
+            self._hybrid_selection_graph = None
+            self.vm.pending_tracking_method = None
+            if self.vm.active_tool is not None and hasattr(
+                self.vm.active_tool, 'track_select'
+            ):
+                self.vm.active_tool.track_select = True
+                self.add_object_button.setChecked(True)
+                self.vm.update_status_text.emit(
+                    'Click the image to add a new tracking object.'
+                )
         self.track_canvas.redraw(self.vm.track_data)
         self.vm.redraw_cb()
+        QTimer.singleShot(0, self.vm.redraw_cb)
+        self.graph.viewport().update()
 
     def remove_points_from_template(self, inds, t_mask, start_idx):
         t = self.vm.track_data[self.vm.active_object]
@@ -3881,6 +3909,8 @@ class MainWindow(QWidget):
             t.setdefault('tracking_method', HYBRID_TRACKING_METHOD)
             t.setdefault('rotation_range', 180.0)
             t.setdefault('rotation_step', 2.0)
+            t.setdefault('position_precision', 0.1)
+            t.setdefault('angle_precision', 0.1)
             t.setdefault('edge_weight', 0.6)
             t.setdefault('adjacent_confidence_weight', 0.65)
             t.setdefault('edge_threshold', 0.30)

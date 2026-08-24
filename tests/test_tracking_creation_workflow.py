@@ -77,8 +77,73 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertTrue(track['smart_frames'])
         self.assertTrue(track['rotation_allowed'])
         self.assertEqual(track['rotation_range'], 180.0)
+        self.assertEqual(track['subpixel_size'], '1/10 pix')
         self.assertEqual(track['edge_threshold'], 0.30)
+        self.assertEqual(track['position_precision'], 0.1)
+        self.assertEqual(track['angle_precision'], 0.1)
         self.assertEqual(track['scores'][0], 'N/A')
+
+    def test_empty_track_list_rearms_method_choice_without_add_button_click(self):
+        track_tool = object()
+        dummy = SimpleNamespace(
+            current_tool=track_tool,
+            track_tool=track_tool,
+            _hybrid_selection_graph=None,
+            vm=SimpleNamespace(
+                track_type='Auto',
+                active_tool=SimpleNamespace(track_select=False),
+                track_data={},
+            ),
+        )
+
+        self.assertTrue(simplemeas_ui.MainWindow.should_prompt_for_tracking_method(dummy))
+
+    def test_remove_all_points_rearms_creation_and_clears_hybrid_state(self):
+        redraws = []
+        canvas_redraws = []
+
+        class CheckedButton:
+            checked = False
+
+            def setChecked(self, checked):
+                self.checked = bool(checked)
+
+        class Viewport:
+            def update(self):
+                redraws.append('viewport')
+
+        dummy = SimpleNamespace(
+            vm=SimpleNamespace(
+                active_object=0,
+                track_data={0: {'relative_to': None}},
+                pending_tracking_method=HYBRID_TRACKING_METHOD,
+                active_tool=SimpleNamespace(track_select=False),
+                update_status_text=SignalSink(),
+                redraw_cb=lambda: redraws.append('cine'),
+            ),
+            _hybrid_selection_graph=object(),
+            add_object_button=CheckedButton(),
+            track_canvas=SimpleNamespace(
+                redraw=lambda data: canvas_redraws.append(dict(data))
+            ),
+            graph=SimpleNamespace(viewport=lambda: Viewport()),
+        )
+
+        def refresh_track_keys():
+            dummy.vm.active_object = None
+
+        dummy.refresh_track_keys = refresh_track_keys
+
+        simplemeas_ui.MainWindow.remove_track_data_points(dummy, set(), 'all')
+        self.app.processEvents()
+
+        self.assertEqual(dummy.vm.track_data, {})
+        self.assertIsNone(dummy._hybrid_selection_graph)
+        self.assertIsNone(dummy.vm.pending_tracking_method)
+        self.assertTrue(dummy.vm.active_tool.track_select)
+        self.assertTrue(dummy.add_object_button.checked)
+        self.assertEqual(canvas_redraws, [{}])
+        self.assertGreaterEqual(redraws.count('cine'), 2)
 
     def test_hybrid_advanced_dialog_keeps_setup_geometry_frozen(self):
         dialog = simplemeas_ui.AutoTrackDialog()

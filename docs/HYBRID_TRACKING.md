@@ -37,6 +37,19 @@ a full-range recovery search. Angles are accumulated rather than wrapped at
 Rectangular templates rotate on an expanded masked canvas during matching, so
 the reference geometry is not clipped at 90°.
 
+## Pose resolution
+
+Hybrid translation uses a quadratic fit around the best correlation peak, then
+reports X and Y at 0.1-pixel resolution by default. Rotation keeps the practical
+coarse and fine searches, then performs a final local scan at 0.1° resolution.
+The final pose stored for each accepted frame is therefore expressed in tenths
+of a pixel and tenths of a degree. These are measurement resolutions, not a
+guarantee of absolute accuracy: image blur, exposure, template geometry, noise,
+calibration, and confidence still determine real-world uncertainty.
+
+These precision settings are Hybrid-only. Classic continues to use PCA's
+original interpolation controls and implementation unchanged.
+
 ## Confidence score
 
 For candidate frame `t`, pose is solved against the frozen setup-frame model.
@@ -95,4 +108,5 @@ diagonal so the unchanged local rectangle fits at every orientation.
 
 Coverage is in `tests/test_hybrid_autotrack.py` and
 `tests/test_tracking_creation_workflow.py`, including directional pass order and
-the adjacent-plus-setup score composition.
+the adjacent-plus-setup score composition, tenth-resolution pose output, and
+the remove-all/re-create lifecycle.

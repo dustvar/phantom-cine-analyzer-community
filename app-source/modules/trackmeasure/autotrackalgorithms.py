@@ -169,6 +169,14 @@ class AutoTrackAlgorithms:
         return dx, dy
 
     @staticmethod
+    def _quantize_pose_value(value, precision):
+        """Round a pose component to an explicit measurement resolution."""
+        precision = float(precision)
+        if not np.isfinite(precision) or precision <= 0:
+            return float(value)
+        return float(np.round(float(value) / precision) * precision)
+
+    @staticmethod
     def interpolator(tpl_img, sa_img, sub_pixel, sub_pixel_type: str):
         sp_i = INTERP_METHOD.index(sub_pixel_type.lower())
         tpl_interp = zoom(tpl_img, sub_pixel, order = sp_i)
@@ -224,6 +232,8 @@ class AutoTrackAlgorithms:
         rotation_step: float = 2.0,
         edge_weight: float = 0.6,
         edge_threshold: float = None,
+        position_precision: float = 0.1,
+        angle_precision: float = 0.1,
     ):
         """Match intensity and edge geometry while solving X, Y and angle.
 
@@ -250,6 +260,8 @@ class AutoTrackAlgorithms:
             rotation_step = float(np.clip(abs(rotation_step), 0.25, max(0.25, rotation_range or 0.25)))
             edge_weight = float(np.clip(edge_weight, 0.0, 1.0))
             intensity_weight = 1.0 - edge_weight
+            position_precision = float(np.clip(abs(position_precision), 0.01, 1.0))
+            angle_precision = float(np.clip(abs(angle_precision), 0.05, 1.0))
 
             best = None
 
@@ -458,6 +470,7 @@ class AutoTrackAlgorithms:
             if best is None:
                 raise ValueError('Rotated template does not fit inside the search area')
 
+            fine_step = None
             if rotation_range > 0 and active_coarse_step > 0.5:
                 fine_step = max(0.25, active_coarse_step / 4.0)
                 fine_start = max(
@@ -471,6 +484,29 @@ class AutoTrackAlgorithms:
                     if candidate is not None and candidate['score'] > best['score']:
                         best = candidate
 
+            # Keep the broad rotation search practical, then resolve the final
+            # pose locally at the requested angular precision. With the default
+            # settings this adds only 11 nearby evaluations instead of scanning
+            # the full ±180° range in 0.1° increments.
+            if rotation_range > 0:
+                refinement_span = max(
+                    angle_precision,
+                    fine_step if fine_step is not None else min(active_coarse_step, 0.5),
+                )
+                precision_start = max(
+                    -rotation_range,
+                    best['relative_angle'] - refinement_span,
+                )
+                precision_stop = min(
+                    rotation_range,
+                    best['relative_angle'] + refinement_span,
+                )
+                scan_angles(np.arange(
+                    precision_start,
+                    precision_stop + (angle_precision * 0.5),
+                    angle_precision,
+                ))
+
             dx, dy = AutoTrackAlgorithms._subpixel_peak(
                 best['combined'], best['row'], best['col']
             )
@@ -482,13 +518,22 @@ class AutoTrackAlgorithms:
             )
             x_pos = sa_tl[0] + best['col'] + ((tpl_w - 1) / 2.0) + dx
             y_pos = sa_tl[1] + best['row'] + ((tpl_h - 1) / 2.0) + dy
+            x_pos = AutoTrackAlgorithms._quantize_pose_value(
+                x_pos, position_precision
+            )
+            y_pos = AutoTrackAlgorithms._quantize_pose_value(
+                y_pos, position_precision
+            )
+            angle_deg = AutoTrackAlgorithms._quantize_pose_value(
+                best['absolute_angle'], angle_precision
+            )
 
             return Data(
                 norm_xcorr_map=best['combined'],
                 x_pos=float(x_pos),
                 y_pos=float(y_pos),
                 confid_val_ij=best['score'],
-                angle_deg=float(best['absolute_angle']),
+                angle_deg=angle_deg,
                 intensity_score=best['intensity'],
                 edge_score=best['edge'],
                 raw_similarity=best['raw_similarity'],
