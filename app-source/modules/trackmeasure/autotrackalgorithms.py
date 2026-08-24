@@ -73,6 +73,37 @@ class AutoTrackAlgorithms:
         return edges
 
     @staticmethod
+    def _soft_edge_image(image, threshold=None):
+        """Return a blur-tolerant, continuous gradient-strength image.
+
+        Canny edges are useful for the visible geometry overlay and discrete
+        overlap diagnostics, but their one-pixel threshold crossings discard
+        the intensity ramp that contains subpixel edge-location information.
+        This representation preserves that ramp for correlation refinement.
+        """
+        image_u8 = AutoTrackAlgorithms._normalize_u8(image)
+        if image_u8.size == 0:
+            return np.zeros(image_u8.shape, dtype=np.float32)
+        blurred = cv2.GaussianBlur(image_u8, (5, 5), 1.0)
+        gx = cv2.Scharr(blurred, cv2.CV_32F, 1, 0)
+        gy = cv2.Scharr(blurred, cv2.CV_32F, 0, 1)
+        magnitude = cv2.magnitude(gx, gy)
+        finite = magnitude[np.isfinite(magnitude)]
+        if finite.size == 0:
+            return np.zeros(magnitude.shape, dtype=np.float32)
+        scale = float(np.percentile(finite, 98.0))
+        if scale <= 1e-9:
+            return np.zeros(magnitude.shape, dtype=np.float32)
+        normalized = np.clip(magnitude / scale, 0.0, 1.0)
+        # Keep the transition gradual. A blurred edge still contributes with a
+        # lower weight instead of jumping from present to absent at one pixel.
+        floor = 0.04 if threshold is None else float(
+            np.clip(float(threshold) * 0.20, 0.01, 0.20)
+        )
+        softened = np.clip((normalized - floor) / (1.0 - floor), 0.0, 1.0)
+        return cv2.GaussianBlur(softened.astype(np.float32), (3, 3), 0.65)
+
+    @staticmethod
     def extract_oriented_patch(image, center, size, angle_deg=0.0):
         """Extract a rotated rectangular region centered in full-image coordinates."""
         arr = np.asarray(image)
@@ -253,9 +284,15 @@ class AutoTrackAlgorithms:
             sa_edges_raw = AutoTrackAlgorithms._edge_image(
                 sa_u8, threshold=edge_threshold, dilate=False
             )
-            sa_edges = cv2.dilate(
-                sa_edges_raw, np.ones((3, 3), dtype=np.uint8), iterations=1
-            ).astype(np.float32) / 255.0
+            sa_soft_edges = AutoTrackAlgorithms._soft_edge_image(
+                sa_u8, threshold=edge_threshold
+            )
+            template_edges_raw = AutoTrackAlgorithms._edge_image(
+                tpl_u8, threshold=edge_threshold, dilate=False
+            )
+            template_soft_edges = AutoTrackAlgorithms._soft_edge_image(
+                tpl_u8, threshold=edge_threshold
+            )
             rotation_range = float(np.clip(abs(rotation_range), 0.0, 180.0))
             rotation_step = float(np.clip(abs(rotation_step), 0.25, max(0.25, rotation_range or 0.25)))
             edge_weight = float(np.clip(edge_weight, 0.0, 1.0))
@@ -293,22 +330,19 @@ class AutoTrackAlgorithms:
                     or rotated_tpl.shape[1] > sa_u8.shape[1]
                 ):
                     return None
-                local_edges_raw = AutoTrackAlgorithms._edge_image(
-                    tpl_u8, threshold=edge_threshold, dilate=False
-                )
                 rotated_edges_raw = AutoTrackAlgorithms._rotate_image_expanded(
-                    local_edges_raw,
+                    template_edges_raw,
                     absolute_angle,
                     interpolation=cv2.INTER_NEAREST,
                 )
                 rotated_edges_raw[rotated_mask == 0] = 0
-                rotated_edges = cv2.dilate(
-                    rotated_edges_raw,
-                    np.ones((3, 3), dtype=np.uint8),
-                    iterations=1,
+                rotated_soft_edges = AutoTrackAlgorithms._rotate_image_expanded(
+                    template_soft_edges,
+                    absolute_angle,
+                    interpolation=cv2.INTER_LINEAR,
                 )
+                rotated_soft_edges[rotated_mask == 0] = 0.0
                 tpl_float = rotated_tpl.astype(np.float32) / 255.0
-                tpl_edges = rotated_edges.astype(np.float32) / 255.0
 
                 intensity_map = cv2.matchTemplate(
                     sa_float,
@@ -319,10 +353,15 @@ class AutoTrackAlgorithms:
                 intensity_map = np.nan_to_num(intensity_map, nan=-1.0, posinf=-1.0, neginf=-1.0)
                 intensity_unit = np.clip((intensity_map + 1.0) / 2.0, 0.0, 1.0)
 
-                if np.count_nonzero(rotated_edges) >= 8 and np.count_nonzero(sa_edges) >= 8:
+                if (
+                    np.count_nonzero(rotated_edges_raw) >= 8
+                    and np.count_nonzero(sa_edges_raw) >= 8
+                    and np.count_nonzero(rotated_soft_edges) >= 8
+                    and np.count_nonzero(sa_soft_edges) >= 8
+                ):
                     edge_map = cv2.matchTemplate(
-                        sa_edges,
-                        tpl_edges,
+                        sa_soft_edges,
+                        rotated_soft_edges,
                         cv2.TM_CCORR_NORMED,
                         mask=rotated_mask,
                     )

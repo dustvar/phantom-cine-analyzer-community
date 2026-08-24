@@ -539,6 +539,17 @@ class ResizableGraph(QGraphicsView):
         if self._within_bounds(scene_pos):
             self.parent.vm.update_mouse_pos_cb(self.mouse_pos)
             self.parent.vm.graph_mouse_motion_cb(self.mouse_pos)
+            snap_fn = getattr(self.parent, 'tracking_snap_candidate', None)
+            snap_candidate = snap_fn(self, scene_pos) if callable(snap_fn) else None
+            if snap_candidate is not None:
+                self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+                self.setToolTip(
+                    f'Click to reuse the exact point from '
+                    f'{snap_candidate["name"]}.'
+                )
+            else:
+                self.viewport().unsetCursor()
+                self.setToolTip('')
         else:
             self.mouse_pos = None
             self.label.setText('Coordinates:\nN/A')
@@ -551,6 +562,8 @@ class ResizableGraph(QGraphicsView):
 
     def leaveEvent(self, event):
         self.mouse_pos = None
+        self.viewport().unsetCursor()
+        self.setToolTip('')
         self.parent.vm.update_mouse_pos_cb(None, clear=True)
         if self.parent.status_bar.text() == 'Use Ctrl + Arrow keys for fine mouse control and Ctrl + Enter to add a point':
             self.parent.vm.update_status_text.emit('')
@@ -558,14 +571,6 @@ class ResizableGraph(QGraphicsView):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             event_pos = event.position().toPoint()
-            item = self.itemAt(event_pos)
-            owner = item
-            while owner is not None and not isinstance(owner, HybridRegionItem):
-                owner = owner.parentItem()
-            if owner is not None:
-                QGraphicsView.mousePressEvent(self, event)
-                return
-
             if self.parent.is_hybrid_region_selection_active(self):
                 scene_pos = self.mapToScene(event_pos)
                 if self._within_bounds(scene_pos):
@@ -594,6 +599,17 @@ class ResizableGraph(QGraphicsView):
                 if callable(redraw_cb):
                     QTimer.singleShot(0, redraw_cb)
                 event.accept()
+                return
+
+            # Existing fixture graphics remain editable during normal use, but
+            # Add Object must win the hit test so a new Classic or Hybrid object
+            # can reuse a point inside an earlier fixture rectangle.
+            item = self.itemAt(event_pos)
+            owner = item
+            while owner is not None and not isinstance(owner, HybridRegionItem):
+                owner = owner.parentItem()
+            if owner is not None:
+                QGraphicsView.mousePressEvent(self, event)
                 return
             self.graph_click(event.pos())
 
@@ -868,6 +884,10 @@ class AutoTrackDialog(QDialog):
         self.edge_weight.setRange(0.0, 1.0)
         self.edge_weight.setSingleStep(0.05)
         self.edge_weight.setValue(0.6)
+        self.edge_weight.setToolTip(
+            '0 uses intensity only; 1 uses soft edge geometry only. The '
+            'default 0.60 score is 60% edge geometry and 40% intensity.'
+        )
 
         # Display Object Name
         self.obj_name_basic = QLabel()
@@ -2193,6 +2213,10 @@ class MainWindow(QWidget):
         self.hybrid_edge_weight.setRange(0.0, 1.0)
         self.hybrid_edge_weight.setSingleStep(0.05)
         self.hybrid_edge_weight.setValue(0.60)
+        self.hybrid_edge_weight.setToolTip(
+            '0 uses intensity only; 1 uses soft edge geometry only. At the '
+            'default 0.60, pose matching is 60% edge geometry and 40% intensity.'
+        )
         hybrid_advanced_form.addRow('Edge Weight', self.hybrid_edge_weight)
         self.hybrid_neighbor_weight = QDoubleSpinBox()
         self.hybrid_neighbor_weight.setRange(0.0, 1.0)
@@ -2770,12 +2794,145 @@ class MainWindow(QWidget):
     def choose_tracking_method(self):
         return TrackingMethodDialog.choose(self)
 
+    def tracking_snap_candidate(self, graph, scene_pos):
+        """Find a displayed tracking point close enough to reuse exactly."""
+        if self.vm is None or graph is None:
+            return None
+        creation_armed = bool(
+            self.is_hybrid_region_selection_active(graph)
+            or self.should_prompt_for_tracking_method()
+        )
+        if not creation_armed:
+            return None
+        transform_scale = max(abs(float(graph.transform().m11())), 1e-6)
+        tolerance = 12.0 / transform_scale
+        requested = np.array([float(scene_pos.x()), float(scene_pos.y())])
+        best = None
+        for object_id, track in self.vm.track_data.items():
+            matches = np.flatnonzero(
+                np.asarray(track.get('frames', [])) == int(self.vm.active_frame)
+            )
+            for match in matches:
+                point = np.asarray(track['points'][int(match)], dtype=float)
+                distance = float(np.linalg.norm(point - requested))
+                if distance <= tolerance and (
+                    best is None or distance < best['distance']
+                ):
+                    best = {
+                        'object_id': object_id,
+                        'name': track.get('name', f'Object {object_id}'),
+                        'point': (float(point[0]), float(point[1])),
+                        'distance': distance,
+                    }
+        return best
+
+    def _snap_new_tracking_point(self, graph, scene_pos):
+        candidate = self.tracking_snap_candidate(graph, scene_pos)
+        if candidate is None:
+            return QPointF(scene_pos), None
+        self.vm.update_status_text.emit(
+            f'Using the exact point from {candidate["name"]} for comparison.'
+        )
+        return QPointF(*candidate['point']), candidate['object_id']
+
+    def _hybrid_fixture_sources(self):
+        sources = []
+        if self.vm is None:
+            return sources
+        for object_id, track in self.vm.track_data.items():
+            if track.get('tracking_method') != HYBRID_TRACKING_METHOD:
+                continue
+            matches = np.flatnonzero(
+                np.asarray(track.get('frames', [])) == int(self.vm.active_frame)
+            )
+            if matches.size:
+                sources.append((
+                    object_id,
+                    track.get('name', f'Object {object_id}'),
+                ))
+        return sources
+
+    def _choose_hybrid_fixture_source(self):
+        sources = self._hybrid_fixture_sources()
+        if not sources:
+            return True, None
+        labels = ['Create a new fixture'] + [
+            f'{name} (Object {object_id})' for object_id, name in sources
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            'Hybrid Fixture Reference',
+            'Use a new fixture, or reuse the tracked pose fixture from an '
+            'existing Hybrid object:',
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return False, None
+        if selected == labels[0]:
+            return True, None
+        selected_index = labels.index(selected) - 1
+        return True, sources[selected_index][0]
+
+    def _reuse_hybrid_fixture(self, track, source_id, tracked_point):
+        source = self.vm.track_data.get(source_id)
+        if source is None:
+            return False
+        matches = np.flatnonzero(
+            np.asarray(source.get('frames', [])) == int(self.vm.active_frame)
+        )
+        if not matches.size:
+            return False
+        source_index = int(matches[0])
+        source_point = np.asarray(source['points'][source_index], dtype=float)
+        source_angles = np.asarray(
+            source.get('angles', np.zeros(len(source['points']))), dtype=float
+        )
+        source_angle = float(source_angles[source_index])
+        fixture_center = source_point + self._rotate_tracking_offset(
+            source.get('template_offset', (0.0, 0.0)), source_angle
+        )
+        global_offset = fixture_center - np.asarray(tracked_point, dtype=float)
+        local_offset = self._rotate_tracking_offset(global_offset, -source_angle)
+        for key in (
+            'tpl_rng', 'rotation_allowed', 'rotation_range', 'rotation_step',
+            'edge_weight', 'edge_threshold', 'search_area_multiplier',
+            'smart_frames', 'smart_miss_limit', 'acceptable_score',
+            'adjacent_confidence_weight', 'position_precision',
+            'angle_precision',
+        ):
+            if key in source:
+                track[key] = source[key]
+        track.update({
+            'template_angle': source_angle,
+            'template_offset': tuple(local_offset),
+            'fixture_source_object': source_id,
+            'update_template_enable': False,
+        })
+        track['angles'][0] = source_angle
+        track['t_angles'][0] = source_angle
+        track['search_area'] = self._hybrid_search_dimensions(
+            track['tpl_rng'],
+            track.get('search_area_multiplier', 3.0),
+            track.get('rotation_allowed', True),
+        )
+        return True
+
     def create_classic_track_at(self, scene_pos):
         if not (0 <= scene_pos.x() <= self.graph.xMax and 0 <= scene_pos.y() <= self.graph.yMax):
             return
+        scene_pos, snapped_from = self._snap_new_tracking_point(
+            self.graph, scene_pos
+        )
         self.vm.pending_tracking_method = CLASSIC_TRACKING_METHOD
         try:
-            self.vm.graph_click_cb((round(scene_pos.x()), round(scene_pos.y())))
+            point = (
+                (scene_pos.x(), scene_pos.y())
+                if snapped_from is not None
+                else (round(scene_pos.x()), round(scene_pos.y()))
+            )
+            self.vm.graph_click_cb(point)
         finally:
             self.vm.pending_tracking_method = None
         self.add_object_button.setChecked(False)
@@ -2839,7 +2996,18 @@ class MainWindow(QWidget):
         if graph is None or not (0 <= scene_pos.x() <= graph.xMax and 0 <= scene_pos.y() <= graph.yMax):
             return
 
-        tracked_point = (round(scene_pos.x()), round(scene_pos.y()))
+        scene_pos, snapped_from = self._snap_new_tracking_point(graph, scene_pos)
+        fixture_accepted, fixture_source_id = self._choose_hybrid_fixture_source()
+        if not fixture_accepted:
+            self.vm.update_status_text.emit(
+                'Hybrid fixture selection canceled; click a point to try again.'
+            )
+            return
+        tracked_point = (
+            (scene_pos.x(), scene_pos.y())
+            if snapped_from is not None
+            else (round(scene_pos.x(), 1), round(scene_pos.y(), 1))
+        )
         self.vm.pending_tracking_method = HYBRID_TRACKING_METHOD
         try:
             self.vm.graph_click_cb(tracked_point)
@@ -2878,6 +3046,12 @@ class MainWindow(QWidget):
         })
         track['angles'][0] = 0.0
         track['t_angles'][0] = 0.0
+        reused_fixture = bool(
+            fixture_source_id is not None
+            and self._reuse_hybrid_fixture(
+                track, fixture_source_id, tracked_point
+            )
+        )
         self.main_tab.setCurrentIndex(2)
         self._ensure_details_panel_open()
         self._sync_hybrid_settings_panel()
@@ -2885,9 +3059,18 @@ class MainWindow(QWidget):
         # Repaint immediately so the image remains visible and the editable
         # reinforcement box appears around the newly selected point.
         self.vm.redraw_cb()
-        self.vm.update_status_text.emit(
-            'Step 2 of 2: move, resize, and rotate the purple reinforcement box over unique geometry, then process.'
-        )
+        if reused_fixture:
+            source_name = self.vm.track_data[fixture_source_id].get(
+                'name', f'Object {fixture_source_id}'
+            )
+            self.vm.update_status_text.emit(
+                f'Reused the Hybrid fixture from {source_name}. You may adjust '
+                'the cloned box before processing.'
+            )
+        else:
+            self.vm.update_status_text.emit(
+                'Step 2 of 2: move, resize, and rotate the purple reinforcement box over unique geometry, then process.'
+            )
 
     def finish_hybrid_region_selection(self, graph, rect):
         """Compatibility path for an in-progress drag from an older build."""
@@ -3391,7 +3574,12 @@ class MainWindow(QWidget):
     def on_draw_points(self, graph_name, points, color='red'):
         graph = self._graph_widget(graph_name)
         for pt in points:
-            dot_rad = math.sqrt((graph.xMax * graph.yMax)/(math.pi*10000))
+            dot_rad = max(
+                0.5,
+                0.5 * math.sqrt(
+                    (graph.xMax * graph.yMax) / (math.pi * 10000)
+                ),
+            )
             graph.scene().addEllipse(pt[0] - dot_rad, pt[1] - dot_rad, dot_rad*2, dot_rad*2, pen=QPen(QColor(color)), brush=QBrush(QColor(color)))
     
     def on_clear_scene(self):
@@ -3413,7 +3601,12 @@ class MainWindow(QWidget):
 
     def on_draw_lines(self, graph_name, points, point_target, connect_pairs, connect_box, connect_end, color='red'):
         graph = self._graph_widget(graph_name)
-        dot_rad = max(1, math.sqrt((graph.xMax * graph.yMax)/(math.pi*10000)))
+        dot_rad = max(
+            0.5,
+            0.5 * math.sqrt(
+                (graph.xMax * graph.yMax) / (math.pi * 10000)
+            ),
+        )
         # line_width = max(1, dot_rad // 2.5)
         line_width = 1
         pen = QPen(QColor(color), line_width)

@@ -190,6 +190,9 @@ class HybridAutoTrackTest(unittest.TestCase):
 
         expected_angle = 11.3
         rotated = AutoTrackAlgorithms._rotate_image(template, expected_angle)
+        # Defocus the target slightly so the test exercises the continuous
+        # gradient matcher instead of relying on ideal one-pixel Canny edges.
+        rotated = cv2.GaussianBlur(rotated, (0, 0), 1.0)
         rng = np.random.default_rng(7)
         search = np.tile(np.linspace(32, 68, 121, dtype=np.float32), (121, 1))
         search += rng.normal(0, 3.0, search.shape)
@@ -219,8 +222,7 @@ class HybridAutoTrackTest(unittest.TestCase):
         self.assertAlmostEqual(result.y_pos, expected_center[1], delta=1.0)
         self.assertAlmostEqual(result.angle_deg, expected_angle, delta=1.0)
         # Hybrid resolves its final pose at explicit tenths. The deterministic
-        # synthetic target lands between the old 0.5° grid points and also
-        # exercises the quadratic subpixel translation refinement.
+        # synthetic target lands between the old 0.5° grid points.
         self.assertAlmostEqual(result.x_pos * 10.0, round(result.x_pos * 10.0), places=6)
         self.assertAlmostEqual(result.y_pos * 10.0, round(result.y_pos * 10.0), places=6)
         self.assertAlmostEqual(
@@ -228,11 +230,115 @@ class HybridAutoTrackTest(unittest.TestCase):
             round(result.angle_deg * 10.0),
             places=6,
         )
-        self.assertGreater(abs(result.x_pos - round(result.x_pos)), 0.05)
         self.assertGreater(abs((result.angle_deg * 2.0) - round(result.angle_deg * 2.0)), 0.05)
         self.assertGreater(result.confid_val_ij, 0.65)
         self.assertGreater(result.edge_score, 0.55)
         self.assertEqual(result.method, 'Hybrid')
+
+    def test_soft_edges_retain_blurred_subpixel_information(self):
+        image = np.zeros((41, 61), dtype=np.float32)
+        image[:, 30:] = 200.0
+        image = cv2.GaussianBlur(image, (0, 0), 1.8)
+
+        soft_edges = AutoTrackAlgorithms._soft_edge_image(image, threshold=0.30)
+
+        self.assertEqual(soft_edges.dtype, np.float32)
+        self.assertGreaterEqual(float(np.min(soft_edges)), 0.0)
+        self.assertLessEqual(float(np.max(soft_edges)), 1.0)
+        nonzero_levels = np.unique(np.round(soft_edges[soft_edges > 0], 3))
+        self.assertGreater(len(nonzero_levels), 4)
+
+    def test_quadratic_peak_recovers_a_fractional_translation(self):
+        rows, cols = np.mgrid[0:5, 0:5]
+        score_map = -((cols - 2.3) ** 2) - ((rows - 1.8) ** 2)
+
+        dx, dy = AutoTrackAlgorithms._subpixel_peak(score_map, 2, 2)
+
+        self.assertAlmostEqual(dx, 0.3, places=6)
+        self.assertAlmostEqual(dy, -0.2, places=6)
+        self.assertAlmostEqual(
+            AutoTrackAlgorithms._quantize_pose_value(40.0 + dx, 0.1),
+            40.3,
+            places=6,
+        )
+
+    def test_rotated_inner_fixture_boundary_uses_all_four_corners(self):
+        self.assertTrue(AutoTrackTool._oriented_region_within_frame(
+            center=(50.0, 50.0), size=(21, 11), angle_deg=30.0,
+            frame_size=(100, 100),
+        ))
+        self.assertTrue(AutoTrackTool._oriented_region_within_frame(
+            center=(10.0, 50.0), size=(21, 11), angle_deg=0.0,
+            frame_size=(100, 100),
+        ))
+        self.assertFalse(AutoTrackTool._oriented_region_within_frame(
+            center=(4.0, 50.0), size=(21, 11), angle_deg=30.0,
+            frame_size=(100, 100),
+        ))
+
+    def test_hybrid_tracking_stops_when_inner_fixture_leaves_frame(self):
+        frames = [np.full((81, 81), 40, dtype=np.uint8) for _ in range(2)]
+
+        class SignalSink:
+            def __init__(self):
+                self.values = []
+
+            def emit(self, *args, **kwargs):
+                self.values.append(args)
+
+        class ImageTools:
+            def debayer(self, image, cfa, bpp, force_mono=1):
+                return image
+
+        class CineHandler:
+            metadata = SimpleNamespace(
+                ImWidth=81, ImHeight=81, CFA='Mono', RealBPP=8,
+                ImageCount=2, FirstImageNo=-10,
+            )
+
+            def get_img(self, frame):
+                return frames[int(frame)]
+
+        status = SignalSink()
+        vm = SimpleNamespace(
+            cine_handler=CineHandler(), image_tools=ImageTools(),
+            abort_autotrack=False, update_progress=SignalSink(),
+            update_status_text=status, track_complete=SignalSink(),
+            active_frame=0,
+        )
+        track = {
+            'name': 'Departing target',
+            'points': np.array([[40.0, 40.0]]), 'frames': np.array([0]),
+            'scores': np.array([1.0]), 'angles': np.array([0.0]),
+            't_points': np.array([[40.0, 40.0]]), 't_frames': np.array([0]),
+            't_angles': np.array([0.0]), 'anchor_frame': 0,
+            'template_offset': (0.0, 0.0),
+            'search_area_enable': True, 'search_area': (61, 61),
+            'tpl_rng': (21, 21), 'acceptable_score': 0.0,
+            'subpixel_size': '1.0 pix', 'subpixel_type': 'cubic',
+            'update_template_enable': False, 'tpl_score': 0.8,
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'rotation_allowed': True, 'rotation_range': 180.0,
+            'rotation_step': 2.0, 'edge_weight': 0.6,
+            'edge_threshold': 0.30, 'smart_frames': True,
+            'smart_miss_limit': 3,
+        }
+
+        outside = Data(
+            norm_xcorr_map=np.ones((1, 1)), x_pos=2.0, y_pos=40.0,
+            confid_val_ij=0.95, angle_deg=15.0,
+        )
+        with patch.object(
+            AutoTrackAlgorithms, 'hybrid_pattern_matcher', return_value=outside
+        ):
+            result = AutoTrackTool(vm).track(1, 1, track)
+
+        self.assertEqual(result['frames'].tolist(), [0])
+        self.assertEqual(
+            result['boundary_reasons']['forward'],
+            {'reason': 'fixture_out_of_frame', 'frame': 1, 'cine_frame': -9},
+        )
+        self.assertTrue(any('inner Hybrid fixture left' in value[0] for value in status.values))
 
     def test_track_points_keep_position_score_and_angle_aligned(self):
         track = {

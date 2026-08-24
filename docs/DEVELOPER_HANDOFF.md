@@ -21,8 +21,9 @@ depend on a private source host.
 | Viewer and clip range | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_viewer_controls.py` |
 | Up to four Cines | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_multi_cine_workspace.py` |
 | Multi-object/autotrack creation | `simplemeas_ui.py`, `simplemeas_tools.py` | `test_tracking_creation_workflow.py` |
+| Exact-point comparison and Hybrid fixture reuse | `simplemeas_ui.py` | `test_tracking_creation_workflow.py` |
 | Hybrid matching and smart boundaries | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py`, `test_tracking_creation_workflow.py` |
-| Hybrid 0.1 px / 0.1° pose refinement | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py` |
+| Blur-tolerant Hybrid edge matching and 0.1 px / 0.1° pose refinement | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py` |
 | Public launcher handoff | `launcher-source/` | `test_launcher_source.py` |
 
 Detailed symbol-level notes are in [Playback controls](PLAYBACK_CONTROLS.md)
@@ -43,6 +44,17 @@ and [Hybrid tracking](HYBRID_TRACKING.md).
   0.1° scan. Translation uses quadratic correlation-peak refinement and is
   stored at 0.1-pixel resolution. Do not describe resolution as guaranteed
   absolute accuracy without validation against representative footage.
+- The Hybrid edge term correlates continuous gradient magnitude for robustness
+  to blur. The purple viewport overlay remains a thresholded edge map for
+  interpretability. `edge_weight` blends edge and intensity evidence within a
+  comparison; `adjacent_confidence_weight` blends adjacent and setup results.
+- The inner rotated fixture is the physical visibility boundary and stops its
+  processing direction as soon as any corner leaves the image. The outer search
+  area may still be shifted inward at the frame edge.
+- Add Object must retain event priority over a `HybridRegionItem`; removing that
+  ordering recreates the bug where points cannot be added inside an old fixture.
+  Exact-point snapping is screen-space tolerant but stores the source point's
+  full floating-point coordinate.
 - Playback and dual-confidence changes are outside `TrackingGraph` and
   `TrackingGraphWindow`. The feature checkpoint changes those classes only for
   the separately requested multi-Cine overlay and Angle/Angular Speed modes;

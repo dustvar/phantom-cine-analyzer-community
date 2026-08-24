@@ -93,6 +93,23 @@ Modified: 2026-08-24
   20x and preserves that zoom while frames redraw.
 - Added per-object Rotation Range, Rotation Step and Edge Weight controls, plus
   Angle and Angular Speed plots and an Angle column in the points table.
+- Fixed Add Object clicks being intercepted by an existing Hybrid fixture.
+  Creation mode now takes priority, including inside another fixture, while
+  fixture editing retains its original behavior when creation is not armed.
+- Hovering near an existing point while adding an object now offers its exact
+  floating-point coordinate for direct Classic-versus-Hybrid comparisons. New
+  Hybrid objects may also clone an existing Hybrid fixture and its settings
+  while keeping their own reporting-point offset.
+- Reduced main-viewer tracking dots to 50% of their previous diameter without
+  changing graph rendering or graph calculations.
+- Hybrid geometry correlation now uses a continuous, Gaussian-smoothed Scharr
+  gradient channel so blurred and pixelated boundaries retain useful subpixel
+  information. The visible purple overlay remains thresholded for clarity.
+- Hybrid processing now stops a direction immediately when any corner of the
+  inner rotated fixture leaves the source image. The outer search area remains
+  allowed to touch an edge and shift inward.
+- Added inline Edge Weight help: 0 is intensity-only, 1 is edge-only, and the
+  default 0.60 blends 60% edge geometry with 40% normalized intensity.
 - Added a four-Cine workspace. The launcher accepts one to four Cine files and
   Track & Measure arranges them automatically as one pane, two side-by-side
   panes, or a 2x2 grid.

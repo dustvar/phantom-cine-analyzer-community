@@ -390,6 +390,35 @@ class AutoTrackTool(TrackTool):
             top + math.floor(height / 2),
         )
         return (left, top), (right, bottom), adjusted_center, (width, height)
+
+    @staticmethod
+    def _oriented_region_within_frame(center, size, angle_deg, frame_size):
+        """Return whether every corner of the inner Hybrid fixture is visible."""
+        # A 31-pixel patch centered at x=15 occupies pixels 0..30 and is still
+        # fully visible.  Use pixel-center extents rather than the geometric
+        # half-width so that exact edge contact is accepted, but the first
+        # genuinely out-of-frame subpixel pose stops the pass.
+        half_width = max(0.0, (float(size[0]) - 1.0) / 2.0)
+        half_height = max(0.0, (float(size[1]) - 1.0) / 2.0)
+        center = np.asarray(center, dtype=float)
+        corners = np.array([
+            (-half_width, -half_height),
+            (half_width, -half_height),
+            (half_width, half_height),
+            (-half_width, half_height),
+        ], dtype=float)
+        transformed = np.array([
+            center + _rotate_tracking_offset(corner, angle_deg)
+            for corner in corners
+        ])
+        frame_width = float(frame_size[0])
+        frame_height = float(frame_size[1])
+        return bool(
+            np.all(transformed[:, 0] >= 0.0)
+            and np.all(transformed[:, 0] <= frame_width - 1.0)
+            and np.all(transformed[:, 1] >= 0.0)
+            and np.all(transformed[:, 1] <= frame_height - 1.0)
+        )
     
     def track(self, start_fr, last_fr, template, progress_offset=0, progress_span=100):
         enable_sa = template['search_area_enable']
@@ -587,6 +616,29 @@ class AutoTrackTool(TrackTool):
                                             position_precision=position_precision,
                                             angle_precision=angle_precision)
                     candidate_center = (float(data.x_pos), float(data.y_pos))
+                    if not self._oriented_region_within_frame(
+                        candidate_center,
+                        tpl_rng,
+                        data.angle_deg,
+                        frame_size,
+                    ):
+                        pass_direction = 'forward' if forward else 'backward'
+                        cine_frame = int(fr) + int(
+                            self.vm.cine_handler.metadata.FirstImageNo
+                        )
+                        template.setdefault('boundary_reasons', {})[
+                            pass_direction
+                        ] = {
+                            'reason': 'fixture_out_of_frame',
+                            'frame': int(fr),
+                            'cine_frame': cine_frame,
+                        }
+                        self.vm.update_status_text.emit(
+                            f'{template["name"]}: tracking stopped at frame '
+                            f'{cine_frame} because the inner Hybrid fixture '
+                            'left the image.'
+                        )
+                        break
                     candidate_patch = AutoTrackAlgorithms.extract_oriented_patch(
                         current_img,
                         candidate_center,

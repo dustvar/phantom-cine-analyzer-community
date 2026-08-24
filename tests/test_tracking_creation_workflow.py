@@ -17,7 +17,7 @@ MODULE_PATH = (
 )
 sys.path.insert(0, str(MODULE_PATH))
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
@@ -428,6 +428,144 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertGreaterEqual(created[0].x(), 0)
         self.assertLessEqual(created[0].x(), graph.xMax)
         graph.close()
+
+    def test_add_object_click_wins_over_an_existing_hybrid_fixture(self):
+        created = []
+
+        class Parent:
+            current_tool = None
+            status_bar = QLabel('')
+            vm = SimpleNamespace(
+                update_mouse_pos_cb=lambda *args, **kwargs: None,
+                graph_mouse_motion_cb=lambda *args, **kwargs: None,
+                update_status_text=SignalSink(),
+            )
+
+            def should_prompt_for_tracking_method(self):
+                return True
+
+            def choose_tracking_method(self):
+                return CLASSIC_TRACKING_METHOD
+
+            def create_classic_track_at(self, point):
+                created.append(point)
+
+            def is_hybrid_region_selection_active(self, graph):
+                return False
+
+        parent = Parent()
+        graph = simplemeas_ui.ResizableGraph(QLabel(), parent)
+        graph.resize(220, 180)
+        graph.show()
+        self.app.processEvents()
+        item = simplemeas_ui.HybridRegionItem(
+            QRectF(0, 0, 80, 80), (50, 50), 0.0, 0, parent,
+            editable=True,
+        )
+        graph.scene().addItem(item)
+
+        QTest.mousePress(
+            graph.viewport(), simplemeas_ui.Qt.MouseButton.LeftButton,
+            pos=graph.viewport().rect().center(),
+        )
+
+        self.assertEqual(len(created), 1)
+        graph.close()
+
+    def test_tracking_snap_reuses_exact_fractional_point(self):
+        graph = simplemeas_ui.ResizableGraph(QLabel(), SimpleNamespace(
+            current_tool=None,
+            status_bar=QLabel(''),
+            vm=SimpleNamespace(
+                update_mouse_pos_cb=lambda *args, **kwargs: None,
+                graph_mouse_motion_cb=lambda *args, **kwargs: None,
+            ),
+        ))
+        graph.resize(400, 300)
+        graph.show()
+        self.app.processEvents()
+        active_tool = SimpleNamespace(track_select=True)
+        dummy = SimpleNamespace(
+            vm=SimpleNamespace(
+                active_frame=3,
+                track_data={0: {
+                    'name': 'Object 0',
+                    'frames': np.array([3]),
+                    'points': np.array([[42.3, 47.6]]),
+                }},
+                active_tool=active_tool,
+            ),
+            is_hybrid_region_selection_active=lambda candidate_graph: False,
+            should_prompt_for_tracking_method=lambda: True,
+        )
+
+        candidate = simplemeas_ui.MainWindow.tracking_snap_candidate(
+            dummy, graph, QPointF(42.8, 47.2)
+        )
+
+        self.assertEqual(candidate['object_id'], 0)
+        self.assertEqual(candidate['point'], (42.3, 47.6))
+        graph.close()
+
+    def test_reused_hybrid_fixture_preserves_global_fixture_pose(self):
+        source = {
+            'name': 'Object 0',
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'frames': np.array([3]),
+            'points': np.array([[40.0, 50.0]]),
+            'angles': np.array([30.0]),
+            'template_offset': (10.0, 4.0),
+            'tpl_rng': (41, 31),
+            'rotation_allowed': True,
+            'rotation_range': 180.0,
+            'rotation_step': 2.0,
+            'edge_weight': 0.7,
+            'edge_threshold': 0.25,
+            'search_area_multiplier': 2.5,
+            'smart_frames': True,
+            'smart_miss_limit': 2,
+            'acceptable_score': 0.6,
+            'adjacent_confidence_weight': 0.65,
+            'position_precision': 0.1,
+            'angle_precision': 0.1,
+        }
+        target = {
+            'points': np.array([[40.0, 50.0]]),
+            'angles': np.array([0.0]),
+            't_angles': np.array([0.0]),
+        }
+        dummy = SimpleNamespace(
+            vm=SimpleNamespace(
+                active_frame=3,
+                track_data={0: source},
+                cine_handler=SimpleNamespace(metadata=SimpleNamespace(
+                    ImWidth=200, ImHeight=160,
+                )),
+            ),
+            _rotate_tracking_offset=simplemeas_ui.MainWindow._rotate_tracking_offset,
+            _hybrid_search_dimensions=lambda size, multiplier, allowed: (129, 129),
+        )
+
+        reused = simplemeas_ui.MainWindow._reuse_hybrid_fixture(
+            dummy, target, 0, (40.0, 50.0)
+        )
+
+        self.assertTrue(reused)
+        self.assertEqual(target['fixture_source_object'], 0)
+        self.assertEqual(target['tpl_rng'], (41, 31))
+        self.assertEqual(target['edge_weight'], 0.7)
+        self.assertAlmostEqual(target['angles'][0], 30.0)
+        source_center = np.array(source['points'][0]) + (
+            simplemeas_ui.MainWindow._rotate_tracking_offset(
+                source['template_offset'], 30.0
+            )
+        )
+        target_center = np.array(target['points'][0]) + (
+            simplemeas_ui.MainWindow._rotate_tracking_offset(
+                target['template_offset'], 30.0
+            )
+        )
+        np.testing.assert_allclose(target_center, source_center)
 
     def test_blank_image_does_not_turn_into_a_solid_edge_preview(self):
         edges = AutoTrackAlgorithms._edge_image(

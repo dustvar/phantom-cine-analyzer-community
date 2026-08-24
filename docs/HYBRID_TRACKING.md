@@ -12,6 +12,15 @@ geometry-aware workflow described here.
    the exact point rotates with the estimated object pose.
 4. Purple pixels show the edge geometry actually entering the score.
 
+While **Add Object** is armed, creation clicks take priority over existing
+fixture graphics. Hovering within 12 screen pixels of a point from the active
+frame changes the cursor and offers that exact floating-point coordinate. This
+makes it possible to create Classic and Hybrid objects at the same reporting
+point for a direct comparison. A new Hybrid object can also clone an existing
+Hybrid fixture from that frame. Cloning copies the fixture pose and tuning but
+computes a new object-local point offset, so either the same or a different
+reporting point can share the reference geometry.
+
 The setup frame, exact point, reinforcement patch, and initial angle remain the
 global reference for that tracking pass.
 
@@ -76,6 +85,18 @@ cannot receive a high score merely because adjacent frames share the same
 noise. The **Neighbor Weight** control in Advanced changes `0.65`; the remaining
 weight is assigned to the setup frame.
 
+**Edge Weight** is the blend used inside each Hybrid image comparison. `0`
+means intensity only, `1` means edge geometry only, and the default `0.60`
+means 60% edge geometry plus 40% normalized intensity. It is not the same as
+Neighbor Weight, which blends the adjacent-frame and setup-frame confidence
+comparisons after the candidate pose has been found.
+
+The matching edge channel uses continuous Scharr gradient strength after a
+small Gaussian blur. This preserves the transition ramp across a defocused or
+pixelated boundary and gives the correlation peak useful subpixel information.
+The visible purple overlay and edge-overlap diagnostic continue to use the
+thresholded edge map, so the user can see the discrete geometry being admitted.
+
 The per-frame `confidence_components` diagnostic stores adjacent, setup,
 combined, neighbor-frame, and setup-frame values. The accepted point table uses
 the combined score. The user-confirmed setup frame remains unscored because
@@ -96,6 +117,12 @@ aborting the pass immediately; the same consecutive-miss limit applies.
 When rotation is enabled, the search rectangle is based on the template's
 diagonal so the unchanged local rectangle fits at every orientation.
 
+The inner fixture has a stricter boundary rule: all four corners of its rotated
+pixel footprint must remain inside the source image. The current direction
+stops immediately when that fixture leaves the image, regardless of the
+low-score tolerance. The larger search rectangle is still allowed to reach the
+edge and be shifted inward.
+
 ## Tuning and validation
 
 - Increase Neighbor Weight when appearance changes gradually but should remain
@@ -109,4 +136,6 @@ diagonal so the unchanged local rectangle fits at every orientation.
 Coverage is in `tests/test_hybrid_autotrack.py` and
 `tests/test_tracking_creation_workflow.py`, including directional pass order and
 the adjacent-plus-setup score composition, tenth-resolution pose output, and
-the remove-all/re-create lifecycle.
+the remove-all/re-create lifecycle. Coverage also includes click-through object
+creation, exact-point and fixture reuse, soft blurred edges, and rotated fixture
+boundary stopping.
