@@ -46,7 +46,7 @@ class WindowManager {
             minWidth: 640,
             minHeight: 480,
             autoHideMenuBar: true,
-            title: 'Phantom Cine Analyzer Playback v' + app.getVersion(),
+            title: 'Phantom Cine Analyzer Additional Features v' + app.getVersion(),
             icon: iconPath,
             webPreferences: {
                 preload: preloadPath

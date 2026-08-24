@@ -1,11 +1,11 @@
 {
   "name": "phantomcineanalyzer",
-  "productName": "PhantomCineAnalyzer",
+  "productName": "Phantom Cine Analyzer Additional Features",
   "version": "1.1.18",
-  "description": "Phantom Cine Analyzer. High-speed video analysis and measurement.",
+  "description": "Phantom Cine Analyzer with additional playback, multi-Cine, and Hybrid tracking features.",
   "desktop": {
-    "name": "Phantom Cine Analyzer",
-    "comment": "Phantom Cine Analyzer"
+    "name": "Phantom Cine Analyzer Additional Features",
+    "comment": "Phantom Cine Analyzer Additional Features"
   },
   "main": "src/main/main.js",
   "homepage": "https://www.phantomhighspeed.com/resourcesandsupport/phantomresources/pcasoftware",

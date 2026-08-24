@@ -1,4 +1,4 @@
-# Phantom Cine Analyzer — community feature branch
+# Phantom Cine Analyzer Additional Features
 
 This repository is a source-level handoff of playback, multi-Cine, interface,
 and tracking improvements made to Phantom Cine Analyzer (PCA) 1.1.18. It is a

@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 
 
@@ -24,7 +25,11 @@ class LauncherSourceTest(unittest.TestCase):
 
     def test_modified_launcher_has_distinct_window_title(self):
         source = (SOURCE / 'main' / 'windowManager.js').read_text(encoding='utf-8')
-        self.assertIn("title: 'Phantom Cine Analyzer Playback v'", source)
+        self.assertIn("title: 'Phantom Cine Analyzer Additional Features v'", source)
+
+    def test_modified_launcher_has_additional_features_product_name(self):
+        package = json.loads((ROOT / 'launcher-source' / 'package.json').read_text(encoding='utf-8'))
+        self.assertEqual(package['productName'], 'Phantom Cine Analyzer Additional Features')
 
     def test_launcher_accepts_and_limits_multi_cine_selection(self):
         window_source = (SOURCE / 'main' / 'windowManager.js').read_text(encoding='utf-8')

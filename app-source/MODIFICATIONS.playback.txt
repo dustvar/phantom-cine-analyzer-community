@@ -1,7 +1,10 @@
-Phantom Cine Analyzer 1.1.18 Playback modification
+Phantom Cine Analyzer Additional Features 1.1.18
 
 Modified: 2026-08-23
 
+- Renamed the modified application from Phantom Cine Analyzer Playback to
+  Phantom Cine Analyzer Additional Features. The bundle identifier remains
+  unchanged so existing macOS settings and permissions continue to apply.
 - Added a dedicated Viewer above Track with non-destructive In/Out playback
   brackets and jump-to-start/end controls.
 - Replaced the single scrubber Play/Pause control with a compact purple

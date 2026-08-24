@@ -1,4 +1,4 @@
-# Phantom Cine Analyzer launcher
+# Phantom Cine Analyzer Additional Features launcher
 
 This directory contains the Electron launcher. The Track & Measure module is
 maintained separately in `../app-source/modules/trackmeasure` and is copied into
