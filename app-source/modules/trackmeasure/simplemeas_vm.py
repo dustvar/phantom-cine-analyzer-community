@@ -44,6 +44,7 @@ class SimpleMeasVM(QObject):
     new_cine_load = Signal(str, object)
     draw_frame = Signal(str, object, int, str, object)
     draw_points = Signal(str, object, str)
+    draw_track_points = Signal(str, object, str, object)
     draw_text_label = Signal(str, object, str)
     draw_lines = Signal(str, object, int, bool, bool, bool, str)
     get_new_scale = Signal(object, object)
@@ -558,6 +559,9 @@ class SimpleMeasVM(QObject):
                                 self.active_tool._connect_box_from_two_points, self.active_tool._connect_at_end, color)
         if self.active_tool._draw_label:
             self.draw_text_label.emit(self._graph, points, color)            
+
+    def draw_track_path(self, points, color, object_id):
+        self.draw_track_points.emit(self._graph, points, color, object_id)
                                 
     def playback_speed_changed_cb(self, speed):
         self.playback_speed = speed
@@ -687,14 +691,32 @@ class SimpleMeasVM(QObject):
         self.track_fig_changed.emit(self.track_data)
 
     def update_point_element_cb(self, element, element_type, row):
-        self.track_data[self.active_object][element_type][row] = element
+        track = self.track_data[self.active_object]
+        old_frame = int(track['frames'][row])
+        track[element_type][row] = element
         if element_type == 'frames':
-            ind = np.argsort(self.track_data[self.active_object]['frames'])
-            self.track_data[self.active_object]['points'] = self.track_data[self.active_object]['points'][ind]
-            self.track_data[self.active_object]['frames'] = self.track_data[self.active_object]['frames'][ind]
-            self.track_data[self.active_object]['scores'] = self.track_data[self.active_object]['scores'][ind]
-            if 'angles' in self.track_data[self.active_object]:
-                self.track_data[self.active_object]['angles'] = self.track_data[self.active_object]['angles'][ind]
+            ind = np.argsort(track['frames'])
+            track['points'] = track['points'][ind]
+            track['frames'] = track['frames'][ind]
+            track['scores'] = track['scores'][ind]
+            if 'angles' in track:
+                track['angles'] = track['angles'][ind]
+        candidates = track.get('hybrid_candidates')
+        if (
+            track.get('tracking_method') == HYBRID_TRACKING_METHOD
+            and isinstance(candidates, dict)
+        ):
+            candidate = candidates.pop(old_frame, None)
+            new_frame = int(element) if element_type == 'frames' else old_frame
+            frame_matches = np.flatnonzero(track['frames'] == new_frame)
+            if candidate is not None and frame_matches.size:
+                point_index = int(frame_matches[0])
+                candidate['point'] = tuple(
+                    float(value) for value in track['points'][point_index]
+                )
+                if point_index < len(track.get('angles', [])):
+                    candidate['angle'] = float(track['angles'][point_index])
+                candidates[new_frame] = candidate
         self.track_fig_calculations()
         self.redraw_cb()
         self.new_track_data.emit(self.track_data, self.active_object)
@@ -716,7 +738,16 @@ class SimpleMeasVM(QObject):
 
     def update_autotrack_params_cb(self, parameter, value):
         if self.active_object is not None:
-            self.track_data[self.active_object][parameter] = value
+            track = self.track_data[self.active_object]
+            track[parameter] = value
+            if (
+                parameter == 'acceptable_score'
+                and track.get('tracking_method') == HYBRID_TRACKING_METHOD
+                and TrackTool.apply_hybrid_threshold(track)
+            ):
+                self.track_fig_calculations(obj=track)
+                self.new_track_data.emit(self.track_data, self.active_object)
+                self.redraw_cb()
 
     def apply_params_to_all(self):
         if len(self.track_data) > 1:

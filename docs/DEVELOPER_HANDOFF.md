@@ -18,11 +18,14 @@ depend on a private source host.
 | Feature | Primary implementation | Regression coverage |
 | --- | --- | --- |
 | Seven-button playback | `simplemeas_ui.py` transport helpers and `ClipRangeSlider` | `test_viewer_controls.py` |
+| Full-Cine scrubber endpoint jumps | `simplemeas_ui.py` | `test_viewer_controls.py` |
 | Viewer and clip range | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_viewer_controls.py` |
 | Up to four Cines | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_multi_cine_workspace.py` |
 | Multi-object/autotrack creation | `simplemeas_ui.py`, `simplemeas_tools.py` | `test_tracking_creation_workflow.py` |
 | Exact-point comparison and Hybrid fixture reuse | `simplemeas_ui.py` | `test_tracking_creation_workflow.py` |
 | Hybrid matching and smart boundaries | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py`, `test_tracking_creation_workflow.py` |
+| Live Hybrid threshold filtering | `simplemeas_tools.py`, `simplemeas_vm.py`, `simplemeas_ui.py` | `test_tracking_creation_workflow.py` |
+| Path fading and two-column point previews | `simplemeas_ui.py`, `simplemeas_vm.py` | `test_viewer_controls.py` |
 | Blur-tolerant Hybrid edge matching and 0.1 px / 0.1° pose refinement | `autotrackalgorithms.py`, `simplemeas_tools.py` | `test_hybrid_autotrack.py` |
 | Public launcher handoff | `launcher-source/` | `test_launcher_source.py` |
 
@@ -60,6 +63,17 @@ and [Hybrid tracking](HYBRID_TRACKING.md).
   the separately requested multi-Cine overlay and Angle/Angular Speed modes;
   existing graph calculations and visual styling were otherwise retained.
 - Clip bounds constrain playback; they do not delete or rewrite Cine frames.
+- The live Hybrid threshold filters the public point arrays from the retained
+  `hybrid_candidates` cache. That deliberately feeds the existing table,
+  calculations, plots, previews, and export path without changing graph math.
+  It can expose only candidates evaluated before the smart miss boundary; use a
+  new processing pass to search beyond that boundary.
+- Path fading is a rendering-only alpha adjustment. Its proximity centers are
+  exact tracked points on the active frame from checked objects; fixture and
+  search rectangles are not faded and measurement arrays are never modified.
+- Point Views use `_preview_object_order` plus `_preview_suppressed` so checked
+  objects appear automatically while a user can still remove/reorder tiles
+  independently through the tile context menu.
 - Each Cine pane owns independent measurements, clip bounds, adjustments, and
   tracker state. Graphs may combine enabled series across panes.
 

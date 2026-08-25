@@ -11,13 +11,17 @@ keys, or private build credentials are included in this repository.
 ## What changed
 
 - A PCC-style seven-button transport in Viewer, Track, 2 Pt, 3 Pt, 2 Line, and
-  Area modes.
+  Area modes, plus full-Cine first/last-frame buttons around the scrubber.
 - A dedicated Viewer with clip bounds and up to four simultaneous Cine panes.
 - Reliable multi-object selection and autotrack-dialog behavior.
 - The original **Intensity (Classic)** tracker remains available unchanged.
 - An opt-in **Hybrid (Edge + Intensity)** tracker uses an exact tracked point,
   a movable/rotatable reinforcement region, rotation search, edge visualization,
-  smart range detection, and dual-reference confidence.
+  smart range detection, dual-reference confidence, and a live post-processing
+  confidence filter (0.90 by default).
+- Checked tracking objects populate a named two-column point-preview grid. A
+  live Fade Paths overlay can reduce path opacity near the current tracked
+  points without changing stored measurements.
 - Cursor-centered wheel zoom, a persistent right-side panel, and an adjustable
   accent color.
 

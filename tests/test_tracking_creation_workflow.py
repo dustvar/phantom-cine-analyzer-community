@@ -81,7 +81,45 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['edge_threshold'], 0.30)
         self.assertEqual(track['position_precision'], 0.1)
         self.assertEqual(track['angle_precision'], 0.1)
+        self.assertEqual(track['acceptable_score'], 0.9)
         self.assertEqual(track['scores'][0], 'N/A')
+        self.assertEqual(list(track['hybrid_candidates']), [7])
+
+    def test_live_threshold_rebuilds_hybrid_series_without_rerun(self):
+        track = {
+            'tracking_method': HYBRID_TRACKING_METHOD,
+            'acceptable_score': 0.90,
+            'smart_frames': True,
+            'frame_number_offset': -50,
+            'start': -50,
+            'end': -47,
+            'frames': np.array([0]),
+            'points': np.array([[10.0, 20.0]]),
+            'scores': np.array(['N/A'], dtype=object),
+            'angles': np.array([0.0]),
+            'notes': {},
+            'hybrid_candidates': {
+                0: {'point': (10.0, 20.0), 'score': 'N/A', 'angle': 0.0},
+                1: {'point': (11.0, 21.0), 'score': 0.92, 'angle': 1.0},
+                2: {'point': (12.0, 22.0), 'score': 0.85, 'angle': 2.0},
+                3: {'point': (13.0, 23.0), 'score': 0.97, 'angle': 3.0},
+            },
+        }
+
+        TrackTool.apply_hybrid_threshold(track)
+        self.assertEqual(track['frames'].tolist(), [0, 1, 3])
+        self.assertEqual(track['points'].tolist(), [[10.0, 20.0], [11.0, 21.0], [13.0, 23.0]])
+        self.assertEqual((track['start'], track['end']), (-50, -47))
+
+        track['acceptable_score'] = 0.80
+        TrackTool.apply_hybrid_threshold(track)
+        self.assertEqual(track['frames'].tolist(), [0, 1, 2, 3])
+
+        track['acceptable_score'] = 0.95
+        TrackTool.apply_hybrid_threshold(track)
+        self.assertEqual(track['frames'].tolist(), [0, 3])
+        self.assertEqual((track['start'], track['end']), (-50, -47))
+        self.assertEqual(len(track['hybrid_candidates']), 4)
 
     def test_empty_track_list_rearms_method_choice_without_add_button_click(self):
         track_tool = object()

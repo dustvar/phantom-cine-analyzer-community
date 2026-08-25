@@ -123,6 +123,22 @@ Modified: 2026-08-24
   accent palette and saves the selected accent for later launches.
 - Playback stops safely at the selected clip boundary, when loading a new cine,
   or when closing the window.
+- Added compact first-frame and last-frame buttons immediately outside the main
+  scrubber. These always jump to the complete Cine endpoints, even when Viewer
+  clip brackets are narrower.
+- Added a Track-view Fade Paths control beside the relocated + Add Object
+  button. It defaults to 70% transparency within 80 pixels of the current
+  checked-object points; both values update the viewport live during playback
+  and do not alter tracking data or fixture rectangles.
+- Replaced the single point preview with a named, two-column Point Views grid
+  for checked objects. The compact + picker adds available objects, and each
+  tile's right-click menu supports moving it earlier/later or removing it from
+  the grid.
+- Changed the default Hybrid match threshold to 0.90. Hybrid processing now
+  retains every evaluated candidate up to its smart-stop boundary, allowing a
+  post-processing threshold change to update accepted points, tables, graphs,
+  paths, previews, detected range, and exports immediately without rerunning
+  the matcher. Explicitly deleted candidates do not reappear.
 - Added the transport controls without changing TrackingGraph or
   TrackingGraphWindow. Separate graph changes are limited to the requested
   multi-Cine overlay and Angle/Angular Speed modes; existing graph calculations

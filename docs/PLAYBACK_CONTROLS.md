@@ -34,6 +34,9 @@ in `app-source/modules/trackmeasure/simplemeas_ui.py`:
 The same transport widget is attached to Viewer, Track, 2 Pt, 3 Pt, 2 Line,
 and Area layouts. Slider labels are positioned from the actual slider groove
 and handle geometry so negative Phantom frame numbers align with its endpoints.
+Small endpoint buttons immediately outside the scrubber jump to the first or
+last frame of the complete Cine. Unlike the Viewer Home/End controls, they are
+deliberately independent of the non-destructive clip brackets.
 
 Keyboard bindings live beside the UI event handlers: Space toggles forward
 play/pause, J and L play backward/forward, Shift selects 4x, arrow keys step,
@@ -42,6 +45,6 @@ Home/End jump to bounds, and I/O set In/Out.
 ## Verification
 
 `tests/test_viewer_controls.py` covers transport construction, stepping,
-direction changes, clip boundaries, and keyboard behavior. The graph classes
-are not part of the transport implementation and should remain untouched when
-integrating this playback feature by itself.
+direction changes, clip boundaries, full-Cine endpoint jumps, and keyboard
+behavior. The graph classes are not part of the transport implementation and
+should remain untouched when integrating this playback feature by itself.

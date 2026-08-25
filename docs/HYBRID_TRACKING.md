@@ -104,10 +104,24 @@ self-correlation would report a meaningless perfect value.
 
 ## Smart range boundary
 
-The configured threshold is applied to the combined score. Consecutive misses
+The default configured threshold is `0.90` and is applied to the combined score.
+Consecutive misses
 stop that direction after `smart_miss_limit`; accepted points before that
 boundary remain available. This is a pragmatic boundary detector, not proof
 that the physical object is absent.
+
+Every successfully evaluated Hybrid candidate is retained separately from the
+accepted public point series. After processing, changing Match Threshold
+immediately rebuilds the visible frames, points, scores, angles, table, plots,
+path overlays, point previews, smart-range labels, and export inputs without
+rerunning image matching. User-confirmed `N/A` setup points always remain. A
+manually deleted candidate remains deleted when the threshold later changes.
+
+The candidate cache contains frames evaluated before the consecutive-miss stop.
+Lowering the threshold can recover those evaluated low-score candidates, but it
+does not synthesize data for frames beyond the detected boundary. Press
+**Process Smart Range** again if a tuning change should cause the matcher to
+search farther through the Cine.
 
 Hybrid search rectangles that reach an image edge are shifted inward without
 changing their requested size. The matcher receives the adjusted crop origin,
@@ -138,4 +152,5 @@ Coverage is in `tests/test_hybrid_autotrack.py` and
 the adjacent-plus-setup score composition, tenth-resolution pose output, and
 the remove-all/re-create lifecycle. Coverage also includes click-through object
 creation, exact-point and fixture reuse, soft blurred edges, and rotated fixture
-boundary stopping.
+boundary stopping. Live threshold reconstruction and its default `0.90` cutoff
+are covered in `tests/test_tracking_creation_workflow.py`.

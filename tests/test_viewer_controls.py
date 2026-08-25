@@ -2,6 +2,9 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -134,7 +137,11 @@ class ViewerControlsTest(unittest.TestCase):
         slider_column = self.window.scrubber_layout.itemAt(1).layout()
         self.assertIs(slider_column, self.window.slider_column_layout)
         self.assertIs(slider_column.itemAt(0).layout(), self.window.frame_range_layout)
-        self.assertIs(slider_column.itemAt(1).widget(), self.window.frame_slider)
+        slider_row = slider_column.itemAt(1).layout()
+        self.assertIs(slider_row, self.window.slider_row_layout)
+        self.assertIs(slider_row.itemAt(0).widget(), self.window.frame_first_button)
+        self.assertIs(slider_row.itemAt(1).widget(), self.window.frame_slider)
+        self.assertIs(slider_row.itemAt(2).widget(), self.window.frame_last_button)
         self.assertIs(
             self.window.frame_range_layout.itemAt(0).widget(),
             self.window.first_frame_disp,
@@ -143,6 +150,90 @@ class ViewerControlsTest(unittest.TestCase):
             self.window.frame_range_layout.itemAt(2).widget(),
             self.window.last_frame_disp,
         )
+
+    def test_scrubber_endpoint_buttons_ignore_viewer_clip(self):
+        self.window.frame_slider.setValue(50)
+        self.window._jump_to_first_frame()
+        self.assertEqual(self.window.frame_slider.value(), 0)
+        self.window._jump_to_last_frame()
+        self.assertEqual(self.window.frame_slider.value(), 100)
+
+    def test_path_fade_uses_checked_objects_and_live_values(self):
+        original_vm = self.window.vm
+        try:
+            self.window.vm = SimpleNamespace(
+                active_frame=10,
+                track_data={
+                    0: {
+                        'enabled': True,
+                        'frames': np.array([10]),
+                        'points': np.array([[100.0, 100.0]]),
+                    },
+                    1: {
+                        'enabled': False,
+                        'frames': np.array([10]),
+                        'points': np.array([[500.0, 500.0]]),
+                    },
+                },
+            )
+            self.window._path_fade_enabled = True
+            self.window._path_fade_transparency = 70
+            self.window._path_fade_radius = 80
+            centers = self.window._fade_reference_points()
+
+            self.assertEqual(centers.tolist(), [[100.0, 100.0]])
+            self.assertEqual(
+                self.window._track_path_alpha((110.0, 100.0), 0, centers),
+                77,
+            )
+            self.assertEqual(
+                self.window._track_path_alpha((190.0, 100.0), 0, centers),
+                255,
+            )
+            self.window._path_fade_transparency = 40
+            self.window._path_fade_radius = 10
+            self.assertEqual(
+                self.window._track_path_alpha((110.0, 100.0), 0, centers),
+                153,
+            )
+        finally:
+            self.window.vm = original_vm
+
+    def test_checked_object_previews_fill_two_columns(self):
+        preview_window = simplemeas_ui.MainWindow()
+        preview_window.setParent(self.window)
+        preview_window.vm = SimpleNamespace(
+            active_frame=0,
+            track_data={
+                object_id: {
+                    'enabled': object_id != 3,
+                    'name': f'Fixture {object_id}',
+                    'frames': np.array([0]),
+                    'points': np.array([[10.0 + object_id, 20.0]]),
+                }
+                for object_id in range(4)
+            },
+        )
+
+        preview_window._sync_object_preview_grid()
+
+        self.assertEqual(preview_window._preview_object_order, [0, 1, 2])
+        self.assertIs(
+            preview_window.preview_grid_layout.itemAtPosition(0, 0).widget(),
+            preview_window._preview_tiles[0],
+        )
+        self.assertIs(
+            preview_window.preview_grid_layout.itemAtPosition(0, 1).widget(),
+            preview_window._preview_tiles[1],
+        )
+        self.assertIs(
+            preview_window.preview_grid_layout.itemAtPosition(1, 0).widget(),
+            preview_window._preview_tiles[2],
+        )
+        self.assertEqual(
+            preview_window._preview_tiles[2].name_label.text(), 'Fixture 2'
+        )
+        preview_window.deleteLater()
 
     def test_right_details_panel_starts_open_and_cannot_collapse(self):
         self.window.main_tab.setVisible(True)

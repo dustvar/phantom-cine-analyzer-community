@@ -170,8 +170,10 @@ QPushButton#qt_raw_button {
 }
 
 QPushButton#qt_add_object_button {
-    min-width: 200px;
-    min-height: 30px;
+    min-width: 110px;
+    max-width: 125px;
+    min-height: 28px;
+    max-height: 30px;
 }
 
 QPushButton#cine_upload_button {
@@ -230,6 +232,50 @@ QFrame#pcc_transport_controls {
     background-color: #222222;
     border: 1px solid #512953;
     border-radius: 6px;
+}
+
+QFrame#viewer_overlay_controls,
+QFrame#path_fade_panel {
+    background-color: #222222;
+    border: 1px solid #512953;
+    border-radius: 6px;
+}
+
+QToolButton#path_fade_button,
+QToolButton#track_preview_add_button,
+QToolButton#qt_frame_endpoint_button {
+    background-color: #512953;
+    border: 1px solid #f47efa;
+    border-radius: 4px;
+    padding: 3px;
+}
+
+QToolButton#path_fade_button:checked,
+QToolButton#path_fade_button:pressed,
+QToolButton#track_preview_add_button:pressed,
+QToolButton#qt_frame_endpoint_button:pressed {
+    background-color: #9A4E9E;
+}
+
+QToolButton#qt_frame_endpoint_button:disabled {
+    background-color: #333333;
+    border-color: #555555;
+}
+
+QScrollArea#track_preview_scroll_area {
+    background-color: #222222;
+    border: 0;
+}
+
+QLabel#track_preview_title,
+QLabel#track_preview_name {
+    color: #f47efa;
+    font-weight: bold;
+}
+
+QLabel#track_preview_name {
+    background-color: #332834;
+    padding: 1px 3px;
 }
 
 QFrame#hybrid_settings_panel {

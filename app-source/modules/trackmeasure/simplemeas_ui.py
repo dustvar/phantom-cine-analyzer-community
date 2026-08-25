@@ -704,6 +704,47 @@ class WorkspacePane(QFrame):
         self.update()
 
 
+class ObjectPreviewTile(QFrame):
+    """Compact named point preview used by the two-column Track grid."""
+    def __init__(self, parent_window, object_id, preview_size=108):
+        super().__init__(parent_window.track_tab)
+        self.parent_window = parent_window
+        self.object_id = object_id
+        self.preview_size = int(preview_size)
+        self.setObjectName('track_preview_tile')
+        self.setFixedWidth(self.preview_size + 8)
+        self.name_label = QLabel(self)
+        self.name_label.setObjectName('track_preview_name')
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.name_label.setFixedHeight(18)
+        self.graph = QGraphicsView(self)
+        self.graph.setScene(QGraphicsScene(self.graph))
+        self.graph.setObjectName(f'track_preview_graph_{object_id}')
+        self.graph.setFixedSize(self.preview_size, self.preview_size)
+        self.graph.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.graph.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.graph.scene().setSceneRect(
+            QRectF(0, 0, self.preview_size, self.preview_size)
+        )
+        self.graph._preview_size = self.preview_size
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(3, 3, 3, 3)
+        layout.setSpacing(2)
+        layout.addWidget(self.name_label)
+        layout.addWidget(self.graph)
+        for widget in (self, self.name_label, self.graph):
+            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            widget.customContextMenuRequested.connect(
+                lambda pos, source=widget: self.parent_window._show_preview_context_menu(
+                    self.object_id, source.mapToGlobal(pos)
+                )
+            )
+
+    def set_name(self, name):
+        self.name_label.setText(str(name))
+        self.setToolTip(str(name))
+
+
 def create_color_wheel_icon(size=28):
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -1778,6 +1819,13 @@ class MainWindow(QWidget):
         self._hybrid_selection_graph = None
         self._base_stylesheet = ''
         self.theme_accent = '#f47efa'
+        self._path_fade_enabled = False
+        self._path_fade_transparency = 70
+        self._path_fade_radius = 80
+        self._preview_object_order = []
+        self._preview_suppressed = set()
+        self._preview_tiles = {}
+        self._last_preview_frame_data = None
         super().__init__()
         self.init_ui()
         self.shortcut = QShortcut(QKeySequence("Ctrl+o"), self)
@@ -1939,6 +1987,21 @@ class MainWindow(QWidget):
         self.cine_path_disp.setObjectName('cine_path_disp')
         self.frame_slider = QSlider(orientation=Qt.Orientation.Horizontal)
         self.frame_slider.setObjectName("qt_active_frame")
+        self.frame_first_button = QToolButton()
+        self.frame_first_button.setObjectName('qt_frame_endpoint_button')
+        self.frame_first_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward)
+        )
+        self.frame_first_button.setToolTip('Jump to the very first Cine frame')
+        self.frame_last_button = QToolButton()
+        self.frame_last_button.setObjectName('qt_frame_endpoint_button')
+        self.frame_last_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward)
+        )
+        self.frame_last_button.setToolTip('Jump to the very last Cine frame')
+        for button in (self.frame_first_button, self.frame_last_button):
+            button.setFixedSize(28, 26)
+            button.setEnabled(False)
         self.playback_timer = QTimer(self)
         self.playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.playback_timer.setInterval(33)
@@ -2086,7 +2149,8 @@ class MainWindow(QWidget):
         cine_disp_layout.rowStretch(2)
 
         self.frame_range_layout = QHBoxLayout()
-        self.frame_range_layout.setContentsMargins(0, 0, 0, 0)
+        # Match the labels to the slider groove, excluding the endpoint buttons.
+        self.frame_range_layout.setContentsMargins(34, 0, 34, 0)
         self.frame_range_layout.addWidget(self.first_frame_disp)
         self.frame_range_layout.addStretch(1)
         self.frame_range_layout.addWidget(self.last_frame_disp)
@@ -2095,7 +2159,13 @@ class MainWindow(QWidget):
         self.slider_column_layout.setContentsMargins(0, 0, 0, 0)
         self.slider_column_layout.setSpacing(0)
         self.slider_column_layout.addLayout(self.frame_range_layout)
-        self.slider_column_layout.addWidget(self.frame_slider)
+        self.slider_row_layout = QHBoxLayout()
+        self.slider_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.slider_row_layout.setSpacing(6)
+        self.slider_row_layout.addWidget(self.frame_first_button)
+        self.slider_row_layout.addWidget(self.frame_slider, 1)
+        self.slider_row_layout.addWidget(self.frame_last_button)
+        self.slider_column_layout.addLayout(self.slider_row_layout)
 
         self.scrubber_layout = QHBoxLayout()
         self.scrubber_layout.setContentsMargins(0, 0, 0, 0)
@@ -2106,6 +2176,42 @@ class MainWindow(QWidget):
         cine_disp_layout.rowStretch(3)
         cine_disp_layout.addWidget(self.viewer_controls,4,0,1,-1)
         self.cine_disp_col.setLayout(cine_disp_layout)
+
+        self.viewer_overlay_controls = QFrame(self.workspace_grid_widget)
+        self.viewer_overlay_controls.setObjectName('viewer_overlay_controls')
+        viewer_overlay_layout = QHBoxLayout(self.viewer_overlay_controls)
+        viewer_overlay_layout.setContentsMargins(5, 4, 5, 4)
+        viewer_overlay_layout.setSpacing(5)
+        self.path_fade_button = QToolButton(self.viewer_overlay_controls)
+        self.path_fade_button.setObjectName('path_fade_button')
+        self.path_fade_button.setText('Fade Paths  ▾')
+        self.path_fade_button.setCheckable(True)
+        self.path_fade_button.setToolTip(
+            'Fade selected-object path samples near the current tracked points'
+        )
+        # The existing icon supplies the plus sign; keep the label compact.
+        self.add_object_button.setText('Add Object')
+        viewer_overlay_layout.addWidget(self.path_fade_button)
+        viewer_overlay_layout.addWidget(self.add_object_button)
+        self.viewer_overlay_controls.adjustSize()
+        self.viewer_overlay_controls.hide()
+
+        self.path_fade_panel = QFrame(self.workspace_grid_widget)
+        self.path_fade_panel.setObjectName('path_fade_panel')
+        fade_form = QFormLayout(self.path_fade_panel)
+        fade_form.setContentsMargins(8, 7, 8, 7)
+        self.path_fade_transparency = QSpinBox(self.path_fade_panel)
+        self.path_fade_transparency.setRange(0, 100)
+        self.path_fade_transparency.setValue(70)
+        self.path_fade_transparency.setSuffix('%')
+        self.path_fade_radius = QSpinBox(self.path_fade_panel)
+        self.path_fade_radius.setRange(0, 2000)
+        self.path_fade_radius.setValue(80)
+        self.path_fade_radius.setSuffix(' px')
+        fade_form.addRow('Transparency', self.path_fade_transparency)
+        fade_form.addRow('Point radius', self.path_fade_radius)
+        self.path_fade_panel.adjustSize()
+        self.path_fade_panel.hide()
         
     def _create_metadata_tab(self):
         self.metadata_tab = QWidget()
@@ -2179,7 +2285,7 @@ class MainWindow(QWidget):
         self.hybrid_match_threshold.setRange(0.0, 1.0)
         self.hybrid_match_threshold.setSingleStep(0.01)
         self.hybrid_match_threshold.setDecimals(2)
-        self.hybrid_match_threshold.setValue(0.60)
+        self.hybrid_match_threshold.setValue(0.90)
         threshold_row.addWidget(self.hybrid_match_threshold)
         hybrid_settings_layout.addLayout(threshold_row)
 
@@ -2264,16 +2370,47 @@ class MainWindow(QWidget):
         hybrid_settings_layout.addWidget(self.hybrid_process_button)
         self.hybrid_settings_panel.setVisible(False)
         
-        self.template_img = QGraphicsView()
+        self.template_img = QGraphicsView(self.track_tab)
         self.template_img.setScene(QGraphicsScene(self.template_img))
         self.template_img.setObjectName('qt_template_img')
         self.template_img.setSizePolicy(QSizePolicy.Policy.Fixed,QSizePolicy.Policy.Fixed)
         self.template_img.scene().setSceneRect(QRectF(0, 0, MINIGRAPH_SIZE, MINIGRAPH_SIZE))
+        self.template_img.hide()
         
         self.add_object_button = QPushButton("             Add Object")
         self.add_object_button.setCheckable(True)
         self.add_object_button.setIcon(QIcon(os.path.join(dir_path, "images", "add-32.png")))
         self.add_object_button.setObjectName("qt_add_object_button")
+
+        preview_heading = QHBoxLayout()
+        preview_title = QLabel('Point Views')
+        preview_title.setObjectName('track_preview_title')
+        self.preview_add_button = QToolButton(self.track_tab)
+        self.preview_add_button.setObjectName('track_preview_add_button')
+        self.preview_add_button.setText('+')
+        self.preview_add_button.setFixedSize(28, 26)
+        self.preview_add_button.setToolTip('Add an available object to Point Views')
+        preview_heading.addWidget(preview_title)
+        preview_heading.addStretch(1)
+        preview_heading.addWidget(self.preview_add_button)
+
+        self.preview_grid_widget = QWidget(self.track_tab)
+        self.preview_grid_layout = QGridLayout(self.preview_grid_widget)
+        self.preview_grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.preview_grid_layout.setHorizontalSpacing(5)
+        self.preview_grid_layout.setVerticalSpacing(5)
+        self.preview_grid_layout.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter
+        )
+        self.preview_scroll_area = QScrollArea(self.track_tab)
+        self.preview_scroll_area.setObjectName('track_preview_scroll_area')
+        self.preview_scroll_area.setWidgetResizable(True)
+        self.preview_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.preview_scroll_area.setMinimumHeight(126)
+        self.preview_scroll_area.setMaximumHeight(285)
+        self.preview_scroll_area.setWidget(self.preview_grid_widget)
 
         track_table_label = QLabel('Objects', self.track_tab)
         track_table_label.setObjectName('track_table_label')
@@ -2300,8 +2437,8 @@ class MainWindow(QWidget):
         
         track_layout.addLayout(self.track_type_layout, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
         track_layout.addWidget(self.hybrid_settings_panel, 1, 0)
-        track_layout.addWidget(self.template_img, 2, 0, alignment=Qt.AlignmentFlag.AlignCenter)
-        track_layout.addWidget(self.add_object_button, 3, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        track_layout.addLayout(preview_heading, 2, 0)
+        track_layout.addWidget(self.preview_scroll_area, 3, 0)
         track_layout.addWidget(track_table_label, 4, 0)
         track_layout.addWidget(self.track_table, 5, 0)
         track_layout.addWidget(point_table_label, 6, 0)
@@ -2602,6 +2739,7 @@ class MainWindow(QWidget):
         QApplication.instance().setStyleSheet(themed)
         self.theme_button.setStyleSheet(f'QToolButton {{ border: 2px solid {color.name()}; border-radius: 5px; }}')
         self._set_active_pane_style(self.active_pane_index)
+        self._sync_object_preview_grid()
         if persist and self.vm is not None:
             self.vm.config.set('ui_accent_color', color.name())
 
@@ -2736,6 +2874,16 @@ class MainWindow(QWidget):
             self._stop_playback()
             self.frame_slider.setValue(self._playback_bounds()[1])
 
+    def _jump_to_first_frame(self):
+        if self.cine_path:
+            self._stop_playback()
+            self.frame_slider.setValue(self.frame_slider.minimum())
+
+    def _jump_to_last_frame(self):
+        if self.cine_path:
+            self._stop_playback()
+            self.frame_slider.setValue(self.frame_slider.maximum())
+
     def _set_clip_in(self):
         if self.clip_range.isEnabled():
             self.clip_range.setValues(
@@ -2777,6 +2925,54 @@ class MainWindow(QWidget):
             self.tab_splitter.setSizes([1, 0])
         else:
             QTimer.singleShot(0, self._ensure_details_panel_open)
+        QTimer.singleShot(0, self._position_tracking_overlay_controls)
+
+    def _position_tracking_overlay_controls(self):
+        if not hasattr(self, 'viewer_overlay_controls'):
+            return
+        self.viewer_overlay_controls.adjustSize()
+        margin = 10
+        x_pos = max(
+            margin,
+            self.workspace_grid_widget.width()
+            - self.viewer_overlay_controls.width()
+            - margin,
+        )
+        self.viewer_overlay_controls.move(x_pos, margin)
+        self.viewer_overlay_controls.raise_()
+        self.path_fade_panel.adjustSize()
+        self.path_fade_panel.move(
+            x_pos,
+            margin + self.viewer_overlay_controls.height() + 4,
+        )
+        self.path_fade_panel.raise_()
+
+    def _set_tracking_overlay_visible(self, visible):
+        visible = bool(visible)
+        self.viewer_overlay_controls.setVisible(visible)
+        self.path_fade_panel.setVisible(
+            visible and self.path_fade_button.isChecked()
+        )
+        if visible:
+            self._position_tracking_overlay_controls()
+
+    def _on_path_fade_toggled(self, enabled):
+        self._path_fade_enabled = bool(enabled)
+        self.path_fade_button.setText(
+            'Fade Paths  ▴' if self._path_fade_enabled else 'Fade Paths  ▾'
+        )
+        self.path_fade_panel.setVisible(
+            self._path_fade_enabled and self.current_tool == self.track_tool
+        )
+        self._position_tracking_overlay_controls()
+        if self.vm is not None:
+            self.vm.redraw_cb()
+
+    def _on_path_fade_settings_changed(self, *args):
+        self._path_fade_transparency = self.path_fade_transparency.value()
+        self._path_fade_radius = self.path_fade_radius.value()
+        if self.vm is not None:
+            self.vm.redraw_cb()
 
     def should_prompt_for_tracking_method(self):
         return bool(
@@ -3164,7 +3360,7 @@ class MainWindow(QWidget):
             self.hybrid_update_template,
         )
         blockers = [QSignalBlocker(control) for control in controls]
-        self.hybrid_match_threshold.setValue(float(track.get('acceptable_score', 0.60)))
+        self.hybrid_match_threshold.setValue(float(track.get('acceptable_score', 0.90)))
         self.hybrid_smart_frames.setChecked(bool(track.get('smart_frames', True)))
         self.hybrid_rotation_allowed.setChecked(bool(track.get('rotation_allowed', True)))
         self.hybrid_rotation_range.setValue(float(track.get('rotation_range', 180.0)))
@@ -3188,6 +3384,7 @@ class MainWindow(QWidget):
         track = self.vm.track_data[self.vm.active_object]
         if track.get('tracking_method') != HYBRID_TRACKING_METHOD:
             return
+        threshold_changed = self.sender() is self.hybrid_match_threshold
         track.update({
             'acceptable_score': self.hybrid_match_threshold.value(),
             'smart_frames': self.hybrid_smart_frames.isChecked(),
@@ -3208,6 +3405,12 @@ class MainWindow(QWidget):
             track['search_area_multiplier'],
             track['rotation_allowed'],
         )
+        if threshold_changed and simplemeas_vm.TrackTool.apply_hybrid_threshold(track):
+            self.vm.track_fig_calculations(obj=track)
+            self._set_point_table(self.vm.track_data, self.vm.active_object)
+            self.vm.new_track_data.emit(
+                self.vm.track_data, self.vm.active_object
+            )
         self.vm.redraw_cb()
 
     def _process_active_hybrid(self):
@@ -3254,6 +3457,7 @@ class MainWindow(QWidget):
         self.track_table.setRowCount(0)
         self.selected_row_track_table = -1
         self.template_img.scene().clear()
+        self._sync_object_preview_grid()
 
     def _set_point_table(self, track_data, selected_id):
         if selected_id in track_data:
@@ -3286,6 +3490,8 @@ class MainWindow(QWidget):
         self.track_tab.setEnabled(False)
         self.track_canvas.redraw({})
         self.main_tab.setCurrentIndex(0)
+        if hasattr(self, 'viewer_overlay_controls'):
+            self._set_tracking_overlay_visible(False)
 
     def _on_change_track_type_cb(self, event):
         self.add_object_button.setChecked(False)
@@ -3326,6 +3532,7 @@ class MainWindow(QWidget):
         super().showEvent(event)
         # Start the analysis panel open while still allowing the video to stretch.
         self._ensure_details_panel_open(force=True)
+        QTimer.singleShot(0, self._position_tracking_overlay_controls)
 
     def on_active_frame_changed(self, value):
         self.vm.active_frame = value
@@ -3367,6 +3574,7 @@ class MainWindow(QWidget):
                 self.selected_row_track_table = selected_row
         else:
             self._clear_track()
+        self._sync_object_preview_grid()
     
     def on_new_cine_load(self, cine_path, metadata):
         self._stop_playback()
@@ -3379,6 +3587,8 @@ class MainWindow(QWidget):
         self.cine_path_disp.setText(self._shrink_string(pane_prefix + cine_path, self.cine_path_disp)) 
         self.frame_slider.setMaximum(img_ct)
         self.frame_slider.setRange(0, img_ct)
+        self.frame_first_button.setEnabled(img_ct > 0)
+        self.frame_last_button.setEnabled(img_ct > 0)
         for button in self.transport_buttons:
             button.setEnabled(img_ct > 0)
         self.clip_range.setEnabled(img_ct > 0)
@@ -3436,6 +3646,179 @@ class MainWindow(QWidget):
         if graph_name == 'main_graph':
             return self.graph
         return self.findChild(QWidget, graph_name)
+
+    def _sync_object_preview_grid(self, auto_include=True):
+        if self.vm is None or not hasattr(self, 'preview_grid_layout'):
+            return
+        valid_ids = set(self.vm.track_data)
+        self._preview_object_order = [
+            object_id for object_id in self._preview_object_order
+            if object_id in valid_ids
+            and self.vm.track_data[object_id].get('enabled', True)
+        ]
+        self._preview_suppressed.intersection_update(valid_ids)
+        if auto_include:
+            for object_id, track in self.vm.track_data.items():
+                if (
+                    track.get('enabled', True)
+                    and object_id not in self._preview_suppressed
+                    and object_id not in self._preview_object_order
+                ):
+                    self._preview_object_order.append(object_id)
+
+        for object_id in list(self._preview_tiles):
+            if object_id not in valid_ids:
+                tile = self._preview_tiles.pop(object_id)
+                tile.setParent(None)
+                tile.deleteLater()
+        while self.preview_grid_layout.count():
+            self.preview_grid_layout.takeAt(0)
+        for tile in self._preview_tiles.values():
+            tile.hide()
+
+        for display_index, object_id in enumerate(self._preview_object_order):
+            track = self.vm.track_data[object_id]
+            tile = self._preview_tiles.get(object_id)
+            if tile is None:
+                tile = ObjectPreviewTile(self, object_id)
+                self._preview_tiles[object_id] = tile
+            tile.set_name(track.get('name', f'Object {object_id}'))
+            tile.setStyleSheet(
+                f'QFrame#track_preview_tile {{ border: 1px solid '
+                f'{self.theme_accent}; border-radius: 4px; }}'
+            )
+            self.preview_grid_layout.addWidget(
+                tile, display_index // 2, display_index % 2
+            )
+            tile.show()
+        self.preview_grid_widget.adjustSize()
+        self._refresh_object_previews()
+
+    def _add_preview_object(self):
+        if self.vm is None:
+            return
+        available = [
+            (object_id, track)
+            for object_id, track in self.vm.track_data.items()
+            if object_id not in self._preview_object_order
+        ]
+        if not available:
+            self.vm.update_status_text.emit(
+                'Every available object is already in Point Views.'
+            )
+            return
+        labels = [
+            f'{track.get("name", f"Object {object_id}")} (Object {object_id})'
+            for object_id, track in available
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            'Add Point View',
+            'Choose an object to add:',
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        selected_index = labels.index(selected)
+        object_id = available[selected_index][0]
+        self.vm.track_data[object_id]['enabled'] = True
+        self._preview_suppressed.discard(object_id)
+        self._preview_object_order.append(object_id)
+        self.on_new_track_data(self.vm.track_data, self.vm.active_object)
+        self.vm.redraw_cb()
+
+    def _show_preview_context_menu(self, object_id, global_pos):
+        if object_id not in self._preview_object_order:
+            return
+        index = self._preview_object_order.index(object_id)
+        menu = QMenu(self)
+        move_earlier = menu.addAction('Move Earlier')
+        move_later = menu.addAction('Move Later')
+        menu.addSeparator()
+        remove = menu.addAction('Remove from Point Views')
+        move_earlier.setEnabled(index > 0)
+        move_later.setEnabled(index < len(self._preview_object_order) - 1)
+        chosen = menu.exec(global_pos)
+        if chosen is move_earlier and index > 0:
+            self._preview_object_order[index - 1:index + 1] = [
+                object_id, self._preview_object_order[index - 1]
+            ]
+        elif chosen is move_later and index < len(self._preview_object_order) - 1:
+            self._preview_object_order[index:index + 2] = [
+                self._preview_object_order[index + 1], object_id
+            ]
+        elif chosen is remove:
+            self._preview_object_order.remove(object_id)
+            self._preview_suppressed.add(object_id)
+        else:
+            return
+        self._sync_object_preview_grid(auto_include=False)
+
+    def _refresh_object_previews(self, frame_data=None):
+        if frame_data is not None:
+            self._last_preview_frame_data = frame_data
+        if self.vm is None or self._last_preview_frame_data is None:
+            return
+        img, bpp, cfa = self._last_preview_frame_data
+        for object_id in self._preview_object_order:
+            tile = self._preview_tiles.get(object_id)
+            track = self.vm.track_data.get(object_id)
+            if tile is None or track is None or not track.get('enabled', True):
+                continue
+            frames = np.asarray(track.get('frames', []), dtype=int)
+            matches = np.flatnonzero(frames <= int(self.vm.active_frame))
+            if not matches.size:
+                tile.graph.scene().clear()
+                message = tile.graph.scene().addText('No accepted point')
+                message.setDefaultTextColor(QColor('#bbbbbb'))
+                continue
+            point_index = int(matches[-1])
+            point = np.asarray(track['points'][point_index], dtype=float)
+            current_point = (float(point[0]), float(point[1]))
+            if track.get('tracking_method') == HYBRID_TRACKING_METHOD:
+                angles = np.asarray(
+                    track.get('angles', np.zeros(len(frames))), dtype=float
+                )
+                current_point = {
+                    'point': current_point,
+                    'angle': float(angles[point_index])
+                    if point_index < len(angles) else 0.0,
+                }
+            self._draw_image_to_graph(
+                tile.graph, img, bpp, cfa, current_point
+            )
+
+    def _fade_reference_points(self):
+        if self.vm is None or not self._path_fade_enabled:
+            return np.empty((0, 2), dtype=float)
+        centers = []
+        for track in self.vm.track_data.values():
+            if not track.get('enabled', True):
+                continue
+            frames = np.asarray(track.get('frames', []), dtype=int)
+            matches = np.flatnonzero(frames == int(self.vm.active_frame))
+            for match in matches:
+                centers.append(np.asarray(track['points'][int(match)], dtype=float))
+        return np.asarray(centers, dtype=float).reshape((-1, 2))
+
+    def _track_path_alpha(self, point, object_id=None, centers=None):
+        if not self._path_fade_enabled or self.vm is None:
+            return 255
+        if object_id is not None:
+            track = self.vm.track_data.get(object_id)
+            if track is None or not track.get('enabled', True):
+                return 255
+        if centers is None:
+            centers = self._fade_reference_points()
+        if not len(centers):
+            return 255
+        distance = np.linalg.norm(centers - np.asarray(point, dtype=float), axis=1)
+        if float(np.min(distance)) <= float(self._path_fade_radius):
+            opacity = 1.0 - (float(self._path_fade_transparency) / 100.0)
+            return int(np.clip(round(255.0 * opacity), 0, 255))
+        return 255
 
     def _decorate_hybrid_preview(self, pixmap, angle):
         """Mask the stable template crop to a circle and draw its pose."""
@@ -3518,7 +3901,8 @@ class MainWindow(QWidget):
         ):
             zoom_size = int(MINIGRAPH_SIZE / self.zoom_levels[self.zoom_slider.value()])
             current_point = (int(preview_point[0]), int(preview_point[1]))
-            graph_size = (MINIGRAPH_SIZE, MINIGRAPH_SIZE)
+            preview_size = int(getattr(graph, '_preview_size', MINIGRAPH_SIZE))
+            graph_size = (preview_size, preview_size)
 
             # Preserve the original 16-bit-safe crop. Rotating this buffer
             # required a float conversion that QImage then interpreted as
@@ -3570,6 +3954,8 @@ class MainWindow(QWidget):
         # graph name can be: main_graph, qt_template_img, magnifier
         graph = self._graph_widget(graph_name)
         self._draw_image_to_graph(graph, img, bpp, cfa, current_point)
+        if graph_name == 'main_graph':
+            self._refresh_object_previews((img, bpp, cfa))
             
     def on_draw_points(self, graph_name, points, color='red'):
         graph = self._graph_widget(graph_name)
@@ -3581,6 +3967,46 @@ class MainWindow(QWidget):
                 ),
             )
             graph.scene().addEllipse(pt[0] - dot_rad, pt[1] - dot_rad, dot_rad*2, dot_rad*2, pen=QPen(QColor(color)), brush=QBrush(QColor(color)))
+
+    def on_draw_track_points(self, graph_name, points, color, object_id):
+        """Draw a selected object's path with live proximity fading."""
+        graph = self._graph_widget(graph_name)
+        points = np.asarray(points, dtype=float)
+        if points.size == 0:
+            return
+        dot_rad = max(
+            0.5,
+            0.5 * math.sqrt(
+                (graph.xMax * graph.yMax) / (math.pi * 10000)
+            ),
+        )
+        centers = self._fade_reference_points()
+        alphas = [
+            self._track_path_alpha(point, object_id, centers)
+            for point in points
+        ]
+        for index, point in enumerate(points):
+            point_color = QColor(color)
+            point_color.setAlpha(alphas[index])
+            pen = QPen(point_color)
+            pen.setCosmetic(True)
+            graph.scene().addEllipse(
+                point[0] - dot_rad,
+                point[1] - dot_rad,
+                dot_rad * 2,
+                dot_rad * 2,
+                pen=pen,
+                brush=QBrush(point_color),
+            )
+            if index > 0:
+                segment_color = QColor(color)
+                segment_color.setAlpha(min(alphas[index - 1], alphas[index]))
+                segment_pen = QPen(segment_color, 1)
+                segment_pen.setCosmetic(True)
+                graph.scene().addLine(
+                    points[index - 1][0], points[index - 1][1],
+                    point[0], point[1], pen=segment_pen
+                )
     
     def on_clear_scene(self):
         graph = self.graph
@@ -3906,6 +4332,15 @@ class MainWindow(QWidget):
             if 0 <= row < len(keys):  # Ensure the row index is within bounds
                 t = self.vm.track_data[keys[row]]
                 t['enabled'] = item.checkState() == Qt.CheckState.Checked
+                object_id = keys[row]
+                if t['enabled']:
+                    self._preview_suppressed.discard(object_id)
+                else:
+                    self._preview_object_order = [
+                        candidate for candidate in self._preview_object_order
+                        if candidate != object_id
+                    ]
+                self._sync_object_preview_grid()
                 self.vm.redraw_cb()
                 self.track_canvas.redraw(self.vm.track_data)
             else:
@@ -3979,6 +4414,17 @@ class MainWindow(QWidget):
 
     def remove_points_from_template(self, inds, t_mask, start_idx):
         t = self.vm.track_data[self.vm.active_object]
+
+        # Hybrid keeps every evaluated match so the acceptance threshold can be
+        # changed without rerunning the Cine.  Explicit point deletion must also
+        # remove the corresponding raw candidates; otherwise lowering the live
+        # threshold would unexpectedly resurrect points the user deleted.
+        removed_frames = np.atleast_1d(t['frames'][inds]).astype(int).tolist()
+        hybrid_candidates = t.get('hybrid_candidates')
+        if isinstance(hybrid_candidates, dict):
+            for frame in removed_frames:
+                hybrid_candidates.pop(int(frame), None)
+                t.get('hybrid_notes_by_frame', {}).pop(int(frame), None)
 
         t['points'] = np.delete(t['points'], inds, axis=0)
         t['frames'] = np.delete(t['frames'], inds)
@@ -4081,6 +4527,9 @@ class MainWindow(QWidget):
 
             self.current_tool = self.analysis_tools_bg.checkedButton()
             self._set_viewer_controls_visible(self.current_tool == self.viewer_tool)
+            self._set_tracking_overlay_visible(
+                self.current_tool == self.track_tool
+            )
 
     def launch_autotrack_dialog(self, row, col=0):
         object_id = self._activate_track_row(row)
@@ -4344,6 +4793,8 @@ class MainWindow(QWidget):
             self.cine_path_disp.setText(self._shrink_string(self.cine_path, self.cine_path_disp))
         self.track_canvas.redraw(self.vm.track_data)
         super().resizeEvent(event)
+        # Child geometry is finalized after the parent resize event returns.
+        QTimer.singleShot(0, self._position_tracking_overlay_controls)
 
     def raw_image_cb(self):
         enable_state = not self.raw_adj_button.isChecked()
@@ -4461,10 +4912,23 @@ class MainWindow(QWidget):
         self.forward_faster_button.clicked.connect(lambda checked=False: self._start_playback(4))
         self.jump_start_button.clicked.connect(self._jump_to_clip_start)
         self.jump_end_button.clicked.connect(self._jump_to_clip_end)
+        self.frame_first_button.clicked.connect(self._jump_to_first_frame)
+        self.frame_last_button.clicked.connect(self._jump_to_last_frame)
         self.mark_in_button.clicked.connect(self._set_clip_in)
         self.mark_out_button.clicked.connect(self._set_clip_out)
         self.reset_clip_button.clicked.connect(self._reset_clip_range)
         self.clip_range.rangeChanged.connect(self._on_clip_range_changed)
+        self.path_fade_button.toggled.connect(self._on_path_fade_toggled)
+        self.path_fade_transparency.valueChanged.connect(
+            self._on_path_fade_settings_changed
+        )
+        self.path_fade_radius.valueChanged.connect(
+            self._on_path_fade_settings_changed
+        )
+        self.preview_add_button.clicked.connect(self._add_preview_object)
+        self.tab_splitter.splitterMoved.connect(
+            lambda *args: self._position_tracking_overlay_controls()
+        )
         self.frame_slider.valueChanged.connect(self.on_active_frame_changed)
         self.frame_slider.valueChanged.connect(self.vm.redraw_cb)
         self.frame_slider.valueChanged.connect(self.track_canvas.draw_frame_pos)
@@ -4574,6 +5038,7 @@ class MainWindow(QWidget):
         self.vm.new_cine_load.connect(self.auto.on_new_cine_load)
         self.vm.draw_frame.connect(self.on_draw_frame)
         self.vm.draw_points.connect(self.on_draw_points)
+        self.vm.draw_track_points.connect(self.on_draw_track_points)
         self.vm.draw_lines.connect(self.on_draw_lines)
         self.vm.draw_text_label.connect(self.on_draw_text_label)
         self.vm.get_new_scale.connect(self.on_get_new_scale)

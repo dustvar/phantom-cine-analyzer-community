@@ -163,7 +163,9 @@ class TrackTool(BaseTool):
                      'subpixel_size': '1/10 pix' if is_hybrid else '1.0 pix',
                      'subpixel_type': 'cubic',
                      'frames_enable': True, 'search_area_enable': True, 'tpl_rng_enable':True, 
-                     'update_template_enable': not is_hybrid, 'acceptable_score': 0.6, 'tpl_score': 0.8,
+                     'update_template_enable': not is_hybrid,
+                     'acceptable_score': 0.9 if is_hybrid else 0.6,
+                     'tpl_score': 0.8,
                      'tracking_method': tracking_method, 'rotation_range': 180.0,
                      'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
                      'position_precision': 0.1, 'angle_precision': 0.1,
@@ -172,7 +174,18 @@ class TrackTool(BaseTool):
                      'adjacent_confidence_weight': 0.65,
                      'confidence_components': {},
                      'template_angle': 0.0, 'template_offset': (0.0, 0.0),
-                     'anchor_frame': int(frame_id)}
+                     'anchor_frame': int(frame_id),
+                     'frame_number_offset': int(
+                         self.vm.cine_handler.metadata.FirstImageNo
+                     )}
+            if is_hybrid:
+                new_t['hybrid_candidates'] = {
+                    int(frame_id): {
+                        'point': (float(point[0]), float(point[1])),
+                        'score': 'N/A',
+                        'angle': 0.0,
+                    }
+                }
             self.vm.track_data[new_id] = new_t
             self.vm.active_object = new_id
             self.draw_all(points=point)
@@ -207,7 +220,11 @@ class TrackTool(BaseTool):
                 if not np.all(in_range):
                     i = np.argmin(in_range)
                     points = points[:i]
-                self.vm.draw_points_lines(points, t['color'])
+                draw_track_path = getattr(self.vm, 'draw_track_path', None)
+                if callable(draw_track_path):
+                    draw_track_path(points, t['color'], t_id)
+                else:
+                    self.vm.draw_points_lines(points, t['color'])
                 # draw track elements for all
                 if self.vm.track_type == 'Auto':
                     if t['tpl_rng_enable']:
@@ -268,6 +285,117 @@ class TrackTool(BaseTool):
 
         return t
 
+    @staticmethod
+    def _score_is_numeric(score):
+        try:
+            return bool(np.isfinite(float(score)))
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def prepare_hybrid_candidates(cls, track):
+        """Reset a Hybrid rerun to user-confirmed points and retain raw results."""
+        candidates = {}
+        frames = np.asarray(track.get('frames', []), dtype=int)
+        points = np.asarray(track.get('points', []), dtype=float)
+        scores = np.asarray(track.get('scores', []), dtype=object)
+        angles = np.asarray(
+            track.get('angles', np.zeros(len(frames))), dtype=float
+        )
+        for index, frame in enumerate(frames):
+            score = scores[index] if index < len(scores) else 'N/A'
+            if not cls._score_is_numeric(score):
+                candidates[int(frame)] = {
+                    'point': tuple(float(value) for value in points[index]),
+                    'score': 'N/A',
+                    'angle': float(angles[index]) if index < len(angles) else 0.0,
+                }
+        anchor_frame = int(track.get('anchor_frame', frames[0] if len(frames) else 0))
+        if anchor_frame not in candidates and len(frames):
+            matches = np.flatnonzero(frames == anchor_frame)
+            anchor_index = int(matches[0]) if matches.size else 0
+            anchor_score = (
+                scores[anchor_index]
+                if anchor_index < len(scores)
+                and cls._score_is_numeric(scores[anchor_index])
+                else 'N/A'
+            )
+            candidates[anchor_frame] = {
+                'point': tuple(float(value) for value in points[anchor_index]),
+                'score': anchor_score,
+                'angle': float(angles[anchor_index]) if anchor_index < len(angles) else 0.0,
+            }
+        track['hybrid_candidates'] = candidates
+        track['confidence_components'] = {}
+        track.pop('boundary_reasons', None)
+        cls.apply_hybrid_threshold(track)
+
+    @staticmethod
+    def record_hybrid_candidate(track, point, frame_id, score, angle):
+        track.setdefault('hybrid_candidates', {})[int(frame_id)] = {
+            'point': (float(point[0]), float(point[1])),
+            'score': float(score),
+            'angle': float(angle),
+        }
+
+    @classmethod
+    def apply_hybrid_threshold(cls, track):
+        """Rebuild the public series from stored candidates at the live cutoff."""
+        if track.get('tracking_method') != HYBRID_TRACKING_METHOD:
+            return False
+        candidates = track.get('hybrid_candidates')
+        if not candidates:
+            return False
+        threshold = float(track.get('acceptable_score', 0.9))
+        old_frames = np.asarray(track.get('frames', []), dtype=int)
+        old_notes = dict(track.get('notes', {}))
+        notes_by_frame = track.setdefault('hybrid_notes_by_frame', {})
+        notes_by_frame.update({
+            int(old_frames[index]): note
+            for index, note in old_notes.items()
+            if isinstance(index, (int, np.integer))
+            and 0 <= int(index) < len(old_frames)
+        })
+        visible = []
+        for frame, candidate in sorted(candidates.items()):
+            score = candidate.get('score', 'N/A')
+            if not cls._score_is_numeric(score) or float(score) >= threshold:
+                visible.append((int(frame), candidate))
+        if not visible:
+            return False
+        track['frames'] = np.asarray([frame for frame, _ in visible], dtype=int)
+        track['points'] = np.asarray(
+            [candidate['point'] for _, candidate in visible], dtype=float
+        )
+        track['scores'] = np.asarray(
+            [candidate.get('score', 'N/A') for _, candidate in visible],
+            dtype=object,
+        )
+        track['angles'] = np.asarray(
+            [candidate.get('angle', 0.0) for _, candidate in visible], dtype=float
+        )
+        track['notes'] = {
+            index: notes_by_frame[frame]
+            for index, frame in enumerate(track['frames'])
+            if int(frame) in notes_by_frame
+        }
+        if track.get('smart_frames', False):
+            frame_offset = int(track.get('frame_number_offset', 0))
+            track['start'] = frame_offset + int(np.min(track['frames']))
+            track['end'] = frame_offset + int(np.max(track['frames']))
+            track['smart_detected_start'] = track['start']
+            track['smart_detected_end'] = track['end']
+        numeric_scores = sum(
+            cls._score_is_numeric(candidate.get('score'))
+            for _, candidate in visible
+        )
+        track['threshold_visible_count'] = int(numeric_scores)
+        track['threshold_candidate_count'] = int(sum(
+            cls._score_is_numeric(candidate.get('score'))
+            for candidate in candidates.values()
+        ))
+        return True
+
 class ManualTrackTool(TrackTool):
     def process_template(self, template, point, frame_id):
         point = (round(point[0]), round(point[1]))
@@ -284,6 +412,8 @@ class AutoTrackTool(TrackTool):
     def process_template(self, template, point, frame_id):
         self.fail_cnt = 0
         if point == (-1,-1):
+            if template.get('tracking_method') == HYBRID_TRACKING_METHOD:
+                self.prepare_hybrid_candidates(template)
             # parameterize dictionary items
             self.vm.update_status_text.emit(f'Start autotrack of object {template["name"]}')
             smart_frames = bool(
@@ -326,6 +456,7 @@ class AutoTrackTool(TrackTool):
                     template['end'] = first_image + int(np.max(template['frames']))
                     template['smart_detected_start'] = template['start']
                     template['smart_detected_end'] = template['end']
+                self.apply_hybrid_threshold(template)
                 self.vm.update_status_text.emit(
                     f'{template["name"]} smart range: '
                     f'{template["start"]} to {template["end"]}'
@@ -701,6 +832,11 @@ class AutoTrackTool(TrackTool):
                     # its pose back to the exact point selected by the user.
                     point -= _rotate_tracking_offset(template_offset, data.angle_deg)
                 point = tuple(point)
+
+                if tracking_method == HYBRID_TRACKING_METHOD:
+                    self.record_hybrid_candidate(
+                        template, point, fr, score, data.angle_deg
+                    )
 
                 # add pt to list if score is above limit
                 if score >= score_limit:
