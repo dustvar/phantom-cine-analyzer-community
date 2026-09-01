@@ -38,6 +38,7 @@ class ViewerControlsTest(unittest.TestCase):
         self.window.clip_range.setRange(0, 100)
         self.window.clip_range.setValues(20, 80)
         self.window.current_tool = self.window.viewer_tool
+        self.window._path_point_radius_scale = 1.0
 
     def tearDown(self):
         self.window._stop_playback()
@@ -131,6 +132,40 @@ class ViewerControlsTest(unittest.TestCase):
         scene_items = graph.scene().items()
         self.assertEqual(len(scene_items), 2)
         self.assertTrue(all(isinstance(item, QGraphicsPathItem) for item in scene_items))
+
+    def test_path_settings_labels_and_point_radius_scale(self):
+        self.assertEqual(self.window.path_fade_button.text(), 'Path Settings  ▾')
+        layout = self.window.path_fade_panel.layout()
+        self.assertEqual(
+            layout.labelForField(self.window.path_fade_transparency).text(),
+            'Transparency',
+        )
+        self.assertEqual(
+            layout.labelForField(self.window.path_fade_radius).text(),
+            'Transparency Distance',
+        )
+        self.assertEqual(
+            layout.labelForField(self.window.path_point_radius).text(),
+            'Point Radius',
+        )
+
+        graph = self.window.graph
+        graph.xMax = 1920
+        graph.yMax = 1080
+        self.window._path_fade_enabled = False
+        point = np.array([[100.0, 100.0]])
+
+        graph.scene().clear()
+        self.window._path_point_radius_scale = 1.0
+        self.window.on_draw_track_points('main_graph', point, '#ff0000', 0)
+        normal_width = graph.scene().items()[0].path().boundingRect().width()
+
+        graph.scene().clear()
+        self.window._path_point_radius_scale = 2.0
+        self.window.on_draw_track_points('main_graph', point, '#ff0000', 0)
+        large_width = graph.scene().items()[0].path().boundingRect().width()
+
+        self.assertAlmostEqual(large_width, normal_width * 2.0)
 
     def test_pcc_frame_buttons_pause_and_move_exactly_one_frame(self):
         self.window.frame_slider.setValue(50)

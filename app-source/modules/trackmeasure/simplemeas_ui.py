@@ -1919,6 +1919,7 @@ class MainWindow(QWidget):
         self._path_fade_enabled = False
         self._path_fade_transparency = 70
         self._path_fade_radius = 80
+        self._path_point_radius_scale = 1.0
         self._preview_object_order = []
         self._preview_suppressed = set()
         self._preview_tiles = {}
@@ -2288,10 +2289,10 @@ class MainWindow(QWidget):
         viewer_overlay_layout.setSpacing(5)
         self.path_fade_button = QToolButton(self.viewer_overlay_controls)
         self.path_fade_button.setObjectName('path_fade_button')
-        self.path_fade_button.setText('Fade Paths  ▾')
+        self.path_fade_button.setText('Path Settings  ▾')
         self.path_fade_button.setCheckable(True)
         self.path_fade_button.setToolTip(
-            'Fade selected-object path samples near the current tracked points'
+            'Adjust tracking-path transparency, fade distance, and point size'
         )
         self.tracking_help_button = QToolButton(self.viewer_overlay_controls)
         self.tracking_help_button.setObjectName('tracking_help_button')
@@ -2321,8 +2322,18 @@ class MainWindow(QWidget):
         self.path_fade_radius.setRange(0, 2000)
         self.path_fade_radius.setValue(80)
         self.path_fade_radius.setSuffix(' px')
+        self.path_point_radius = QDoubleSpinBox(self.path_fade_panel)
+        self.path_point_radius.setRange(0.25, 4.0)
+        self.path_point_radius.setSingleStep(0.25)
+        self.path_point_radius.setDecimals(2)
+        self.path_point_radius.setValue(1.0)
+        self.path_point_radius.setSuffix('×')
+        self.path_point_radius.setToolTip(
+            'Scale the tracking-point radius calculated from the Cine dimensions'
+        )
         fade_form.addRow('Transparency', self.path_fade_transparency)
-        fade_form.addRow('Point radius', self.path_fade_radius)
+        fade_form.addRow('Transparency Distance', self.path_fade_radius)
+        fade_form.addRow('Point Radius', self.path_point_radius)
         self.path_fade_panel.adjustSize()
         self.path_fade_panel.hide()
         
@@ -3091,7 +3102,9 @@ class MainWindow(QWidget):
     def _on_path_fade_toggled(self, enabled):
         self._path_fade_enabled = bool(enabled)
         self.path_fade_button.setText(
-            'Fade Paths  ▴' if self._path_fade_enabled else 'Fade Paths  ▾'
+            'Path Settings  ▴'
+            if self._path_fade_enabled
+            else 'Path Settings  ▾'
         )
         self.path_fade_panel.setVisible(
             self._path_fade_enabled and self.current_tool == self.track_tool
@@ -3103,6 +3116,7 @@ class MainWindow(QWidget):
     def _on_path_fade_settings_changed(self, *args):
         self._path_fade_transparency = self.path_fade_transparency.value()
         self._path_fade_radius = self.path_fade_radius.value()
+        self._path_point_radius_scale = self.path_point_radius.value()
         if self.vm is not None:
             self.vm.redraw_cb()
 
@@ -4196,11 +4210,15 @@ class MainWindow(QWidget):
         points = np.asarray(points, dtype=float)
         if points.size == 0:
             return
-        dot_rad = max(
+        base_dot_rad = max(
             0.5,
             0.5 * math.sqrt(
                 (graph.xMax * graph.yMax) / (math.pi * 10000)
             ),
+        )
+        dot_rad = max(
+            0.1,
+            base_dot_rad * float(self._path_point_radius_scale),
         )
         if not self._path_fade_enabled:
             # The old implementation created one ellipse and one line scene
@@ -5176,6 +5194,9 @@ class MainWindow(QWidget):
             self._on_path_fade_settings_changed
         )
         self.path_fade_radius.valueChanged.connect(
+            self._on_path_fade_settings_changed
+        )
+        self.path_point_radius.valueChanged.connect(
             self._on_path_fade_settings_changed
         )
         self.preview_add_button.clicked.connect(self._add_preview_object)

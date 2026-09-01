@@ -141,6 +141,9 @@ Modified: 2026-08-31
   button. It defaults to 70% transparency within 80 pixels of the current
   checked-object points; both values update the viewport live during playback
   and do not alter tracking data or fixture rectangles.
+- Renamed that control to Path Settings, clarified the former Point radius
+  field as Transparency Distance, and added a separate Point Radius multiplier
+  that scales the visible tracking-path samples without changing track data.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from
