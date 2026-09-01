@@ -222,6 +222,26 @@ class ViewerControlsTest(unittest.TestCase):
             self.window.last_frame_disp,
         )
 
+    def test_current_frame_label_stays_inside_slider_reserved_space(self):
+        self.window.resize(1200, 800)
+        simplemeas_ui.QWidget.show(self.window)
+        self.app.processEvents()
+        self.window.frame_slider.setValue(50)
+        self.window.update_active_frame(50)
+
+        slider_origin = self.window.frame_slider.mapTo(
+            self.window, simplemeas_ui.QPoint(0, 0)
+        )
+        slider_bottom = slider_origin.y() + self.window.frame_slider.height()
+
+        self.assertGreaterEqual(
+            self.window.active_frame_label.y(), slider_origin.y()
+        )
+        self.assertLessEqual(
+            self.window.active_frame_label.geometry().bottom(), slider_bottom
+        )
+        self.window.hide()
+
     def test_scrubber_endpoint_buttons_ignore_viewer_clip(self):
         self.window.frame_slider.setValue(50)
         self.window._jump_to_first_frame()

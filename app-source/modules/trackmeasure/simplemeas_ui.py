@@ -5086,7 +5086,7 @@ class MainWindow(QWidget):
         super().wheelEvent(obj)
 
     def update_active_frame(self, value):
-        pad_y = 0
+        bottom_margin = 2
         try:
             self.active_frame_label.setHidden(False)
             frame_num = value + int(self.first_fr)
@@ -5119,8 +5119,12 @@ class MainWindow(QWidget):
             )
             self.active_frame_label.move(
                 int(label_x),
-                slider_origin.y() + self.frame_slider.height() + pad_y,
+                slider_origin.y()
+                + self.frame_slider.height()
+                - self.active_frame_label.height()
+                - bottom_margin,
             )
+            self.active_frame_label.raise_()
         except Exception as e:
             pass
 

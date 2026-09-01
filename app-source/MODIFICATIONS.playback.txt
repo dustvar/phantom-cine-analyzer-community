@@ -151,6 +151,8 @@ Modified: 2026-08-31
 - Updated the tracking-method display names, added dedicated method-comparison
   help describing Edge Assist orientation and angular-analysis support, and
   made 1/10-pixel interpolation the default for new Classic objects.
+- Moved the current-frame number into the scrubber's reserved label space so it
+  stays close to the slider groove instead of being covered by Viewer controls.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from
