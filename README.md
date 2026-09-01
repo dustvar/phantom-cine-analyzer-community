@@ -14,8 +14,9 @@ keys, or private build credentials are included in this repository.
   Area modes, plus full-Cine first/last-frame buttons around the scrubber.
 - A dedicated Viewer with clip bounds and up to four simultaneous Cine panes.
 - Reliable multi-object selection and autotrack-dialog behavior.
-- The original **Intensity (Classic)** tracker remains available unchanged.
-- An opt-in **Hybrid (Edge + Intensity)** tracker uses an exact tracked point,
+- The original **Intensity Tracking (Classic)** tracker remains available and
+  now defaults to 1/10-pixel positional interpolation for new objects.
+- The opt-in **Intensify Tracking + Edge Assist (Beta)** tracker uses an exact tracked point,
   a movable/rotatable reinforcement region, rotation search, edge visualization,
   smart range detection, dual-reference confidence, and a live post-processing
   confidence filter (0.90 by default).

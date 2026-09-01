@@ -22,6 +22,8 @@ MINIGRAPH_SIZE = 160
 VERSION = '1.2.0 + Multi-Cine Workspace'
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
+HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
+CLASSIC_TRACKING_DISPLAY = 'Intensity Tracking (Classic)'
 DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
 dir_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -283,14 +285,16 @@ class TrackingHelpDialog(QDialog):
     HELP_HTML = f"""
     <h2>Tracking setup guide</h2>
     <h3>Which method should I choose?</h3>
-    <p><b>Intensity (Classic)</b> is fastest and works well when the object has a
-    distinctive texture, its appearance stays similar, and it does not rotate
-    very much.</p>
-    <p><b>Hybrid (Edge + Intensity)</b> is better when an object rotates, changes
-    brightness, or needs stronger shape information to stay locked. It combines
-    image intensity with edge geometry.</p>
+    <p><b>{CLASSIC_TRACKING_DISPLAY}</b> is fastest and works well when the
+    object has a distinctive texture, its appearance stays similar, and it does
+    not rotate very much. New Classic objects default to 1/10-pixel positional
+    interpolation.</p>
+    <p><b>{HYBRID_TRACKING_DISPLAY}</b> is better when an object rotates,
+    changes brightness, or needs stronger shape information to stay locked. It
+    combines image intensity with edge geometry and estimates the object's
+    in-plane orientation alongside its X/Y position.</p>
 
-    <h3>Recommended Hybrid setup</h3>
+    <h3>Recommended Edge Assist setup</h3>
     <ol>
       <li>Start on a clear frame where the object is sharp and unobstructed.</li>
       <li>Click the <b>exact point you want reported</b>. This is the measured
@@ -319,16 +323,36 @@ class TrackingHelpDialog(QDialog):
     frames. A larger value is slower and can introduce false matches.</p>
     """
 
-    def __init__(self, parent=None):
+    METHOD_COMPARISON_HTML = f"""
+    <h2>Tracking method comparison</h2>
+    <h3>{CLASSIC_TRACKING_DISPLAY}</h3>
+    <p>Uses the original PCA intensity-template workflow to measure X/Y motion.
+    It is the simpler, faster option when the target retains a stable visual
+    pattern and undergoes little rotation. New Classic objects use 1/10-pixel
+    interpolation by default for the highest available positional resolution.</p>
+
+    <h3>{HYBRID_TRACKING_DISPLAY}</h3>
+    <p>Combines intensity correlation with edge-geometry assistance to improve
+    tracking of rigid features that rotate or experience moderate appearance
+    changes. In addition to X/Y position, it estimates the object's in-plane orientation
+    on each accepted frame. This provides frame-by-frame angle
+    measurements and supports derived rotational analysis such as angular
+    displacement and angular speed.</p>
+    <p><b>Beta note:</b> Edge Assist should be validated against the Cine before
+    relying on its results. It performs best with a rigid, asymmetric feature
+    containing clear corners or edges.</p>
+    """
+
+    def __init__(self, parent=None, title='Tracking Help', html=None):
         super().__init__(parent)
         self.setObjectName('tracking_help_dialog')
-        self.setWindowTitle('Tracking Help')
+        self.setWindowTitle(title)
         self.setMinimumSize(680, 560)
         self.setModal(True)
 
         guide = QTextBrowser(self)
         guide.setObjectName('tracking_help_text')
-        guide.setHtml(self.HELP_HTML)
+        guide.setHtml(html or self.HELP_HTML)
         guide.setOpenExternalLinks(False)
 
         close_button = QPushButton('Close', self)
@@ -348,6 +372,15 @@ class TrackingHelpDialog(QDialog):
     @classmethod
     def show_help(cls, parent=None):
         dialog = cls(parent)
+        dialog.exec()
+
+    @classmethod
+    def show_method_comparison(cls, parent=None):
+        dialog = cls(
+            parent,
+            title='Tracking Method Comparison',
+            html=cls.METHOD_COMPARISON_HTML,
+        )
         dialog.exec()
 
 
@@ -372,15 +405,15 @@ class TrackingMethodDialog(QDialog):
         help_button.setToolTip('How do the tracking methods work?')
         help_button.setAccessibleName('Tracking method help')
         description = QLabel(
-            'Intensity (Classic) uses the original PCA point/template workflow.\n'
-            'Hybrid (Edge + Intensity) first records the exact point to follow, then lets you '\
-            'position and tune a separate geometry-aware reinforcement region.'
+            f'{CLASSIC_TRACKING_DISPLAY} uses the original PCA intensity-template workflow.\n'
+            f'{HYBRID_TRACKING_DISPLAY} adds geometry-assisted tracking and '\
+            'frame-by-frame orientation measurements.'
         )
         description.setObjectName('tracking_method_description')
         description.setWordWrap(True)
 
-        classic_button = QPushButton('Intensity (Classic)')
-        hybrid_button = QPushButton('Hybrid (Edge + Intensity)')
+        classic_button = QPushButton(CLASSIC_TRACKING_DISPLAY)
+        hybrid_button = QPushButton(HYBRID_TRACKING_DISPLAY)
         cancel_button = QPushButton('Cancel')
         classic_button.setObjectName('classic_method_button')
         hybrid_button.setObjectName('hybrid_method_button')
@@ -396,7 +429,9 @@ class TrackingMethodDialog(QDialog):
         classic_button.clicked.connect(lambda: accept_method(CLASSIC_TRACKING_METHOD))
         hybrid_button.clicked.connect(lambda: accept_method(HYBRID_TRACKING_METHOD))
         cancel_button.clicked.connect(dialog.reject)
-        help_button.clicked.connect(lambda: TrackingHelpDialog.show_help(dialog))
+        help_button.clicked.connect(
+            lambda: TrackingHelpDialog.show_method_comparison(dialog)
+        )
 
         icon = QLabel()
         icon.setPixmap(dialog.style().standardIcon(
@@ -952,6 +987,7 @@ class AutoTrackDialog(QDialog):
         self.subpixel_size.addItem('1/8 pix')
         self.subpixel_size.addItem('1/9 pix')
         self.subpixel_size.addItem('1/10 pix')
+        self.subpixel_size.setCurrentText('1/10 pix')
         self.subpixel_size.setEnabled(True)
 
         # Subpixel Type
@@ -999,7 +1035,25 @@ class AutoTrackDialog(QDialog):
         # Geometry-aware tracking
         self.tracking_method_label = QLabel('Tracking Method')
         self.tracking_method = QComboBox()
-        self.tracking_method.addItems([HYBRID_TRACKING_METHOD, CLASSIC_TRACKING_METHOD])
+        self.tracking_method.addItem(
+            HYBRID_TRACKING_DISPLAY, HYBRID_TRACKING_METHOD
+        )
+        self.tracking_method.addItem(
+            CLASSIC_TRACKING_DISPLAY, CLASSIC_TRACKING_METHOD
+        )
+        self.tracking_method.setMinimumContentsLength(38)
+        self.tracking_method_help_button = QToolButton()
+        self.tracking_method_help_button.setObjectName(
+            'tracking_method_help_button'
+        )
+        self.tracking_method_help_button.setText('?')
+        self.tracking_method_help_button.setFixedSize(26, 26)
+        self.tracking_method_help_button.setToolTip(
+            'Compare the two tracking methods'
+        )
+        self.tracking_method_help_button.setAccessibleName(
+            'Tracking method comparison'
+        )
         self.rotation_range_label = QLabel('Rotation Range')
         self.rotation_range = QDoubleSpinBox()
         self.rotation_range.setRange(0.0, 180.0)
@@ -1048,6 +1102,7 @@ class AutoTrackDialog(QDialog):
         advanced_grid_layout = QGridLayout()
         advanced_grid_layout.addWidget(self.tracking_method_label, 0, 0)
         advanced_grid_layout.addWidget(self.tracking_method, 0, 1)
+        advanced_grid_layout.addWidget(self.tracking_method_help_button, 0, 2)
         advanced_grid_layout.addWidget(self.rotation_range_label, 1, 0)
         advanced_grid_layout.addWidget(self.rotation_range, 1, 1)
         advanced_grid_layout.addWidget(self.rotation_step_label, 2, 0)
@@ -1117,11 +1172,16 @@ class AutoTrackDialog(QDialog):
         self.update_template_enable.toggled.connect(self.on_update_tpl_enable_changed)
         self.score.valueChanged.connect(self.on_score_changed)
         self.tpl_score.valueChanged.connect(self.on_tpl_score_changed)
-        self.tracking_method.currentTextChanged.connect(self.on_tracking_method_changed)
+        self.tracking_method.currentIndexChanged.connect(
+            self._on_tracking_method_index_changed
+        )
+        self.tracking_method_help_button.clicked.connect(
+            lambda: TrackingHelpDialog.show_method_comparison(self)
+        )
         self.rotation_range.valueChanged.connect(self.on_rotation_range_changed)
         self.rotation_step.valueChanged.connect(self.on_rotation_step_changed)
         self.edge_weight.valueChanged.connect(self.on_edge_weight_changed)
-        self.on_tracking_method_changed(self.tracking_method.currentText())
+        self.on_tracking_method_changed(self.current_tracking_method())
 
     def update_progress(self, progress):
         self.progress_bar.setValue(progress)
@@ -1152,7 +1212,7 @@ class AutoTrackDialog(QDialog):
         self.end_frame.setValue(value)
         self.updateAutoParamValue.emit('end', self.end_frame.value())
 
-    def refresh_params(self, start=0, end=0, search_area=(0,0), tpl_rng=(0,0), subpixel_size='1.0', subpixel_interp='Cubic',
+    def refresh_params(self, start=0, end=0, search_area=(0,0), tpl_rng=(0,0), subpixel_size='1/10 pix', subpixel_interp='Cubic',
                        frames_enable=False, search_area_enable=True, tpl_rng_enable=True, update_template_enable=True, 
                        acceptable_score = 0.8, tpl_score = 0.9, name='',
                        tracking_method=HYBRID_TRACKING_METHOD, rotation_range=180.0,
@@ -1169,7 +1229,9 @@ class AutoTrackDialog(QDialog):
         self.subpixel_interp.setCurrentText(subpixel_interp)
         self.score.setValue(acceptable_score)
         self.tpl_score.setValue(tpl_score)
-        self.tracking_method.setCurrentText(tracking_method)
+        method_index = self.tracking_method.findData(tracking_method)
+        if method_index >= 0:
+            self.tracking_method.setCurrentIndex(method_index)
         self.rotation_range.setValue(rotation_range)
         self.rotation_step.setValue(rotation_step)
         self.edge_weight.setValue(edge_weight)
@@ -1252,7 +1314,7 @@ class AutoTrackDialog(QDialog):
             self.update_template_enable.setChecked(False)
         self.update_template_enable.setEnabled(not hybrid_enabled)
         self.update_template_enable.setToolTip(
-            'Hybrid keeps the setup-frame geometry fixed; only X, Y, and angle change.'
+            'Edge Assist keeps the setup-frame geometry fixed; only X, Y, and angle change.'
             if hybrid_enabled else ''
         )
         self.rotation_range.setEnabled(hybrid_enabled)
@@ -1268,6 +1330,12 @@ class AutoTrackDialog(QDialog):
         )
         self.subpixel_type_label.setEnabled(not hybrid_enabled)
         self.updateAutoParamValue.emit('tracking_method', method)
+
+    def current_tracking_method(self):
+        return self.tracking_method.currentData() or CLASSIC_TRACKING_METHOD
+
+    def _on_tracking_method_index_changed(self, *args):
+        self.on_tracking_method_changed(self.current_tracking_method())
 
     def on_rotation_range_changed(self):
         self.updateAutoParamValue.emit('rotation_range', self.rotation_range.value())
@@ -1302,7 +1370,7 @@ class AutoTrackDialog(QDialog):
     def on_subpixel_size_changed(self):
         self.updateAutoParamValue.emit('subpixel_size', self.subpixel_size.currentText())
         if (
-            self.tracking_method.currentText() != HYBRID_TRACKING_METHOD
+            self.current_tracking_method() != HYBRID_TRACKING_METHOD
             and self.subpixel_size.currentText() != '1.0 pix'
         ):
             self.subpixel_interp.setEnabled(True)
@@ -2388,7 +2456,7 @@ class MainWindow(QWidget):
         hybrid_settings_layout.setSpacing(6)
 
         hybrid_heading = QHBoxLayout()
-        hybrid_title = QLabel('Hybrid Tracking')
+        hybrid_title = QLabel('Edge Assist (Beta)')
         hybrid_title.setObjectName('hybrid_settings_title')
         self.hybrid_advanced_button = QToolButton()
         self.hybrid_advanced_button.setObjectName('hybrid_advanced_button')
@@ -2473,7 +2541,7 @@ class MainWindow(QWidget):
         self.hybrid_update_template.setChecked(False)
         self.hybrid_update_template.setEnabled(False)
         self.hybrid_update_template.setToolTip(
-            'Hybrid keeps the setup-frame geometry fixed; only X, Y, and angle change.'
+            'Edge Assist keeps the setup-frame geometry fixed; only X, Y, and angle change.'
         )
         hybrid_advanced_form.addRow(self.hybrid_update_template)
         self.hybrid_advanced_panel.setVisible(False)
@@ -3245,9 +3313,9 @@ class MainWindow(QWidget):
         ]
         selected, accepted = QInputDialog.getItem(
             self,
-            'Hybrid Fixture Reference',
+            'Edge Assist Fixture Reference',
             'Use a new fixture, or reuse the tracked pose fixture from an '
-            'existing Hybrid object:',
+            'existing Edge Assist object:',
             labels,
             0,
             False,
@@ -3420,7 +3488,7 @@ class MainWindow(QWidget):
         fixture_accepted, fixture_source_id = self._choose_hybrid_fixture_source()
         if not fixture_accepted:
             self.vm.update_status_text.emit(
-                'Hybrid fixture selection canceled; click a point to try again.'
+                'Edge Assist fixture selection canceled; click a point to try again.'
             )
             return
         tracked_point = (
@@ -3484,7 +3552,7 @@ class MainWindow(QWidget):
                 'name', f'Object {fixture_source_id}'
             )
             self.vm.update_status_text.emit(
-                f'Reused the Hybrid fixture from {source_name}. You may adjust '
+                f'Reused the Edge Assist fixture from {source_name}. You may adjust '
                 'the cloned box before processing.'
             )
         else:
@@ -3497,7 +3565,7 @@ class MainWindow(QWidget):
         if graph is not self._hybrid_selection_graph:
             return
         if rect.width() < 5 or rect.height() < 5:
-            self.vm.update_status_text.emit('Draw a Hybrid tracking box at least 5 × 5 pixels.')
+            self.vm.update_status_text.emit('Draw an Edge Assist tracking box at least 5 × 5 pixels.')
             return
         self.create_hybrid_track_at(rect.center())
         object_id = self.vm.active_object
@@ -3646,14 +3714,14 @@ class MainWindow(QWidget):
             return
         self._save_hybrid_settings()
         self.hybrid_progress_bar.setValue(0)
-        self.hybrid_progress_bar.setFormat('Processing Hybrid: %p%')
+        self.hybrid_progress_bar.setFormat('Processing Edge Assist: %p%')
         self.hybrid_process_button.setEnabled(False)
         self.hybrid_process_button.setText('Processing…')
         self.process_autotrack('Process')
 
     def _on_hybrid_track_complete(self, *args):
         self.hybrid_progress_bar.setValue(100)
-        self.hybrid_progress_bar.setFormat('Hybrid processing complete')
+        self.hybrid_progress_bar.setFormat('Edge Assist processing complete')
         self.hybrid_process_button.setEnabled(True)
         self.hybrid_process_button.setText('Process Smart Range')
         self._sync_hybrid_settings_panel()
@@ -4162,7 +4230,7 @@ class MainWindow(QWidget):
         if is_hybrid_preview and not is_main_graph:
             pixmap = self._decorate_hybrid_preview(pixmap, preview_angle)
             graph.setToolTip(
-                'Hybrid pose: the image crop stays fixed while the purple '
+                'Edge Assist pose: the image crop stays fixed while the purple '
                 'marker shows the tracked angle.'
             )
         graph.scene().addPixmap(pixmap)

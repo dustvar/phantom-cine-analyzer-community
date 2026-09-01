@@ -69,6 +69,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['tpl_rng'], (31, 31))
         self.assertEqual(track['search_area'], (101, 101))
         self.assertFalse(track['smart_frames'])
+        self.assertEqual(track['subpixel_size'], '1/10 pix')
         self.assertEqual(track['points'].tolist(), [[25, 30]])
 
     def test_hybrid_choice_enables_smart_geometry_defaults(self):
@@ -120,6 +121,30 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertIn('1.5×', help_text)
         self.assertIn('Avoid smooth areas', help_text)
         self.assertIn('Process Smart', help_text)
+
+    def test_tracking_method_names_and_comparison_help_are_user_facing(self):
+        self.assertEqual(
+            simplemeas_ui.CLASSIC_TRACKING_DISPLAY,
+            'Intensity Tracking (Classic)',
+        )
+        self.assertEqual(
+            simplemeas_ui.HYBRID_TRACKING_DISPLAY,
+            'Intensify Tracking + Edge Assist (Beta)',
+        )
+        comparison = simplemeas_ui.TrackingHelpDialog.METHOD_COMPARISON_HTML
+        self.assertIn('in-plane orientation', comparison)
+        self.assertIn('angular speed', comparison)
+
+        dialog = simplemeas_ui.AutoTrackDialog()
+        classic_index = dialog.tracking_method.findData(CLASSIC_TRACKING_METHOD)
+        dialog.tracking_method.setCurrentIndex(classic_index)
+        self.assertEqual(
+            dialog.tracking_method.currentText(),
+            simplemeas_ui.CLASSIC_TRACKING_DISPLAY,
+        )
+        self.assertEqual(dialog.subpixel_size.currentText(), '1/10 pix')
+        self.assertEqual(dialog.tracking_method_help_button.text(), '?')
+        dialog.close()
 
     def test_live_threshold_rebuilds_hybrid_series_without_rerun(self):
         track = {

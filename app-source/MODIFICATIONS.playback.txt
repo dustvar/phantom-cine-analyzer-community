@@ -36,8 +36,9 @@ Modified: 2026-08-31
   active object before the dialog opens. Right-clicking the color cell is also
   supported, and an existing dialog is brought to the foreground reliably.
 - Added an explicit method chooser when creating an Auto object. Intensity
-  (Classic) retains the original PCA point, crop and correlation workflow;
-  Hybrid (Edge + Intensity) uses a two-step tracked-point and reinforcement
+  Tracking (Classic) retains the original PCA point, crop and correlation
+  workflow; Intensify Tracking + Edge Assist (Beta) uses a two-step tracked-point
+  and reinforcement
   region workflow. The chooser is sized so both method names remain readable.
 - Hybrid regions have adjacent purple scale and rotation handles. The selected
   region displays the exact edge pixels used by the geometry score as purple
@@ -147,6 +148,9 @@ Modified: 2026-08-31
 - Consolidated new-object setup into one explicit flow: Add Object opens the
   tracking-method chooser once, the status bar then requests a tracking point,
   and canvas clicks can no longer reopen the method chooser.
+- Updated the tracking-method display names, added dedicated method-comparison
+  help describing Edge Assist orientation and angular-analysis support, and
+  made 1/10-pixel interpolation the default for new Classic objects.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from

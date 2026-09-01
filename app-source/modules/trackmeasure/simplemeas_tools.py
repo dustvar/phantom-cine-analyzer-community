@@ -161,7 +161,7 @@ class TrackTool(BaseTool):
                      'start': int(self.vm.cine_handler.metadata.FirstImageNo), 
                      'end': int(self.vm.cine_handler.metadata.FirstImageNo + self.vm.cine_handler.metadata.ImageCount - 1), 
                      'search_area':(101,101), 'tpl_rng': (31,31),
-                     'subpixel_size': '1/10 pix' if is_hybrid else '1.0 pix',
+                     'subpixel_size': '1/10 pix',
                      'subpixel_type': 'cubic',
                      'frames_enable': True, 'search_area_enable': True, 'tpl_rng_enable':True, 
                      'update_template_enable': not is_hybrid,
