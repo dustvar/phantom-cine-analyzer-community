@@ -144,6 +144,9 @@ Modified: 2026-08-31
 - Renamed that control to Path Settings, clarified the former Point radius
   field as Transparency Distance, and added a separate Point Radius multiplier
   that scales the visible tracking-path samples without changing track data.
+- Consolidated new-object setup into one explicit flow: Add Object opens the
+  tracking-method chooser once, the status bar then requests a tracking point,
+  and canvas clicks can no longer reopen the method chooser.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from

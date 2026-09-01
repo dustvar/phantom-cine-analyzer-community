@@ -682,17 +682,14 @@ class ResizableGraph(QGraphicsView):
                 return
 
             if self.parent.should_prompt_for_tracking_method():
-                method = self.parent.choose_tracking_method()
-                if method == CLASSIC_TRACKING_METHOD:
-                    self.parent.create_classic_track_at(self.mapToScene(event_pos))
-                elif method == HYBRID_TRACKING_METHOD:
-                    self.parent.begin_hybrid_region_selection(self)
-                # Native modal dialogs can temporarily dim the OpenGL-backed
-                # viewport on macOS. Repaint after the dialog event loop has
-                # completely returned, including after Cancel.
-                redraw_cb = getattr(self.parent.vm, 'redraw_cb', None)
-                if callable(redraw_cb):
-                    QTimer.singleShot(0, redraw_cb)
+                # Method selection belongs exclusively to Add Object.  This
+                # guard prevents an unarmed/stale canvas click from reopening
+                # the chooser and accidentally treating that same click as a
+                # tracking point.
+                self.parent.vm.update_status_text.emit(
+                    'Click Add Object and choose a tracking method before '
+                    'selecting a tracking point.'
+                )
                 event.accept()
                 return
 
@@ -3313,7 +3310,8 @@ class MainWindow(QWidget):
         self._hybrid_selection_graph = None
         self.vm.pending_tracking_method = CLASSIC_TRACKING_METHOD
         self.vm.update_status_text.emit(
-            'Click the exact point or distinctive feature you want to track.'
+            'Select Tracking Point: click the exact point or distinctive '
+            'feature you want to track.'
         )
         QTimer.singleShot(0, self.vm.redraw_cb)
         QTimer.singleShot(0, graph.viewport().update)
@@ -3342,7 +3340,8 @@ class MainWindow(QWidget):
         self._hybrid_selection_graph = graph
         self.vm.pending_tracking_method = HYBRID_TRACKING_METHOD
         self.vm.update_status_text.emit(
-            'Step 1 of 2: click the exact point that must stay attached to the object.'
+            'Select Tracking Point (Step 1 of 2): click the exact point that '
+            'must stay attached to the object.'
         )
         # The method chooser is modal on macOS.  Redraw after its nested event
         # loop has fully unwound so the Cine pixmap cannot remain gray/dimmed
@@ -4662,18 +4661,18 @@ class MainWindow(QWidget):
             self.vm.active_object = None 
             self.refresh_track_keys()
         if not self.vm.track_data:
-            # Removing the final object should leave Track mode ready to create
-            # another object. Clear any stale two-step Hybrid state and keep the
-            # Cine pixmap alive across the next tracking-method dialog.
+            # The tracking-method chooser must only open from an explicit Add
+            # Object click.  Do not silently leave the button or TrackTool
+            # armed after removing the final object.
             self._hybrid_selection_graph = None
             self.vm.pending_tracking_method = None
             if self.vm.active_tool is not None and hasattr(
                 self.vm.active_tool, 'track_select'
             ):
-                self.vm.active_tool.track_select = True
-                self.add_object_button.setChecked(True)
+                self.vm.active_tool.track_select = False
+                self.add_object_button.setChecked(False)
                 self.vm.update_status_text.emit(
-                    'Click the image to add a new tracking object.'
+                    'Click Add Object to create a new tracking object.'
                 )
         self.track_canvas.redraw(self.vm.track_data)
         self.vm.redraw_cb()

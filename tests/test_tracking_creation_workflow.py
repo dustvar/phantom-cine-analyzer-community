@@ -157,7 +157,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual((track['start'], track['end']), (-50, -47))
         self.assertEqual(len(track['hybrid_candidates']), 4)
 
-    def test_empty_track_list_rearms_method_choice_without_add_button_click(self):
+    def test_empty_track_list_waits_for_add_object(self):
         track_tool = object()
         dummy = SimpleNamespace(
             current_tool=track_tool,
@@ -172,7 +172,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
 
         self.assertTrue(simplemeas_ui.MainWindow.should_prompt_for_tracking_method(dummy))
 
-    def test_remove_all_points_rearms_creation_and_clears_hybrid_state(self):
+    def test_remove_all_points_disarms_creation_and_clears_hybrid_state(self):
         redraws = []
         canvas_redraws = []
 
@@ -214,8 +214,12 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(dummy.vm.track_data, {})
         self.assertIsNone(dummy._hybrid_selection_graph)
         self.assertIsNone(dummy.vm.pending_tracking_method)
-        self.assertTrue(dummy.vm.active_tool.track_select)
-        self.assertTrue(dummy.add_object_button.checked)
+        self.assertFalse(dummy.vm.active_tool.track_select)
+        self.assertFalse(dummy.add_object_button.checked)
+        self.assertEqual(
+            dummy.vm.update_status_text.values[-1],
+            ('Click Add Object to create a new tracking object.',),
+        )
         self.assertEqual(canvas_redraws, [{}])
         self.assertGreaterEqual(redraws.count('cine'), 2)
 
@@ -462,8 +466,9 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertLess(abs(after.y() - before.y()), 6.0)
         graph.close()
 
-    def test_canvas_click_routes_classic_choice_to_original_point_creation(self):
-        created = []
+    def test_canvas_click_never_reopens_tracking_method_chooser(self):
+        chooser_calls = []
+        status = SignalSink()
 
         class Parent:
             current_tool = None
@@ -471,17 +476,18 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             vm = SimpleNamespace(
                 update_mouse_pos_cb=lambda *args, **kwargs: None,
                 graph_mouse_motion_cb=lambda *args, **kwargs: None,
-                update_status_text=SignalSink(),
+                update_status_text=status,
             )
 
             def should_prompt_for_tracking_method(self):
                 return True
 
             def choose_tracking_method(self):
+                chooser_calls.append(True)
                 return simplemeas_ui.CLASSIC_TRACKING_METHOD
 
             def create_classic_track_at(self, point):
-                created.append(point)
+                raise AssertionError('An unarmed canvas click must not create an object')
 
             def begin_hybrid_region_selection(self, graph):
                 raise AssertionError('Classic choice must not enter Hybrid drawing mode')
@@ -498,9 +504,84 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             simplemeas_ui.Qt.MouseButton.LeftButton,
             pos=graph.viewport().rect().center(),
         )
+        self.assertEqual(chooser_calls, [])
+        self.assertIn('Click Add Object', status.values[-1][0])
+        graph.close()
+
+    def test_add_object_choice_is_consumed_by_exactly_one_point_click(self):
+        chooser_calls = []
+        created = []
+        status = SignalSink()
+        active_tool = SimpleNamespace(track_select=False)
+
+        class Parent:
+            current_tool = None
+            status_bar = QLabel('')
+
+            def __init__(self):
+                self.vm = SimpleNamespace(
+                    active_tool=active_tool,
+                    pending_tracking_method=None,
+                    update_mouse_pos_cb=lambda *args, **kwargs: None,
+                    graph_mouse_motion_cb=lambda *args, **kwargs: None,
+                    update_status_text=status,
+                    redraw_cb=lambda: None,
+                    add_new_template_cb=self.arm_new_object,
+                )
+
+            def arm_new_object(self):
+                active_tool.track_select = True
+
+            def should_prompt_for_tracking_method(self):
+                return (
+                    active_tool.track_select
+                    and self.vm.pending_tracking_method is None
+                )
+
+            def choose_tracking_method(self):
+                chooser_calls.append(True)
+                return CLASSIC_TRACKING_METHOD
+
+            def begin_classic_point_selection(self, graph):
+                self.vm.pending_tracking_method = CLASSIC_TRACKING_METHOD
+                status.emit('Select Tracking Point')
+
+            def begin_hybrid_region_selection(self, graph):
+                raise AssertionError('Classic choice must not enter Hybrid mode')
+
+            def is_hybrid_region_selection_active(self, graph):
+                return False
+
+            def is_classic_point_selection_active(self, graph):
+                return (
+                    active_tool.track_select
+                    and self.vm.pending_tracking_method
+                    == CLASSIC_TRACKING_METHOD
+                )
+
+            def create_classic_track_at(self, point):
+                created.append(point)
+                active_tool.track_select = False
+                self.vm.pending_tracking_method = None
+
+        parent = Parent()
+        graph = simplemeas_ui.ResizableGraph(QLabel(), parent)
+        parent.graph = graph
+        graph.resize(220, 180)
+        graph.show()
+        self.app.processEvents()
+
+        simplemeas_ui.MainWindow._on_add_object_clicked(parent, True)
+        self.assertEqual(len(chooser_calls), 1)
+        self.assertEqual(status.values[-1], ('Select Tracking Point',))
+
+        QTest.mousePress(
+            graph.viewport(), simplemeas_ui.Qt.MouseButton.LeftButton,
+            pos=graph.viewport().rect().center(),
+        )
+
+        self.assertEqual(len(chooser_calls), 1)
         self.assertEqual(len(created), 1)
-        self.assertGreaterEqual(created[0].x(), 0)
-        self.assertLessEqual(created[0].x(), graph.xMax)
         graph.close()
 
     def test_add_object_click_wins_over_an_existing_hybrid_fixture(self):
@@ -515,16 +596,16 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
                 update_status_text=SignalSink(),
             )
 
-            def should_prompt_for_tracking_method(self):
+            def is_classic_point_selection_active(self, graph):
                 return True
-
-            def choose_tracking_method(self):
-                return CLASSIC_TRACKING_METHOD
 
             def create_classic_track_at(self, point):
                 created.append(point)
 
             def is_hybrid_region_selection_active(self, graph):
+                return False
+
+            def should_prompt_for_tracking_method(self):
                 return False
 
         parent = Parent()
