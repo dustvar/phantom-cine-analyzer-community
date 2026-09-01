@@ -159,6 +159,11 @@ class ViewerControlsTest(unittest.TestCase):
             ],
         )
 
+    def test_tracking_help_button_is_available_beside_add_object(self):
+        self.assertEqual(self.window.tracking_help_button.text(), '?')
+        self.assertIn('tracking method', self.window.tracking_help_button.toolTip())
+        self.assertEqual(self.window.hybrid_search_multiplier.value(), 1.5)
+
     def test_scrubber_labels_align_with_slider_column(self):
         self.assertEqual(self.window.scrubber_layout.spacing(), 16)
         self.assertIs(

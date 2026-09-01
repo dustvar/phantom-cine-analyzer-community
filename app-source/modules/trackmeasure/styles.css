@@ -243,16 +243,22 @@ QFrame#path_fade_panel {
 
 QToolButton#path_fade_button,
 QToolButton#track_preview_add_button,
+QToolButton#tracking_help_button,
+QToolButton#tracking_method_help_button,
 QToolButton#qt_frame_endpoint_button {
     background-color: #512953;
     border: 1px solid #f47efa;
     border-radius: 4px;
     padding: 3px;
+    color: #ffffff;
+    font-weight: bold;
 }
 
 QToolButton#path_fade_button:checked,
 QToolButton#path_fade_button:pressed,
 QToolButton#track_preview_add_button:pressed,
+QToolButton#tracking_help_button:pressed,
+QToolButton#tracking_method_help_button:pressed,
 QToolButton#qt_frame_endpoint_button:pressed {
     background-color: #9A4E9E;
 }

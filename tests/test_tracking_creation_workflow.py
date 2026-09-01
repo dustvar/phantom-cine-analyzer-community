@@ -82,8 +82,44 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['position_precision'], 0.1)
         self.assertEqual(track['angle_precision'], 0.1)
         self.assertEqual(track['acceptable_score'], 0.9)
+        self.assertEqual(track['search_area_multiplier'], 1.5)
         self.assertEqual(track['scores'][0], 'N/A')
         self.assertEqual(list(track['hybrid_candidates']), [7])
+
+    def test_add_object_chooses_hybrid_before_the_canvas_click(self):
+        calls = []
+        active_tool = SimpleNamespace(track_select=False)
+
+        def arm_new_object():
+            calls.append('arm')
+            active_tool.track_select = True
+
+        dummy = SimpleNamespace(
+            vm=SimpleNamespace(
+                active_tool=active_tool,
+                add_new_template_cb=arm_new_object,
+                redraw_cb=lambda: calls.append('redraw'),
+            ),
+            graph=object(),
+            should_prompt_for_tracking_method=lambda: active_tool.track_select,
+            choose_tracking_method=lambda: HYBRID_TRACKING_METHOD,
+            begin_classic_point_selection=lambda graph: calls.append('classic'),
+            begin_hybrid_region_selection=lambda graph: calls.append('hybrid'),
+            _cancel_new_object_creation=lambda: calls.append('cancel'),
+        )
+
+        simplemeas_ui.MainWindow._on_add_object_clicked(dummy, True)
+
+        self.assertEqual(calls[:2], ['arm', 'hybrid'])
+        self.assertNotIn('classic', calls)
+        self.assertNotIn('cancel', calls)
+
+    def test_tracking_help_explains_first_time_hybrid_setup(self):
+        help_text = simplemeas_ui.TrackingHelpDialog.HELP_HTML
+        self.assertIn('exact point you want reported', help_text)
+        self.assertIn('1.5×', help_text)
+        self.assertIn('Avoid smooth areas', help_text)
+        self.assertIn('Process Smart', help_text)
 
     def test_live_threshold_rebuilds_hybrid_series_without_rerun(self):
         track = {

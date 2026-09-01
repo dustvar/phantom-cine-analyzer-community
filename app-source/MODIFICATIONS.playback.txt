@@ -2,6 +2,11 @@ Phantom Cine Analyzer Additional Features 1.1.18
 
 Modified: 2026-08-31
 
+- Streamlined first-time object creation: Add Object now opens the Hybrid or
+  Intensity chooser immediately, before the user selects a point. New Hybrid
+  objects start with a tighter 1.5x search area, and tracking-help question-mark
+  buttons explain method selection, the two-step Hybrid workflow, recommended
+  fixture geometry, and practical threshold/search-area tuning.
 - Fixed intermittent multi-second playback-control lag. Playback now uses a
   self-rearming timer that yields to button and keyboard events between frames,
   Matplotlib frame-marker updates are coalesced, long tracking paths are drawn

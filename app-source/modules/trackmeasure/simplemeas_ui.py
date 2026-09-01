@@ -22,6 +22,7 @@ MINIGRAPH_SIZE = 160
 VERSION = '1.2.0 + Multi-Cine Workspace'
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
+DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
 dir_path = os.path.dirname(os.path.abspath(__file__))
 
 #region CUSTOM WIDGETS
@@ -276,6 +277,80 @@ class ScaleLabel(QLabel):
         super().mouseDoubleClickEvent(event)
 
 
+class TrackingHelpDialog(QDialog):
+    """First-use guidance for choosing and configuring a tracking method."""
+
+    HELP_HTML = f"""
+    <h2>Tracking setup guide</h2>
+    <h3>Which method should I choose?</h3>
+    <p><b>Intensity (Classic)</b> is fastest and works well when the object has a
+    distinctive texture, its appearance stays similar, and it does not rotate
+    very much.</p>
+    <p><b>Hybrid (Edge + Intensity)</b> is better when an object rotates, changes
+    brightness, or needs stronger shape information to stay locked. It combines
+    image intensity with edge geometry.</p>
+
+    <h3>Recommended Hybrid setup</h3>
+    <ol>
+      <li>Start on a clear frame where the object is sharp and unobstructed.</li>
+      <li>Click the <b>exact point you want reported</b>. This is the measured
+      X/Y position; it does not have to be the center of the purple square.</li>
+      <li>Move and resize the purple reinforcement square over distinctive,
+      rigid detail that remains attached to that point. Corners, holes, printed
+      markings, and asymmetric outlines are usually good choices.</li>
+      <li>Avoid smooth areas, repeating patterns, glare, shadows, motion blur,
+      and background detail that moves differently from the object.</li>
+      <li>The search area starts at <b>{DEFAULT_HYBRID_SEARCH_MULTIPLIER:.1f}×</b>.
+      Keep it small for faster, more reliable matching. Increase it only when
+      the object can move far enough between adjacent frames to leave the
+      search area.</li>
+      <li>Leave rotation enabled if the object turns. Use <b>Process Smart
+      Range</b>, then inspect the confidence values and tracked path before
+      relying on the results.</li>
+    </ol>
+
+    <h3>Useful adjustments</h3>
+    <p><b>Match Threshold:</b> 0.90 is a conservative starting point. Lower it
+    gradually only if valid frames are being rejected; a low threshold can
+    accept the wrong feature.</p>
+    <p><b>Edge Weight:</b> higher values favor the object's shape; lower values
+    favor its brightness and texture.</p>
+    <p><b>Search Area:</b> controls how far the tracker looks between neighboring
+    frames. A larger value is slower and can introduce false matches.</p>
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('tracking_help_dialog')
+        self.setWindowTitle('Tracking Help')
+        self.setMinimumSize(680, 560)
+        self.setModal(True)
+
+        guide = QTextBrowser(self)
+        guide.setObjectName('tracking_help_text')
+        guide.setHtml(self.HELP_HTML)
+        guide.setOpenExternalLinks(False)
+
+        close_button = QPushButton('Close', self)
+        close_button.setObjectName('tracking_help_close_button')
+        close_button.setDefault(True)
+        close_button.clicked.connect(self.accept)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        button_layout.addWidget(close_button)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 14)
+        layout.addWidget(guide, 1)
+        layout.addLayout(button_layout)
+
+    @classmethod
+    def show_help(cls, parent=None):
+        dialog = cls(parent)
+        dialog.exec()
+
+
 class TrackingMethodDialog(QDialog):
     """Small, explicit method choice shown before a new Auto object is created."""
     @staticmethod
@@ -290,6 +365,12 @@ class TrackingMethodDialog(QDialog):
         title = QLabel('How should this object be tracked?')
         title.setObjectName('tracking_method_title')
         title.setWordWrap(True)
+        help_button = QToolButton(dialog)
+        help_button.setObjectName('tracking_method_help_button')
+        help_button.setText('?')
+        help_button.setFixedSize(30, 30)
+        help_button.setToolTip('How do the tracking methods work?')
+        help_button.setAccessibleName('Tracking method help')
         description = QLabel(
             'Intensity (Classic) uses the original PCA point/template workflow.\n'
             'Hybrid (Edge + Intensity) first records the exact point to follow, then lets you '\
@@ -315,6 +396,7 @@ class TrackingMethodDialog(QDialog):
         classic_button.clicked.connect(lambda: accept_method(CLASSIC_TRACKING_METHOD))
         hybrid_button.clicked.connect(lambda: accept_method(HYBRID_TRACKING_METHOD))
         cancel_button.clicked.connect(dialog.reject)
+        help_button.clicked.connect(lambda: TrackingHelpDialog.show_help(dialog))
 
         icon = QLabel()
         icon.setPixmap(dialog.style().standardIcon(
@@ -322,7 +404,10 @@ class TrackingMethodDialog(QDialog):
         ).pixmap(64, 64))
         icon.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         text_layout = QVBoxLayout()
-        text_layout.addWidget(title)
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(title, 1)
+        title_layout.addWidget(help_button)
+        text_layout.addLayout(title_layout)
         text_layout.addWidget(description)
         text_layout.addStretch(1)
         content_layout = QHBoxLayout()
@@ -585,6 +670,16 @@ class ResizableGraph(QGraphicsView):
                     )
                     event.accept()
                     return
+
+            classic_selection_fn = getattr(
+                self.parent, 'is_classic_point_selection_active', None
+            )
+            if callable(classic_selection_fn) and classic_selection_fn(self):
+                scene_pos = self.mapToScene(event_pos)
+                if self._within_bounds(scene_pos):
+                    self.parent.create_classic_track_at(scene_pos)
+                event.accept()
+                return
 
             if self.parent.should_prompt_for_tracking_method():
                 method = self.parent.choose_tracking_method()
@@ -2198,10 +2293,19 @@ class MainWindow(QWidget):
         self.path_fade_button.setToolTip(
             'Fade selected-object path samples near the current tracked points'
         )
+        self.tracking_help_button = QToolButton(self.viewer_overlay_controls)
+        self.tracking_help_button.setObjectName('tracking_help_button')
+        self.tracking_help_button.setText('?')
+        self.tracking_help_button.setFixedSize(28, 28)
+        self.tracking_help_button.setToolTip(
+            'Learn how to choose and set up a tracking method'
+        )
+        self.tracking_help_button.setAccessibleName('Tracking setup help')
         # The existing icon supplies the plus sign; keep the label compact.
         self.add_object_button.setText('Add Object')
         viewer_overlay_layout.addWidget(self.path_fade_button)
         viewer_overlay_layout.addWidget(self.add_object_button)
+        viewer_overlay_layout.addWidget(self.tracking_help_button)
         self.viewer_overlay_controls.adjustSize()
         self.viewer_overlay_controls.hide()
 
@@ -2351,7 +2455,7 @@ class MainWindow(QWidget):
         self.hybrid_search_multiplier.setRange(1.25, 10.0)
         self.hybrid_search_multiplier.setSingleStep(0.25)
         self.hybrid_search_multiplier.setSuffix('×')
-        self.hybrid_search_multiplier.setValue(3.0)
+        self.hybrid_search_multiplier.setValue(DEFAULT_HYBRID_SEARCH_MULTIPLIER)
         hybrid_advanced_form.addRow('Search Area', self.hybrid_search_multiplier)
         self.hybrid_miss_limit = QSpinBox()
         self.hybrid_miss_limit.setRange(1, 30)
@@ -3008,6 +3112,7 @@ class MainWindow(QWidget):
             and self.vm is not None
             and self.vm.track_type == 'Auto'
             and self.vm.active_tool is not None
+            and getattr(self.vm, 'pending_tracking_method', None) is None
             and (
                 getattr(self.vm.active_tool, 'track_select', False)
                 or not self.vm.track_data
@@ -3018,12 +3123,56 @@ class MainWindow(QWidget):
     def choose_tracking_method(self):
         return TrackingMethodDialog.choose(self)
 
+    def _show_tracking_help(self):
+        TrackingHelpDialog.show_help(self)
+
+    def _cancel_new_object_creation(self, message='Object creation canceled.'):
+        self._hybrid_selection_graph = None
+        if self.vm is not None:
+            self.vm.pending_tracking_method = None
+            active_tool = getattr(self.vm, 'active_tool', None)
+            if active_tool is not None and hasattr(active_tool, 'track_select'):
+                active_tool.track_select = False
+            self.vm.update_status_text.emit(message)
+        if self.add_object_button.isChecked():
+            self.add_object_button.setChecked(False)
+
+    def _on_add_object_clicked(self, checked=False):
+        """Arm object creation and choose Auto tracking before the point click."""
+        if not checked or self.vm is None:
+            return
+
+        self.vm.add_new_template_cb()
+        if not self.should_prompt_for_tracking_method():
+            return
+
+        method = self.choose_tracking_method()
+        if method == CLASSIC_TRACKING_METHOD:
+            self.begin_classic_point_selection(self.graph)
+        elif method == HYBRID_TRACKING_METHOD:
+            self.begin_hybrid_region_selection(self.graph)
+        else:
+            self._cancel_new_object_creation()
+
+        # A native modal dialog can temporarily dim the OpenGL-backed Cine
+        # viewport on macOS. Repaint after the nested dialog loop unwinds.
+        redraw_cb = getattr(self.vm, 'redraw_cb', None)
+        if callable(redraw_cb):
+            QTimer.singleShot(0, redraw_cb)
+
     def tracking_snap_candidate(self, graph, scene_pos):
         """Find a displayed tracking point close enough to reuse exactly."""
         if self.vm is None or graph is None:
             return None
+        classic_selection_fn = getattr(
+            self, 'is_classic_point_selection_active', None
+        )
         creation_armed = bool(
             self.is_hybrid_region_selection_active(graph)
+            or (
+                callable(classic_selection_fn)
+                and classic_selection_fn(graph)
+            )
             or self.should_prompt_for_tracking_method()
         )
         if not creation_armed:
@@ -3138,10 +3287,23 @@ class MainWindow(QWidget):
         track['t_angles'][0] = source_angle
         track['search_area'] = self._hybrid_search_dimensions(
             track['tpl_rng'],
-            track.get('search_area_multiplier', 3.0),
+            track.get(
+                'search_area_multiplier',
+                DEFAULT_HYBRID_SEARCH_MULTIPLIER,
+            ),
             track.get('rotation_allowed', True),
         )
         return True
+
+    def begin_classic_point_selection(self, graph):
+        self._hybrid_selection_graph = None
+        self.vm.pending_tracking_method = CLASSIC_TRACKING_METHOD
+        self.vm.update_status_text.emit(
+            'Click the exact point or distinctive feature you want to track.'
+        )
+        QTimer.singleShot(0, self.vm.redraw_cb)
+        QTimer.singleShot(0, graph.viewport().update)
+        QTimer.singleShot(0, graph.setFocus)
 
     def create_classic_track_at(self, scene_pos):
         if not (0 <= scene_pos.x() <= self.graph.xMax and 0 <= scene_pos.y() <= self.graph.yMax):
@@ -3176,14 +3338,35 @@ class MainWindow(QWidget):
         QTimer.singleShot(0, graph.setFocus)
 
     def _on_add_object_toggled(self, checked):
-        if not checked and self._hybrid_selection_graph is not None:
+        if checked or self.vm is None:
+            return
+        active_tool = getattr(self.vm, 'active_tool', None)
+        selection_was_active = bool(
+            self._hybrid_selection_graph is not None
+            or getattr(self.vm, 'pending_tracking_method', None) in (
+                CLASSIC_TRACKING_METHOD,
+                HYBRID_TRACKING_METHOD,
+            )
+            or getattr(active_tool, 'track_select', False)
+        )
+        if selection_was_active:
             self._hybrid_selection_graph = None
-            if self.vm is not None:
-                self.vm.pending_tracking_method = None
-                self.vm.update_status_text.emit('Hybrid region selection canceled.')
+            self.vm.pending_tracking_method = None
+            if active_tool is not None and hasattr(active_tool, 'track_select'):
+                active_tool.track_select = False
+            self.vm.update_status_text.emit('Object creation canceled.')
 
     def is_hybrid_region_selection_active(self, graph):
         return self._hybrid_selection_graph is graph
+
+    def is_classic_point_selection_active(self, graph):
+        return bool(
+            graph is self.graph
+            and self.vm is not None
+            and getattr(self.vm, 'pending_tracking_method', None)
+            == CLASSIC_TRACKING_METHOD
+            and getattr(getattr(self.vm, 'active_tool', None), 'track_select', False)
+        )
 
     @staticmethod
     def _odd_dimension(value, minimum=5):
@@ -3249,7 +3432,7 @@ class MainWindow(QWidget):
         default_size = self._odd_dimension(
             np.clip(min(image_width, image_height) * 0.08, 31, 101)
         )
-        search_multiplier = 3.0
+        search_multiplier = DEFAULT_HYBRID_SEARCH_MULTIPLIER
         track.update({
             'tracking_method': HYBRID_TRACKING_METHOD,
             'tpl_rng': (default_size, default_size),
@@ -3352,7 +3535,9 @@ class MainWindow(QWidget):
         )
         track['tpl_rng'] = template_size
         track['template_angle'] = angle
-        multiplier = float(track.get('search_area_multiplier', 3.0))
+        multiplier = float(track.get(
+            'search_area_multiplier', DEFAULT_HYBRID_SEARCH_MULTIPLIER
+        ))
         track['search_area'] = self._hybrid_search_dimensions(
             template_size, multiplier, track.get('rotation_allowed', True)
         )
@@ -3398,7 +3583,9 @@ class MainWindow(QWidget):
             track.get('adjacent_confidence_weight', 0.65)
         ))
         self.hybrid_edge_threshold.setValue(float(track.get('edge_threshold', 0.30)))
-        self.hybrid_search_multiplier.setValue(float(track.get('search_area_multiplier', 3.0)))
+        self.hybrid_search_multiplier.setValue(float(track.get(
+            'search_area_multiplier', DEFAULT_HYBRID_SEARCH_MULTIPLIER
+        )))
         self.hybrid_miss_limit.setValue(int(track.get('smart_miss_limit', 3)))
         self.hybrid_update_template.setChecked(False)
         del blockers
@@ -4622,7 +4809,9 @@ class MainWindow(QWidget):
             t.setdefault('rotation_allowed', True)
             t.setdefault('smart_frames', False)
             t.setdefault('smart_miss_limit', 3)
-            t.setdefault('search_area_multiplier', 3.0)
+            t.setdefault(
+                'search_area_multiplier', DEFAULT_HYBRID_SEARCH_MULTIPLIER
+            )
             self.auto.refresh_params(start=t['start'], end=t['end'], tpl_rng=t['tpl_rng'], 
                                     search_area=t['search_area'], subpixel_size=t['subpixel_size'], 
                                     subpixel_interp=t['subpixel_type'], 
@@ -4951,8 +5140,9 @@ class MainWindow(QWidget):
         self.track_type_man.clicked.connect(lambda: self.auto.on_tpl_enable_changed(False))
         self.track_type_auto.clicked.connect(lambda: self.auto.on_sa_enable_changed(True))
         self.track_type_auto.clicked.connect(lambda: self.auto.on_tpl_enable_changed(True))
-        self.add_object_button.clicked.connect(self.vm.add_new_template_cb)
+        self.add_object_button.clicked.connect(self._on_add_object_clicked)
         self.add_object_button.toggled.connect(self._on_add_object_toggled)
+        self.tracking_help_button.clicked.connect(self._show_tracking_help)
         self.contrast_slider.valueChanged.connect(self._on_contrast_changed)
         self.contrast_slider.valueChanged.connect(self.vm.redraw_cb)
         self.gamma_slider.valueChanged.connect(self._on_gamma_changed)

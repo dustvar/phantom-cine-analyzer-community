@@ -10,6 +10,7 @@ import math
 SUBPIXEL_VALS = {'1.0 pix': 1, '1/2 pix': 2, '1/3 pix': 3, '1/4 pix': 4, '1/5 pix': 5, '1/6 pix': 6, '1/7 pix': 7, '1/8 pix': 8, '1/9 pix': 9, '1/10 pix': 10}
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
+DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
 
 
 def _rotate_tracking_offset(offset, angle_deg):
@@ -170,7 +171,8 @@ class TrackTool(BaseTool):
                      'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
                      'position_precision': 0.1, 'angle_precision': 0.1,
                      'rotation_allowed': is_hybrid, 'smart_frames': is_hybrid,
-                     'smart_miss_limit': 3, 'search_area_multiplier': 3.0,
+                     'smart_miss_limit': 3,
+                     'search_area_multiplier': DEFAULT_HYBRID_SEARCH_MULTIPLIER,
                      'adjacent_confidence_weight': 0.65,
                      'confidence_components': {},
                      'template_angle': 0.0, 'template_offset': (0.0, 0.0),
