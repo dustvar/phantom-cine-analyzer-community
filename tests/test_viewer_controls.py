@@ -16,7 +16,7 @@ MODULE_PATH = (
 )
 sys.path.insert(0, str(MODULE_PATH))
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGraphicsPathItem
 
 import simplemeas_ui
 
@@ -99,7 +99,38 @@ class ViewerControlsTest(unittest.TestCase):
 
         self.window._pause_playback()
         self.assertFalse(self.window.playback_timer.isActive())
+        self.assertFalse(self.window._playback_active)
         self.assertTrue(self.window.pause_button.isChecked())
+
+    def test_playback_timer_is_self_throttling_single_shot(self):
+        self.assertTrue(self.window.playback_timer.isSingleShot())
+
+        self.window.frame_slider.setValue(50)
+        self.window._start_playback(1)
+        self.assertTrue(self.window._playback_active)
+        self.assertTrue(self.window.playback_timer.isActive())
+
+        self.window._advance_playback()
+        self.assertEqual(self.window.frame_slider.value(), 51)
+        self.assertTrue(self.window._playback_active)
+        self.assertTrue(self.window.playback_timer.isActive())
+
+    def test_long_track_path_is_batched_into_two_scene_items(self):
+        graph = self.window.graph
+        graph.scene().clear()
+        graph.xMax = 1920
+        graph.yMax = 1080
+        self.window._path_fade_enabled = False
+        points = np.column_stack((
+            np.linspace(0, 1919, 2000),
+            np.linspace(0, 1079, 2000),
+        ))
+
+        self.window.on_draw_track_points('main_graph', points, '#ff0000', 0)
+
+        scene_items = graph.scene().items()
+        self.assertEqual(len(scene_items), 2)
+        self.assertTrue(all(isinstance(item, QGraphicsPathItem) for item in scene_items))
 
     def test_pcc_frame_buttons_pause_and_move_exactly_one_frame(self):
         self.window.frame_slider.setValue(50)

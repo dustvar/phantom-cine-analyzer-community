@@ -1,7 +1,13 @@
 Phantom Cine Analyzer Additional Features 1.1.18
 
-Modified: 2026-08-24
+Modified: 2026-08-31
 
+- Fixed intermittent multi-second playback-control lag. Playback now uses a
+  self-rearming timer that yields to button and keyboard events between frames,
+  Matplotlib frame-marker updates are coalesced, long tracking paths are drawn
+  with two batched painter paths instead of thousands of scene objects, and
+  secondary point previews refresh after playback pauses rather than once per
+  video frame.
 - Renamed the modified application from Phantom Cine Analyzer Playback to
   Phantom Cine Analyzer Additional Features. The bundle identifier remains
   unchanged so existing macOS settings and permissions continue to apply.

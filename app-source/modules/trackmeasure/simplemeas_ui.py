@@ -1391,17 +1391,19 @@ class TrackingGraph(FigureCanvas):
                 self.frame_pos_line.set_xdata([ts, ts])
             else:
                 self.frame_pos_line = self.ax.axvline(ts, color='#00FF7F', linestyle=':', label='frame_pos', linewidth=1)
-            self.draw()
+            # Coalesce rapid playback updates instead of forcing a complete
+            # synchronous Matplotlib render for every video frame.
+            self.draw_idle()
 
         except Exception as e: 
             # force clear the frame marker
             try: 
                 self.frame_pos_line.remove()
-                self.draw()
+                self.draw_idle()
                 self.frame_pos_line = None
             except:
                 self.frame_pos_line = None
-                self.draw()
+                self.draw_idle()
                 
     def get_units(self, mode):
         length_units = self.parent_window.vm.length_units.replace('u', 'μ')
@@ -2004,7 +2006,14 @@ class MainWindow(QWidget):
             button.setEnabled(False)
         self.playback_timer = QTimer(self)
         self.playback_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.playback_timer.setInterval(33)
+        # A repeating timer can immediately fire again when rendering takes
+        # longer than its interval, leaving user-input events waiting behind a
+        # stream of frame redraws.  Use a self-rearming one-shot timer instead
+        # so Qt gets an event-loop turn between every rendered frame.
+        self._playback_interval_ms = 33
+        self.playback_timer.setInterval(self._playback_interval_ms)
+        self.playback_timer.setSingleShot(True)
+        self._playback_active = False
         self._playback_step = 1
 
         self.pcc_transport_controls = QFrame()
@@ -2811,8 +2820,9 @@ class MainWindow(QWidget):
             self.frame_slider.setValue(last_frame)
 
         self._playback_step = frame_step
+        self._playback_active = True
         self._sync_playback_controls(True)
-        self.playback_timer.start()
+        self.playback_timer.start(self._playback_interval_ms)
 
     def _sync_playback_controls(self, playing):
         target_button = self.pause_button
@@ -2829,20 +2839,34 @@ class MainWindow(QWidget):
             button.blockSignals(False)
 
     def _stop_playback(self):
+        was_playing = getattr(self, '_playback_active', False)
+        self._playback_active = False
         if hasattr(self, 'playback_timer'):
             self.playback_timer.stop()
         self._sync_playback_controls(False)
+        # Point-view tiles are intentionally not rebuilt during playback.  A
+        # deferred final refresh keeps them accurate without delaying the
+        # pause button's visual response.
+        if was_playing and self.vm is not None:
+            QTimer.singleShot(0, self._refresh_object_previews)
 
     def _pause_playback(self):
         self._stop_playback()
 
     def _toggle_transport_play_pause(self):
-        if self.playback_timer.isActive():
+        if self._playback_active:
             self._pause_playback()
         else:
             self._start_playback(1)
 
     def _advance_playback(self):
+        if not self._playback_active:
+            return
+        # The timer is one-shot and therefore inactive while this callback is
+        # rendering.  Measure that work so the next frame is paced relative to
+        # the target interval without ever building a timer-event backlog.
+        render_timer = QElapsedTimer()
+        render_timer.start()
         current_frame = self.frame_slider.value()
         first_frame, last_frame = self._playback_bounds()
         next_frame = max(first_frame, min(current_frame + self._playback_step, last_frame))
@@ -2851,6 +2875,10 @@ class MainWindow(QWidget):
             self._playback_step < 0 and next_frame <= first_frame
         ):
             self._stop_playback()
+            return
+        if self._playback_active:
+            next_delay = max(1, self._playback_interval_ms - render_timer.elapsed())
+            self.playback_timer.start(next_delay)
 
     def _seek_by(self, frame_delta):
         if not self.cine_path:
@@ -3926,7 +3954,9 @@ class MainWindow(QWidget):
             fmt = QImage.Format.Format_RGB888
             bytes_per_line = 3 * img.shape[1]
 
-        img = np.copy(img)
+        # QPixmap.fromImage consumes the image immediately, so a second full
+        # frame copy is only needed when OpenCV returned a non-contiguous view.
+        img = np.ascontiguousarray(img)
         q_img = QImage(img, img.shape[1], img.shape[0], bytes_per_line, fmt)
         pixmap = QPixmap.fromImage(q_img)
         if is_hybrid_preview and not is_main_graph:
@@ -3955,7 +3985,12 @@ class MainWindow(QWidget):
         graph = self._graph_widget(graph_name)
         self._draw_image_to_graph(graph, img, bpp, cfa, current_point)
         if graph_name == 'main_graph':
-            self._refresh_object_previews((img, bpp, cfa))
+            # Rebuilding every object crop creates several additional image
+            # conversions per frame.  Keep the newest frame and update these
+            # secondary previews once playback pauses.
+            self._last_preview_frame_data = (img, bpp, cfa)
+            if not self._playback_active:
+                self._refresh_object_previews()
             
     def on_draw_points(self, graph_name, points, color='red'):
         graph = self._graph_widget(graph_name)
@@ -3980,6 +4015,32 @@ class MainWindow(QWidget):
                 (graph.xMax * graph.yMax) / (math.pi * 10000)
             ),
         )
+        if not self._path_fade_enabled:
+            # The old implementation created one ellipse and one line scene
+            # item for nearly every tracked point, on every video frame.  Long
+            # tracks could therefore create thousands of Qt objects per tick.
+            # Two painter paths preserve the same appearance with two items.
+            path_color = QColor(color)
+            path_pen = QPen(path_color, 1)
+            path_pen.setCosmetic(True)
+
+            line_path = QPainterPath()
+            line_path.moveTo(float(points[0][0]), float(points[0][1]))
+            for point in points[1:]:
+                line_path.lineTo(float(point[0]), float(point[1]))
+            if len(points) > 1:
+                graph.scene().addPath(line_path, path_pen)
+
+            dot_path = QPainterPath()
+            for point in points:
+                dot_path.addEllipse(
+                    QPointF(float(point[0]), float(point[1])),
+                    dot_rad,
+                    dot_rad,
+                )
+            graph.scene().addPath(dot_path, path_pen, QBrush(path_color))
+            return
+
         centers = self._fade_reference_points()
         alphas = [
             self._track_path_alpha(point, object_id, centers)
@@ -4017,6 +4078,8 @@ class MainWindow(QWidget):
             elif isinstance(item, QGraphicsEllipseItem):
                 graph.scene().removeItem(item)
             elif isinstance(item, QGraphicsRectItem):
+                graph.scene().removeItem(item)
+            elif isinstance(item, QGraphicsPathItem):
                 graph.scene().removeItem(item)
 
     def on_color_changed(self, new_color, t_id):
