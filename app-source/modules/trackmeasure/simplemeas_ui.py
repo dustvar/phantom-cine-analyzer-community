@@ -1993,6 +1993,7 @@ class MainWindow(QWidget):
         self._path_fade_transparency = 70
         self._path_fade_radius = 80
         self._path_point_radius_scale = 1.0
+        self._show_edge_detection = True
         self._preview_object_order = []
         self._preview_suppressed = set()
         self._preview_tiles = {}
@@ -2362,7 +2363,7 @@ class MainWindow(QWidget):
         self.path_fade_button.setText('Path Settings  ▾')
         self.path_fade_button.setCheckable(True)
         self.path_fade_button.setToolTip(
-            'Adjust tracking-path transparency, fade distance, and point size'
+            'Adjust tracking-path appearance and Edge Assist overlay visibility'
         )
         self.tracking_help_button = QToolButton(self.viewer_overlay_controls)
         self.tracking_help_button.setObjectName('tracking_help_button')
@@ -2401,9 +2402,18 @@ class MainWindow(QWidget):
         self.path_point_radius.setToolTip(
             'Scale the tracking-point radius calculated from the Cine dimensions'
         )
+        self.path_show_edge_detection = QCheckBox(
+            'Show Edge Detection', self.path_fade_panel
+        )
+        self.path_show_edge_detection.setChecked(True)
+        self.path_show_edge_detection.setToolTip(
+            'Show the Edge Assist fixture boxes and purple detected-edge overlay. '
+            'Tracked point paths remain visible when this is turned off.'
+        )
         fade_form.addRow('Transparency', self.path_fade_transparency)
         fade_form.addRow('Transparency Distance', self.path_fade_radius)
         fade_form.addRow('Point Radius', self.path_point_radius)
+        fade_form.addRow(self.path_show_edge_detection)
         self.path_fade_panel.adjustSize()
         self.path_fade_panel.hide()
         
@@ -3195,6 +3205,11 @@ class MainWindow(QWidget):
         self._path_fade_transparency = self.path_fade_transparency.value()
         self._path_fade_radius = self.path_fade_radius.value()
         self._path_point_radius_scale = self.path_point_radius.value()
+        if self.vm is not None:
+            self.vm.redraw_cb()
+
+    def _on_show_edge_detection_toggled(self, enabled):
+        self._show_edge_detection = bool(enabled)
         if self.vm is not None:
             self.vm.redraw_cb()
 
@@ -4490,6 +4505,14 @@ class MainWindow(QWidget):
         t_id = self.vm.active_object if t_id == None else t_id
         if t_id in self.vm.track_data:
             t = self.vm.track_data[t_id]
+            # Edge Assist visualization is optional. Suppress both its fitted
+            # fixture and search-area boxes; the separately rendered tracking
+            # path remains untouched.
+            if (
+                t.get('tracking_method') == HYBRID_TRACKING_METHOD
+                and not self._show_edge_detection
+            ):
+                return
         
             # if active track object real, check if active frame is in the object list
             frame = None
@@ -5290,6 +5313,9 @@ class MainWindow(QWidget):
         )
         self.path_point_radius.valueChanged.connect(
             self._on_path_fade_settings_changed
+        )
+        self.path_show_edge_detection.toggled.connect(
+            self._on_show_edge_detection_toggled
         )
         self.preview_add_button.clicked.connect(self._add_preview_object)
         self.tab_splitter.splitterMoved.connect(

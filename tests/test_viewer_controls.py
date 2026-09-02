@@ -148,6 +148,8 @@ class ViewerControlsTest(unittest.TestCase):
             layout.labelForField(self.window.path_point_radius).text(),
             'Point Radius',
         )
+        self.assertTrue(self.window.path_show_edge_detection.isChecked())
+        self.assertTrue(self.window._show_edge_detection)
 
         graph = self.window.graph
         graph.xMax = 1920
@@ -166,6 +168,54 @@ class ViewerControlsTest(unittest.TestCase):
         large_width = graph.scene().items()[0].path().boundingRect().width()
 
         self.assertAlmostEqual(large_width, normal_width * 2.0)
+
+    def test_edge_detection_toggle_hides_only_hybrid_fixture_graphics(self):
+        original_vm = self.window.vm
+        original_visibility = self.window._show_edge_detection
+        graph = self.window.graph
+        try:
+            self.window.vm = SimpleNamespace(
+                active_object=0,
+                active_frame=0,
+                _graph='main_graph',
+                transformed_img=np.full((120, 160), 50, dtype=np.uint16),
+                track_data={
+                    0: {
+                        'tracking_method': simplemeas_ui.HYBRID_TRACKING_METHOD,
+                        'frames': np.array([0]),
+                        'points': np.array([[80.0, 60.0]]),
+                        'angles': np.array([0.0]),
+                        'anchor_frame': 0,
+                        'template_offset': (0.0, 0.0),
+                        'edge_threshold': 0.30,
+                        'color': '#00ff00',
+                    },
+                },
+            )
+            graph.scene().clear()
+            self.window._show_edge_detection = False
+            self.window.on_draw_roi((31, 31), 0, 'template')
+            self.window.on_draw_roi((101, 101), 0, 'search_area')
+            self.assertEqual(graph.scene().items(), [])
+            self.window.on_draw_track_points(
+                'main_graph', np.array([[80.0, 60.0]]), '#00ff00', 0
+            )
+            self.assertTrue(any(
+                isinstance(item, QGraphicsPathItem)
+                for item in graph.scene().items()
+            ))
+
+            graph.scene().clear()
+            self.window._show_edge_detection = True
+            self.window.on_draw_roi((31, 31), 0, 'template')
+            self.assertTrue(any(
+                item.data(0) == 'template_0'
+                for item in graph.scene().items()
+            ))
+        finally:
+            graph.scene().clear()
+            self.window.vm = original_vm
+            self.window._show_edge_detection = original_visibility
 
     def test_pcc_frame_buttons_pause_and_move_exactly_one_frame(self):
         self.window.frame_slider.setValue(50)
