@@ -174,6 +174,7 @@ class TrackTool(BaseTool):
                      'smart_miss_limit': 3,
                      'search_area_multiplier': DEFAULT_HYBRID_SEARCH_MULTIPLIER,
                      'adjacent_confidence_weight': 0.65,
+                     'anchor_refinement_enabled': is_hybrid,
                      'confidence_components': {},
                      'template_angle': 0.0, 'template_offset': (0.0, 0.0),
                      'anchor_frame': int(frame_id),
@@ -592,6 +593,8 @@ class AutoTrackTool(TrackTool):
         cfa = self.vm.cine_handler.metadata.CFA
         bpp = self.vm.cine_handler.metadata.RealBPP
         setup_patch = None
+        anchor_refinement_patch = None
+        anchor_refinement_radius = 0
         if tracking_method == HYBRID_TRACKING_METHOD:
             anchor_frame = int(template.get('anchor_frame', template['frames'][0]))
             anchor_matches = np.flatnonzero(template['frames'] == anchor_frame)
@@ -610,6 +613,23 @@ class AutoTrackTool(TrackTool):
             setup_patch = AutoTrackAlgorithms.extract_oriented_patch(
                 anchor_img, anchor_center, tpl_rng, -anchor_angle
             )
+            if template.get('anchor_refinement_enabled', True):
+                anchor_size = int(np.clip(
+                    round(min(tpl_rng) * 0.20), 15, 31
+                ))
+                if anchor_size % 2 == 0:
+                    anchor_size += 1
+                anchor_refinement_radius = int(np.clip(
+                    round(anchor_size * 0.40), 5, 12
+                ))
+                anchor_refinement_patch = (
+                    AutoTrackAlgorithms.extract_oriented_patch(
+                        anchor_img,
+                        anchor_point,
+                        (anchor_size, anchor_size),
+                        -anchor_angle,
+                    )
+                )
             template.setdefault('confidence_components', {})
 
         forward = start_fr <= last_fr
@@ -833,6 +853,28 @@ class AutoTrackTool(TrackTool):
                     # The matcher follows the reinforcement geometry. Convert
                     # its pose back to the exact point selected by the user.
                     point -= _rotate_tracking_offset(template_offset, data.angle_deg)
+                    refinement = None
+                    if anchor_refinement_patch is not None:
+                        refinement = AutoTrackAlgorithms.refine_anchor_point(
+                            anchor_refinement_patch,
+                            current_img,
+                            point,
+                            data.angle_deg,
+                            search_radius=anchor_refinement_radius,
+                            position_precision=position_precision,
+                        )
+                    if refinement is not None:
+                        point = np.array(
+                            (refinement.x_pos, refinement.y_pos), dtype=float
+                        )
+                    component = template['confidence_components'].get(int(fr))
+                    if component is not None:
+                        component['point_lock_applied'] = refinement is not None
+                        component['point_lock_score'] = (
+                            round(float(refinement.confid_val_ij), 6)
+                            if refinement is not None
+                            else None
+                        )
                 point = tuple(point)
 
                 if tracking_method == HYBRID_TRACKING_METHOD:

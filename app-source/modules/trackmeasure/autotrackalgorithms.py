@@ -208,6 +208,142 @@ class AutoTrackAlgorithms:
         return float(np.round(float(value) / precision) * precision)
 
     @staticmethod
+    def refine_anchor_point(
+        reference_patch,
+        current_img,
+        predicted_point,
+        angle_deg,
+        search_radius=10,
+        min_score=0.62,
+        position_precision=0.1,
+    ):
+        """Locally re-lock the exact clicked feature after rigid-pose matching.
+
+        The large Edge Assist region solves stable translation and rotation.
+        This second, deliberately small match uses the immutable setup-frame
+        appearance around the user's selected point to remove a few pixels of
+        pose-center bias without allowing unbounded drift.
+        """
+        reference_u8 = AutoTrackAlgorithms._normalize_u8(reference_patch)
+        if (
+            reference_u8.ndim != 2
+            or min(reference_u8.shape) < 5
+            or float(np.std(reference_u8)) < 4.0
+        ):
+            return None
+
+        radius = max(2, int(round(search_radius)))
+        ref_height, ref_width = reference_u8.shape[:2]
+        search_size = (
+            ref_width + (2 * radius),
+            ref_height + (2 * radius),
+        )
+        search_patch = AutoTrackAlgorithms.extract_oriented_patch(
+            current_img,
+            predicted_point,
+            search_size,
+            -float(angle_deg),
+        )
+        search_u8 = AutoTrackAlgorithms._normalize_u8(search_patch)
+        if (
+            search_u8.ndim != 2
+            or search_u8.shape[0] < ref_height
+            or search_u8.shape[1] < ref_width
+        ):
+            return None
+
+        intensity_map = cv2.matchTemplate(
+            search_u8,
+            reference_u8,
+            cv2.TM_CCOEFF_NORMED,
+        )
+        intensity_map = np.nan_to_num(
+            intensity_map, nan=-1.0, posinf=-1.0, neginf=-1.0
+        )
+        intensity_unit = np.clip((intensity_map + 1.0) / 2.0, 0.0, 1.0)
+
+        reference_edges = AutoTrackAlgorithms._soft_edge_image(reference_u8)
+        search_edges = AutoTrackAlgorithms._soft_edge_image(search_u8)
+        if (
+            np.count_nonzero(reference_edges > 0.05) >= 6
+            and np.count_nonzero(search_edges > 0.05) >= 6
+        ):
+            edge_map = cv2.matchTemplate(
+                search_edges,
+                reference_edges,
+                cv2.TM_CCORR_NORMED,
+            )
+            edge_map = np.clip(
+                np.nan_to_num(edge_map, nan=0.0, posinf=0.0, neginf=0.0),
+                0.0,
+                1.0,
+            )
+        else:
+            edge_map = np.zeros_like(intensity_unit)
+
+        combined = (0.75 * intensity_unit) + (0.25 * edge_map)
+        _, peak, _, max_location = cv2.minMaxLoc(combined)
+        col, row = max_location
+        # A boundary peak means the requested correction may lie outside this
+        # deliberately small safety window; retain the rigid-pose prediction.
+        if (
+            row == 0
+            or col == 0
+            or row == combined.shape[0] - 1
+            or col == combined.shape[1] - 1
+        ):
+            return None
+
+        second_map = combined.copy()
+        second_map[
+            max(0, row - 2):min(second_map.shape[0], row + 3),
+            max(0, col - 2):min(second_map.shape[1], col + 3),
+        ] = -np.inf
+        finite_second = second_map[np.isfinite(second_map)]
+        second_peak = float(np.max(finite_second)) if finite_second.size else 0.0
+        uniqueness = float(np.clip((float(peak) - second_peak) / 0.08, 0.0, 1.0))
+        if float(peak) < float(min_score) or uniqueness < 0.12:
+            return None
+
+        subpixel_x, subpixel_y = AutoTrackAlgorithms._subpixel_peak(
+            combined, row, col
+        )
+        matched_center = np.array([
+            float(col) + ((ref_width - 1) / 2.0) + subpixel_x,
+            float(row) + ((ref_height - 1) / 2.0) + subpixel_y,
+        ])
+        search_center = np.array([
+            (search_u8.shape[1] - 1) / 2.0,
+            (search_u8.shape[0] - 1) / 2.0,
+        ])
+        local_correction = matched_center - search_center
+        radians = math.radians(float(angle_deg))
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        global_correction = np.array([
+            (cosine * local_correction[0]) + (sine * local_correction[1]),
+            (-sine * local_correction[0]) + (cosine * local_correction[1]),
+        ])
+        refined = np.asarray(predicted_point, dtype=float) + global_correction
+        refined = np.array([
+            AutoTrackAlgorithms._quantize_pose_value(
+                refined[0], position_precision
+            ),
+            AutoTrackAlgorithms._quantize_pose_value(
+                refined[1], position_precision
+            ),
+        ])
+        return Data(
+            norm_xcorr_map=combined,
+            x_pos=float(refined[0]),
+            y_pos=float(refined[1]),
+            confid_val_ij=float(peak),
+            peak_uniqueness=uniqueness,
+            angle_deg=float(angle_deg),
+            method='Edge Assist Point Lock',
+        )
+
+    @staticmethod
     def interpolator(tpl_img, sa_img, sub_pixel, sub_pixel_type: str):
         sp_i = INTERP_METHOD.index(sub_pixel_type.lower())
         tpl_interp = zoom(tpl_img, sub_pixel, order = sp_i)

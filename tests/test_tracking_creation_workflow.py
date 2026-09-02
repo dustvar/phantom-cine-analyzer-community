@@ -77,6 +77,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['tracking_method'], HYBRID_TRACKING_METHOD)
         self.assertTrue(track['smart_frames'])
         self.assertTrue(track['rotation_allowed'])
+        self.assertTrue(track['anchor_refinement_enabled'])
         self.assertEqual(track['rotation_range'], 180.0)
         self.assertEqual(track['subpixel_size'], '1/10 pix')
         self.assertEqual(track['edge_threshold'], 0.30)

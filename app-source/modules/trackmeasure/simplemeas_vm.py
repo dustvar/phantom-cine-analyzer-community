@@ -756,7 +756,7 @@ class SimpleMeasVM(QObject):
                       'tracking_method', 'rotation_range', 'rotation_step', 'edge_weight',
                       'adjacent_confidence_weight',
                       'edge_threshold', 'rotation_allowed', 'smart_frames', 'smart_miss_limit',
-                      'search_area_multiplier']
+                      'search_area_multiplier', 'anchor_refinement_enabled']
             for id, t in self.track_data.items():
                 if t['enabled'] and id != self.active_object:
                     for p in params:

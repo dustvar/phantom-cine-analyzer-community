@@ -321,6 +321,11 @@ class TrackingHelpDialog(QDialog):
     favor its brightness and texture.</p>
     <p><b>Search Area:</b> controls how far the tracker looks between neighboring
     frames. A larger value is slower and can introduce false matches.</p>
+    <p><b>Point Lock refinement:</b> after the larger reinforcement square
+    estimates the object's position and angle, this locally re-centers the
+    reported X/Y point on the exact feature originally clicked. Leave it on for
+    small markings or holes; it automatically falls back to the rigid-pose
+    result when that local feature is blurred, hidden, or ambiguous.</p>
     """
 
     METHOD_COMPARISON_HTML = f"""
@@ -337,7 +342,9 @@ class TrackingHelpDialog(QDialog):
     changes. In addition to X/Y position, it estimates the object's in-plane orientation
     on each accepted frame. This provides frame-by-frame angle
     measurements and supports derived rotational analysis such as angular
-    displacement and angular speed.</p>
+    displacement and angular speed. Its Point Lock refinement uses a small,
+    fixed setup-frame patch to re-center the reported position on the precise
+    feature selected by the user after the larger region solves the rigid pose.</p>
     <p><b>Beta note:</b> Edge Assist should be validated against the Cine before
     relying on its results. It performs best with a rigid, asymmetric feature
     containing clear corners or edges.</p>
@@ -2544,6 +2551,14 @@ class MainWindow(QWidget):
             'Edge Assist keeps the setup-frame geometry fixed; only X, Y, and angle change.'
         )
         hybrid_advanced_form.addRow(self.hybrid_update_template)
+        self.hybrid_anchor_refinement = QCheckBox('Point Lock refinement')
+        self.hybrid_anchor_refinement.setChecked(True)
+        self.hybrid_anchor_refinement.setToolTip(
+            'After fitting the full rigid pose, locally re-center the exact '
+            'feature selected by the user. Falls back to the rigid pose when '
+            'the feature is blurred, hidden, or ambiguous.'
+        )
+        hybrid_advanced_form.addRow(self.hybrid_anchor_refinement)
         self.hybrid_advanced_panel.setVisible(False)
         hybrid_settings_layout.addWidget(self.hybrid_advanced_panel)
 
@@ -3652,6 +3667,7 @@ class MainWindow(QWidget):
             self.hybrid_search_multiplier,
             self.hybrid_miss_limit,
             self.hybrid_update_template,
+            self.hybrid_anchor_refinement,
         )
         blockers = [QSignalBlocker(control) for control in controls]
         self.hybrid_match_threshold.setValue(float(track.get('acceptable_score', 0.90)))
@@ -3669,6 +3685,9 @@ class MainWindow(QWidget):
         )))
         self.hybrid_miss_limit.setValue(int(track.get('smart_miss_limit', 3)))
         self.hybrid_update_template.setChecked(False)
+        self.hybrid_anchor_refinement.setChecked(bool(
+            track.get('anchor_refinement_enabled', True)
+        ))
         del blockers
         rotation_enabled = self.hybrid_rotation_allowed.isChecked()
         self.hybrid_rotation_range.setEnabled(rotation_enabled)
@@ -3693,6 +3712,7 @@ class MainWindow(QWidget):
             'search_area_multiplier': self.hybrid_search_multiplier.value(),
             'smart_miss_limit': self.hybrid_miss_limit.value(),
             'update_template_enable': False,
+            'anchor_refinement_enabled': self.hybrid_anchor_refinement.isChecked(),
         })
         self.hybrid_rotation_range.setEnabled(track['rotation_allowed'])
         self.hybrid_rotation_step.setEnabled(track['rotation_allowed'])
@@ -4891,6 +4911,7 @@ class MainWindow(QWidget):
             t.setdefault('edge_weight', 0.6)
             t.setdefault('adjacent_confidence_weight', 0.65)
             t.setdefault('edge_threshold', 0.30)
+            t.setdefault('anchor_refinement_enabled', True)
             t.setdefault('rotation_allowed', True)
             t.setdefault('smart_frames', False)
             t.setdefault('smart_miss_limit', 3)
@@ -5300,6 +5321,7 @@ class MainWindow(QWidget):
             self.hybrid_smart_frames,
             self.hybrid_rotation_allowed,
             self.hybrid_update_template,
+            self.hybrid_anchor_refinement,
         ):
             control.toggled.connect(self._save_hybrid_settings)
         self.hybrid_process_button.clicked.connect(self._process_active_hybrid)

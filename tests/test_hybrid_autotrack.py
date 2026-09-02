@@ -26,6 +26,50 @@ from simplemeas_tools import (
 
 
 class HybridAutoTrackTest(unittest.TestCase):
+    def test_point_lock_refines_a_biased_rigid_pose_at_subpixel_resolution(self):
+        reference_frame = np.full((101, 101), 24, dtype=np.float32)
+        cv2.circle(reference_frame, (50, 50), 4, 230, -1)
+        cv2.line(reference_frame, (47, 50), (53, 50), 120, 1)
+        reference_patch = AutoTrackAlgorithms.extract_oriented_patch(
+            reference_frame, (50.0, 50.0), (21, 21)
+        )
+
+        current_frame = np.full((101, 101), 24, dtype=np.float32)
+        actual_point = (61.3, 56.7)
+        shifted = cv2.warpAffine(
+            reference_frame,
+            np.array([[1.0, 0.0, actual_point[0] - 50.0],
+                      [0.0, 1.0, actual_point[1] - 50.0]], dtype=np.float32),
+            (101, 101),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=24,
+        )
+        current_frame[:] = shifted
+
+        refined = AutoTrackAlgorithms.refine_anchor_point(
+            reference_patch,
+            current_frame,
+            predicted_point=(65.0, 53.0),
+            angle_deg=0.0,
+            search_radius=8,
+            position_precision=0.1,
+        )
+
+        self.assertIsNotNone(refined)
+        self.assertAlmostEqual(refined.x_pos, actual_point[0], delta=0.35)
+        self.assertAlmostEqual(refined.y_pos, actual_point[1], delta=0.35)
+        self.assertGreater(refined.confid_val_ij, 0.75)
+
+    def test_point_lock_rejects_a_featureless_reference(self):
+        refined = AutoTrackAlgorithms.refine_anchor_point(
+            np.full((21, 21), 50, dtype=np.uint8),
+            np.full((61, 61), 50, dtype=np.uint8),
+            predicted_point=(30.0, 30.0),
+            angle_deg=0.0,
+        )
+        self.assertIsNone(refined)
+
     def test_pose_accumulates_across_the_180_degree_boundary(self):
         pattern = np.full((51, 51), 15, dtype=np.uint8)
         cv2.rectangle(pattern, (5, 6), (38, 12), 230, -1)

@@ -153,6 +153,10 @@ Modified: 2026-08-31
   made 1/10-pixel interpolation the default for new Classic objects.
 - Moved the current-frame number into the scrubber's reserved label space so it
   stays close to the slider groove instead of being covered by Viewer controls.
+- Added a guarded Point Lock refinement stage to Edge Assist. The full region
+  still solves rigid translation and angle, then a small immutable setup patch
+  locally re-centers the exact clicked feature at subpixel resolution. Weak or
+  ambiguous local matches safely retain the rigid-pose result.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from
