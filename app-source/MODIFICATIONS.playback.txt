@@ -157,15 +157,18 @@ Modified: 2026-08-31
   still solves rigid translation and angle, then a small immutable setup patch
   locally re-centers the exact clicked feature at subpixel resolution. Weak or
   ambiguous local matches safely retain the rigid-pose result.
+- Changed the new Edge Assist object match-threshold default from 90% to 80%
+  and replaced the scrubber endpoint's OS-dependent dark icons with the same
+  custom white transport artwork used by the playback controls.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from
   the grid.
-- Changed the default Hybrid match threshold to 0.90. Hybrid processing now
-  retains every evaluated candidate up to its smart-stop boundary, allowing a
-  post-processing threshold change to update accepted points, tables, graphs,
-  paths, previews, detected range, and exports immediately without rerunning
-  the matcher. Explicitly deleted candidates do not reappear.
+- Hybrid processing retains every evaluated candidate up to its smart-stop
+  boundary, allowing a post-processing threshold change to update accepted
+  points, tables, graphs, paths, previews, detected range, and exports
+  immediately without rerunning the matcher. Explicitly deleted candidates do
+  not reappear.
 - Added the transport controls without changing TrackingGraph or
   TrackingGraphWindow. Separate graph changes are limited to the requested
   multi-Cine overlay and Angle/Angular Speed modes; existing graph calculations

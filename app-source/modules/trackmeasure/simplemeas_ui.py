@@ -25,6 +25,7 @@ CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
 CLASSIC_TRACKING_DISPLAY = 'Intensity Tracking (Classic)'
 DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
+DEFAULT_HYBRID_MATCH_THRESHOLD = 0.80
 dir_path = os.path.dirname(os.path.abspath(__file__))
 
 #region CUSTOM WIDGETS
@@ -314,9 +315,9 @@ class TrackingHelpDialog(QDialog):
     </ol>
 
     <h3>Useful adjustments</h3>
-    <p><b>Match Threshold:</b> 0.90 is a conservative starting point. Lower it
-    gradually only if valid frames are being rejected; a low threshold can
-    accept the wrong feature.</p>
+    <p><b>Match Threshold:</b> 0.80 is the default starting point. Raise it when
+    you need stricter rejection, or lower it gradually only when valid frames
+    are being rejected; a low threshold can accept the wrong feature.</p>
     <p><b>Edge Weight:</b> higher values favor the object's shape; lower values
     favor its brightness and texture.</p>
     <p><b>Search Area:</b> controls how far the tracker looks between neighboring
@@ -2159,17 +2160,14 @@ class MainWindow(QWidget):
         self.frame_slider.setObjectName("qt_active_frame")
         self.frame_first_button = QToolButton()
         self.frame_first_button.setObjectName('qt_frame_endpoint_button')
-        self.frame_first_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward)
-        )
+        self.frame_first_button.setIcon(create_playback_icon('previous_frame'))
         self.frame_first_button.setToolTip('Jump to the very first Cine frame')
         self.frame_last_button = QToolButton()
         self.frame_last_button.setObjectName('qt_frame_endpoint_button')
-        self.frame_last_button.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward)
-        )
+        self.frame_last_button.setIcon(create_playback_icon('next_frame'))
         self.frame_last_button.setToolTip('Jump to the very last Cine frame')
         for button in (self.frame_first_button, self.frame_last_button):
+            button.setIconSize(QSize(20, 20))
             button.setFixedSize(28, 26)
             button.setEnabled(False)
         self.playback_timer = QTimer(self)
@@ -2481,7 +2479,7 @@ class MainWindow(QWidget):
         self.hybrid_match_threshold.setRange(0.0, 1.0)
         self.hybrid_match_threshold.setSingleStep(0.01)
         self.hybrid_match_threshold.setDecimals(2)
-        self.hybrid_match_threshold.setValue(0.90)
+        self.hybrid_match_threshold.setValue(DEFAULT_HYBRID_MATCH_THRESHOLD)
         threshold_row.addWidget(self.hybrid_match_threshold)
         hybrid_settings_layout.addLayout(threshold_row)
 
@@ -3670,7 +3668,9 @@ class MainWindow(QWidget):
             self.hybrid_anchor_refinement,
         )
         blockers = [QSignalBlocker(control) for control in controls]
-        self.hybrid_match_threshold.setValue(float(track.get('acceptable_score', 0.90)))
+        self.hybrid_match_threshold.setValue(float(track.get(
+            'acceptable_score', DEFAULT_HYBRID_MATCH_THRESHOLD
+        )))
         self.hybrid_smart_frames.setChecked(bool(track.get('smart_frames', True)))
         self.hybrid_rotation_allowed.setChecked(bool(track.get('rotation_allowed', True)))
         self.hybrid_rotation_range.setValue(float(track.get('rotation_range', 180.0)))

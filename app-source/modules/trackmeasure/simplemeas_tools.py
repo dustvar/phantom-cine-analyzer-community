@@ -11,6 +11,7 @@ SUBPIXEL_VALS = {'1.0 pix': 1, '1/2 pix': 2, '1/3 pix': 3, '1/4 pix': 4, '1/5 pi
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
+DEFAULT_HYBRID_MATCH_THRESHOLD = 0.80
 
 
 def _rotate_tracking_offset(offset, angle_deg):
@@ -165,7 +166,7 @@ class TrackTool(BaseTool):
                      'subpixel_type': 'cubic',
                      'frames_enable': True, 'search_area_enable': True, 'tpl_rng_enable':True, 
                      'update_template_enable': not is_hybrid,
-                     'acceptable_score': 0.9 if is_hybrid else 0.6,
+                     'acceptable_score': DEFAULT_HYBRID_MATCH_THRESHOLD if is_hybrid else 0.6,
                      'tpl_score': 0.8,
                      'tracking_method': tracking_method, 'rotation_range': 180.0,
                      'rotation_step': 2.0, 'edge_weight': 0.6, 'edge_threshold': 0.30,
@@ -349,7 +350,9 @@ class TrackTool(BaseTool):
         candidates = track.get('hybrid_candidates')
         if not candidates:
             return False
-        threshold = float(track.get('acceptable_score', 0.9))
+        threshold = float(track.get(
+            'acceptable_score', DEFAULT_HYBRID_MATCH_THRESHOLD
+        ))
         old_frames = np.asarray(track.get('frames', []), dtype=int)
         old_notes = dict(track.get('notes', {}))
         notes_by_frame = track.setdefault('hybrid_notes_by_frame', {})

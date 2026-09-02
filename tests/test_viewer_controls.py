@@ -249,6 +249,12 @@ class ViewerControlsTest(unittest.TestCase):
         self.window._jump_to_last_frame()
         self.assertEqual(self.window.frame_slider.value(), 100)
 
+    def test_scrubber_endpoint_icons_are_white(self):
+        first_image = self.window.frame_first_button.icon().pixmap(24, 24).toImage()
+        last_image = self.window.frame_last_button.icon().pixmap(24, 24).toImage()
+        self.assertGreater(first_image.pixelColor(6, 12).lightness(), 240)
+        self.assertGreater(last_image.pixelColor(17, 12).lightness(), 240)
+
     def test_path_fade_uses_checked_objects_and_live_values(self):
         original_vm = self.window.vm
         try:
