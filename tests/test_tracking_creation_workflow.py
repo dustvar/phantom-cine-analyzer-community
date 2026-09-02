@@ -83,7 +83,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['edge_threshold'], 0.30)
         self.assertEqual(track['position_precision'], 0.1)
         self.assertEqual(track['angle_precision'], 0.1)
-        self.assertEqual(track['acceptable_score'], 0.8)
+        self.assertEqual(track['acceptable_score'], 0.7)
         self.assertEqual(track['search_area_multiplier'], 1.5)
         self.assertEqual(track['scores'][0], 'N/A')
         self.assertEqual(list(track['hybrid_candidates']), [7])

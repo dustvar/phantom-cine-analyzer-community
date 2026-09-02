@@ -157,12 +157,16 @@ Modified: 2026-08-31
   still solves rigid translation and angle, then a small immutable setup patch
   locally re-centers the exact clicked feature at subpixel resolution. Weak or
   ambiguous local matches safely retain the rigid-pose result.
-- Changed the new Edge Assist object match-threshold default from 90% to 80%
+- Changed the new Edge Assist object match-threshold default from 90% to 70%
   and replaced the scrubber endpoint's OS-dependent dark icons with the same
   custom white transport artwork used by the playback controls.
 - Added a default-on Show Edge Detection checkbox to Path Settings. Turning it
   off hides Edge Assist fixture/search boxes and the purple detected-edge
   overlay without changing or hiding the tracked point paths.
+- Added a Path Settings Heat Map mode for Displacement, Speed, Acceleration,
+  and Angle. It colors each trajectory dot from green at the dataset minimum,
+  through yellow, to red at the maximum while preserving the object's path
+  line color. Unsupported graph selections disable the control with guidance.
 - Replaced the single point preview with a named, two-column Point Views grid
   for checked objects. The compact + picker adds available objects, and each
   tile's right-click menu supports moving it earlier/later or removing it from

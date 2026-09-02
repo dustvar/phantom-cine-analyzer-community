@@ -39,6 +39,10 @@ class ViewerControlsTest(unittest.TestCase):
         self.window.clip_range.setValues(20, 80)
         self.window.current_tool = self.window.viewer_tool
         self.window._path_point_radius_scale = 1.0
+        self.window._heat_map_enabled = False
+        self.window.path_heat_map.setChecked(False)
+        self.window.fig_dropdown.setCurrentText('Displacement')
+        self.window._update_heat_map_availability()
 
     def tearDown(self):
         self.window._stop_playback()
@@ -150,6 +154,8 @@ class ViewerControlsTest(unittest.TestCase):
         )
         self.assertTrue(self.window.path_show_edge_detection.isChecked())
         self.assertTrue(self.window._show_edge_detection)
+        self.assertFalse(self.window.path_heat_map.isChecked())
+        self.assertTrue(self.window.path_heat_map.isEnabled())
 
         graph = self.window.graph
         graph.xMax = 1920
@@ -168,6 +174,76 @@ class ViewerControlsTest(unittest.TestCase):
         large_width = graph.scene().items()[0].path().boundingRect().width()
 
         self.assertAlmostEqual(large_width, normal_width * 2.0)
+
+    def test_heat_map_control_is_disabled_for_unsupported_graphs(self):
+        self.window.fig_dropdown.setCurrentText('X-Speed')
+        self.window._update_heat_map_availability()
+        self.assertFalse(self.window.path_heat_map.isEnabled())
+        self.assertIn(
+            'only applies to displacement, speed, acceleration, angle graphs',
+            self.window.path_heat_map.toolTip(),
+        )
+
+        self.window.fig_dropdown.setCurrentText('Speed')
+        self.window._update_heat_map_availability()
+        self.assertTrue(self.window.path_heat_map.isEnabled())
+        self.window.path_heat_map.setChecked(True)
+
+        self.window.fig_dropdown.setCurrentText('Y-Displacement')
+        self.window._update_heat_map_availability()
+        self.assertFalse(self.window.path_heat_map.isEnabled())
+        self.assertTrue(self.window.path_heat_map.isChecked())
+
+        self.window.fig_dropdown.setCurrentText('Angle')
+        self.window._update_heat_map_availability()
+        self.assertTrue(self.window.path_heat_map.isEnabled())
+        self.assertTrue(self.window.path_heat_map.isChecked())
+
+    def test_speed_heat_map_colors_lowest_green_and_highest_red(self):
+        original_vm = self.window.vm
+        original_mode = self.window.fig_dropdown.currentText()
+        graph = self.window.graph
+        points = np.column_stack((np.arange(6) * 10.0, np.arange(6) * 5.0))
+        try:
+            self.window.vm = SimpleNamespace(
+                n_diff=2,
+                track_data={
+                    0: {
+                        'points': points,
+                        'Speed': np.array([0.0, 10.0, 20.0, 30.0]),
+                    },
+                },
+            )
+            self.window.fig_dropdown.setCurrentText('Speed')
+            self.window._heat_map_enabled = True
+            self.window._path_fade_enabled = False
+
+            normalized = self.window._heat_map_values_for_track(0, len(points))
+            np.testing.assert_allclose(
+                normalized,
+                [0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+            )
+
+            graph.scene().clear()
+            graph.xMax = 1920
+            graph.yMax = 1080
+            self.window.on_draw_track_points(
+                'main_graph', points, '#3366ff', 0
+            )
+            dot_colors = {
+                item.brush().color().name()
+                for item in graph.scene().items()
+                if isinstance(item, QGraphicsPathItem)
+                and item.brush().style() != simplemeas_ui.Qt.BrushStyle.NoBrush
+            }
+            self.assertIn('#00ff00', dot_colors)
+            self.assertIn('#ff0000', dot_colors)
+            self.assertGreaterEqual(len(dot_colors), 4)
+        finally:
+            graph.scene().clear()
+            self.window.vm = original_vm
+            self.window.fig_dropdown.setCurrentText(original_mode)
+            self.window._heat_map_enabled = False
 
     def test_edge_detection_toggle_hides_only_hybrid_fixture_graphics(self):
         original_vm = self.window.vm

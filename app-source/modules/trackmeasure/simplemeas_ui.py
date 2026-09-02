@@ -25,7 +25,8 @@ CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
 CLASSIC_TRACKING_DISPLAY = 'Intensity Tracking (Classic)'
 DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
-DEFAULT_HYBRID_MATCH_THRESHOLD = 0.80
+DEFAULT_HYBRID_MATCH_THRESHOLD = 0.70
+HEAT_MAP_GRAPH_MODES = ('Displacement', 'Speed', 'Acceleration', 'Angle')
 dir_path = os.path.dirname(os.path.abspath(__file__))
 
 #region CUSTOM WIDGETS
@@ -315,7 +316,7 @@ class TrackingHelpDialog(QDialog):
     </ol>
 
     <h3>Useful adjustments</h3>
-    <p><b>Match Threshold:</b> 0.80 is the default starting point. Raise it when
+    <p><b>Match Threshold:</b> 0.70 is the default starting point. Raise it when
     you need stricter rejection, or lower it gradually only when valid frames
     are being rejected; a low threshold can accept the wrong feature.</p>
     <p><b>Edge Weight:</b> higher values favor the object's shape; lower values
@@ -1222,7 +1223,7 @@ class AutoTrackDialog(QDialog):
 
     def refresh_params(self, start=0, end=0, search_area=(0,0), tpl_rng=(0,0), subpixel_size='1/10 pix', subpixel_interp='Cubic',
                        frames_enable=False, search_area_enable=True, tpl_rng_enable=True, update_template_enable=True, 
-                       acceptable_score = 0.8, tpl_score = 0.9, name='',
+                       acceptable_score=DEFAULT_HYBRID_MATCH_THRESHOLD, tpl_score=0.9, name='',
                        tracking_method=HYBRID_TRACKING_METHOD, rotation_range=180.0,
                        rotation_step=2.0, edge_weight=0.6):
         self.start_frame.setValue(start)
@@ -1994,6 +1995,7 @@ class MainWindow(QWidget):
         self._path_fade_radius = 80
         self._path_point_radius_scale = 1.0
         self._show_edge_detection = True
+        self._heat_map_enabled = False
         self._preview_object_order = []
         self._preview_suppressed = set()
         self._preview_tiles = {}
@@ -2410,10 +2412,17 @@ class MainWindow(QWidget):
             'Show the Edge Assist fixture boxes and purple detected-edge overlay. '
             'Tracked point paths remain visible when this is turned off.'
         )
+        self.path_heat_map = QCheckBox('Heat Map', self.path_fade_panel)
+        self.path_heat_map.setChecked(False)
+        self.path_heat_map.setToolTip(
+            'Color tracking points from green (lowest) through yellow to red '
+            '(highest) using the selected graph.'
+        )
         fade_form.addRow('Transparency', self.path_fade_transparency)
         fade_form.addRow('Transparency Distance', self.path_fade_radius)
         fade_form.addRow('Point Radius', self.path_point_radius)
         fade_form.addRow(self.path_show_edge_detection)
+        fade_form.addRow(self.path_heat_map)
         self.path_fade_panel.adjustSize()
         self.path_fade_panel.hide()
         
@@ -3211,6 +3220,36 @@ class MainWindow(QWidget):
     def _on_show_edge_detection_toggled(self, enabled):
         self._show_edge_detection = bool(enabled)
         if self.vm is not None:
+            self.vm.redraw_cb()
+
+    def _heat_map_mode_supported(self):
+        return (
+            hasattr(self, 'fig_dropdown')
+            and self.fig_dropdown.currentText() in HEAT_MAP_GRAPH_MODES
+        )
+
+    def _update_heat_map_availability(self):
+        supported = self._heat_map_mode_supported()
+        self.path_heat_map.setEnabled(supported)
+        if supported:
+            self.path_heat_map.setToolTip(
+                'Color tracking points from green (lowest) through yellow to '
+                'red (highest) using the selected graph.'
+            )
+        else:
+            self.path_heat_map.setToolTip(
+                'Feature only applies to displacement, speed, acceleration, '
+                'angle graphs.'
+            )
+
+    def _on_heat_map_toggled(self, enabled):
+        self._heat_map_enabled = bool(enabled)
+        if self.vm is not None:
+            self.vm.redraw_cb()
+
+    def _on_heat_map_graph_changed(self, *args):
+        self._update_heat_map_availability()
+        if self.vm is not None and self._heat_map_enabled:
             self.vm.redraw_cb()
 
     def should_prompt_for_tracking_method(self):
@@ -4306,6 +4345,91 @@ class MainWindow(QWidget):
             )
             graph.scene().addEllipse(pt[0] - dot_rad, pt[1] - dot_rad, dot_rad*2, dot_rad*2, pen=QPen(QColor(color)), brush=QBrush(QColor(color)))
 
+    def _heat_map_values_for_track(self, object_id, point_count):
+        """Align the selected graph's scalar data to visible track points."""
+        if (
+            not self._heat_map_enabled
+            or not self._heat_map_mode_supported()
+            or self.vm is None
+        ):
+            return None
+        track = self.vm.track_data.get(object_id)
+        if track is None:
+            return None
+        mode = self.fig_dropdown.currentText()
+        series = np.asarray(track.get(mode, []), dtype=float).reshape(-1)
+        full_count = len(track.get('points', []))
+        if full_count <= 0 or series.size <= 0 or point_count <= 0:
+            return None
+
+        n_diff = max(1, int(getattr(self.vm, 'n_diff', 1)))
+        if mode in ('Displacement', 'Angle'):
+            start = 0
+        elif mode == 'Speed':
+            start = n_diff - math.floor(n_diff / 2)
+        else:  # Acceleration
+            start = (2 * n_diff) - (2 * math.floor(n_diff / 2))
+
+        aligned = np.full(full_count, np.nan, dtype=float)
+        copy_count = min(series.size, max(0, full_count - start))
+        if copy_count <= 0:
+            return None
+        aligned[start:start + copy_count] = series[:copy_count]
+        valid_indices = np.flatnonzero(np.isfinite(aligned))
+        if not valid_indices.size:
+            return None
+
+        # Derivative data is centered between frames and therefore has no
+        # values at the first/last few points. Extending its nearest valid
+        # value colors every trajectory dot without inventing endpoint spikes.
+        point_indices = np.arange(full_count, dtype=float)
+        aligned = np.interp(
+            point_indices,
+            valid_indices.astype(float),
+            aligned[valid_indices],
+        )
+        low = float(np.min(aligned))
+        high = float(np.max(aligned))
+        if not np.isfinite(low) or not np.isfinite(high):
+            return None
+        if high - low <= 1e-12:
+            normalized = np.zeros(full_count, dtype=float)
+        else:
+            normalized = np.clip((aligned - low) / (high - low), 0.0, 1.0)
+        return normalized[:min(int(point_count), full_count)]
+
+    @staticmethod
+    def _heat_map_color(normalized_value, alpha=255):
+        # Quantizing to one-percent steps keeps the gradient visually smooth
+        # while allowing same-colored dots to share one efficient painter path.
+        value = round(float(np.clip(normalized_value, 0.0, 1.0)) * 100.0) / 100.0
+        color = QColor.fromHsvF((1.0 - value) / 3.0, 1.0, 1.0)
+        color.setAlpha(int(np.clip(alpha, 0, 255)))
+        return color
+
+    @staticmethod
+    def _add_grouped_dot_paths(graph, points, dot_rad, normalized_values, alphas=None):
+        grouped_paths = {}
+        grouped_colors = {}
+        for index, point in enumerate(points):
+            alpha = 255 if alphas is None else alphas[index]
+            point_color = MainWindow._heat_map_color(
+                normalized_values[index], alpha
+            )
+            color_key = point_color.rgba()
+            dot_path = grouped_paths.setdefault(color_key, QPainterPath())
+            grouped_colors[color_key] = point_color
+            dot_path.addEllipse(
+                QPointF(float(point[0]), float(point[1])),
+                dot_rad,
+                dot_rad,
+            )
+        for color_key, dot_path in grouped_paths.items():
+            point_color = grouped_colors[color_key]
+            point_pen = QPen(point_color, 1)
+            point_pen.setCosmetic(True)
+            graph.scene().addPath(dot_path, point_pen, QBrush(point_color))
+
     def on_draw_track_points(self, graph_name, points, color, object_id):
         """Draw a selected object's path with live proximity fading."""
         graph = self._graph_widget(graph_name)
@@ -4322,6 +4446,11 @@ class MainWindow(QWidget):
             0.1,
             base_dot_rad * float(self._path_point_radius_scale),
         )
+        heat_map_values = self._heat_map_values_for_track(
+            object_id, len(points)
+        )
+        if heat_map_values is not None and len(heat_map_values) != len(points):
+            heat_map_values = None
         if not self._path_fade_enabled:
             # The old implementation created one ellipse and one line scene
             # item for nearly every tracked point, on every video frame.  Long
@@ -4338,14 +4467,19 @@ class MainWindow(QWidget):
             if len(points) > 1:
                 graph.scene().addPath(line_path, path_pen)
 
-            dot_path = QPainterPath()
-            for point in points:
-                dot_path.addEllipse(
-                    QPointF(float(point[0]), float(point[1])),
-                    dot_rad,
-                    dot_rad,
+            if heat_map_values is not None:
+                self._add_grouped_dot_paths(
+                    graph, points, dot_rad, heat_map_values
                 )
-            graph.scene().addPath(dot_path, path_pen, QBrush(path_color))
+            else:
+                dot_path = QPainterPath()
+                for point in points:
+                    dot_path.addEllipse(
+                        QPointF(float(point[0]), float(point[1])),
+                        dot_rad,
+                        dot_rad,
+                    )
+                graph.scene().addPath(dot_path, path_pen, QBrush(path_color))
             return
 
         centers = self._fade_reference_points()
@@ -4354,8 +4488,13 @@ class MainWindow(QWidget):
             for point in points
         ]
         for index, point in enumerate(points):
-            point_color = QColor(color)
-            point_color.setAlpha(alphas[index])
+            if heat_map_values is not None:
+                point_color = self._heat_map_color(
+                    heat_map_values[index], alphas[index]
+                )
+            else:
+                point_color = QColor(color)
+                point_color.setAlpha(alphas[index])
             pen = QPen(point_color)
             pen.setCosmetic(True)
             graph.scene().addEllipse(
@@ -5317,6 +5456,7 @@ class MainWindow(QWidget):
         self.path_show_edge_detection.toggled.connect(
             self._on_show_edge_detection_toggled
         )
+        self.path_heat_map.toggled.connect(self._on_heat_map_toggled)
         self.preview_add_button.clicked.connect(self._add_preview_object)
         self.tab_splitter.splitterMoved.connect(
             lambda *args: self._position_tracking_overlay_controls()
@@ -5373,6 +5513,10 @@ class MainWindow(QWidget):
         self.track_table.cellClicked.connect(self.update_overlays)
         self.export_button.clicked.connect(self.on_export_report)
         self.fig_dropdown.currentIndexChanged.connect(self.vm.track_fig_refresh_cb)
+        self.fig_dropdown.currentIndexChanged.connect(
+            self._on_heat_map_graph_changed
+        )
+        self._update_heat_map_availability()
         self.graph_expand_button.clicked.connect(self.expand_tracking_graph)
 
         decr_frame = QAction("Decrease Frame", self)

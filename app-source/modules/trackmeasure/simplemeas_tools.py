@@ -11,7 +11,7 @@ SUBPIXEL_VALS = {'1.0 pix': 1, '1/2 pix': 2, '1/3 pix': 3, '1/4 pix': 4, '1/5 pi
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
-DEFAULT_HYBRID_MATCH_THRESHOLD = 0.80
+DEFAULT_HYBRID_MATCH_THRESHOLD = 0.70
 
 
 def _rotate_tracking_offset(offset, angle_deg):
