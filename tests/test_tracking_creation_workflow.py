@@ -83,7 +83,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertEqual(track['edge_threshold'], 0.30)
         self.assertEqual(track['position_precision'], 0.1)
         self.assertEqual(track['angle_precision'], 0.1)
-        self.assertEqual(track['acceptable_score'], 0.7)
+        self.assertEqual(track['acceptable_score'], 0.4)
         self.assertEqual(track['search_area_multiplier'], 1.5)
         self.assertEqual(track['scores'][0], 'N/A')
         self.assertEqual(list(track['hybrid_candidates']), [7])
@@ -490,6 +490,29 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertGreater(graph.transform().m11(), initial_scale)
         self.assertLess(abs(after.x() - before.x()), 6.0)
         self.assertLess(abs(after.y() - before.y()), 6.0)
+        graph.close()
+
+    def test_pan_mode_uses_scroll_hand_drag_and_restores_normal_clicks(self):
+        parent = SimpleNamespace(
+            current_tool=None,
+            status_bar=QLabel(''),
+            vm=SimpleNamespace(),
+        )
+        graph = simplemeas_ui.ResizableGraph(QLabel(), parent)
+
+        graph.set_pan_enabled(True)
+        self.assertTrue(graph._pan_enabled)
+        self.assertEqual(
+            graph.dragMode(),
+            simplemeas_ui.QGraphicsView.DragMode.ScrollHandDrag,
+        )
+
+        graph.set_pan_enabled(False)
+        self.assertFalse(graph._pan_enabled)
+        self.assertEqual(
+            graph.dragMode(),
+            simplemeas_ui.QGraphicsView.DragMode.NoDrag,
+        )
         graph.close()
 
     def test_canvas_click_never_reopens_tracking_method_chooser(self):

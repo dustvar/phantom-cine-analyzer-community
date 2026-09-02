@@ -25,7 +25,7 @@ CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
 CLASSIC_TRACKING_DISPLAY = 'Intensity Tracking (Classic)'
 DEFAULT_HYBRID_SEARCH_MULTIPLIER = 1.5
-DEFAULT_HYBRID_MATCH_THRESHOLD = 0.70
+DEFAULT_HYBRID_MATCH_THRESHOLD = 0.40
 HEAT_MAP_GRAPH_MODES = ('Displacement', 'Speed', 'Acceleration', 'Angle')
 dir_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -316,7 +316,7 @@ class TrackingHelpDialog(QDialog):
     </ol>
 
     <h3>Useful adjustments</h3>
-    <p><b>Match Threshold:</b> 0.70 is the default starting point. Raise it when
+    <p><b>Match Threshold:</b> 0.40 is the default starting point. Raise it when
     you need stricter rejection, or lower it gradually only when valid frames
     are being rejected; a low threshold can accept the wrong feature.</p>
     <p><b>Edge Weight:</b> higher values favor the object's shape; lower values
@@ -602,6 +602,7 @@ class ResizableGraph(QGraphicsView):
         self._hybrid_drag_start = None
         self._hybrid_drag_preview = None
         self._view_zoom = 1.0
+        self._pan_enabled = False
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
@@ -652,8 +653,26 @@ class ResizableGraph(QGraphicsView):
         steps = event.angleDelta().y() / 120.0
         self.zoom_at(event.position().toPoint(), steps)
         event.accept()
+
+    def set_pan_enabled(self, enabled):
+        """Let the user drag a zoomed Cine instead of using its scrollbars."""
+        self._pan_enabled = bool(enabled)
+        self.setDragMode(
+            QGraphicsView.DragMode.ScrollHandDrag
+            if self._pan_enabled
+            else QGraphicsView.DragMode.NoDrag
+        )
+        if self._pan_enabled:
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self.setToolTip('Drag to move around the zoomed Cine view.')
+        else:
+            self.viewport().unsetCursor()
+            self.setToolTip('')
     
     def mouseMoveEvent(self, event):
+        if self._pan_enabled:
+            QGraphicsView.mouseMoveEvent(self, event)
+            return
         if self._hybrid_drag_start is not None:
             scene_pos = self.mapToScene(event.pos())
             scene_pos.setX(min(max(scene_pos.x(), 0), self.xMax))
@@ -685,11 +704,17 @@ class ResizableGraph(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def enterEvent(self, event):
+        if self._pan_enabled:
+            QGraphicsView.enterEvent(self, event)
+            return
         if self.parent.current_tool is not None and self.parent.status_bar.text() == '':
             self.parent.vm.update_status_text.emit('Use Ctrl + Arrow keys for fine mouse control and Ctrl + Enter to add a point')
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        if self._pan_enabled:
+            QGraphicsView.leaveEvent(self, event)
+            return
         self.mouse_pos = None
         self.viewport().unsetCursor()
         self.setToolTip('')
@@ -698,6 +723,9 @@ class ResizableGraph(QGraphicsView):
             self.parent.vm.update_status_text.emit('')
   
     def mousePressEvent(self, event):
+        if self._pan_enabled and event.button() == Qt.MouseButton.LeftButton:
+            QGraphicsView.mousePressEvent(self, event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             event_pos = event.position().toPoint()
             if self.parent.is_hybrid_region_selection_active(self):
@@ -750,6 +778,9 @@ class ResizableGraph(QGraphicsView):
             self.graph_click(event.pos())
 
     def mouseReleaseEvent(self, event):
+        if self._pan_enabled and event.button() == Qt.MouseButton.LeftButton:
+            QGraphicsView.mouseReleaseEvent(self, event)
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._hybrid_drag_start is not None:
             scene_pos = self.mapToScene(event.pos())
             scene_pos.setX(min(max(scene_pos.x(), 0), self.xMax))
@@ -943,6 +974,54 @@ def create_playback_icon(kind, size=24):
     elif kind == 'fast_forward':
         triangle(9, 'right', 7, 12)
         triangle(15, 'right', 7, 12)
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+def create_viewer_tool_icon(kind, size=24):
+    """Draw white viewer-tool icons that remain legible on the purple controls."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor('#ffffff'))
+    pen.setWidthF(1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    center = size / 2.0
+    if kind == 'pan':
+        arm = size * 0.30
+        head = size * 0.15
+        painter.drawLine(QPointF(center - arm, center), QPointF(center + arm, center))
+        painter.drawLine(QPointF(center, center - arm), QPointF(center, center + arm))
+        for end_x, end_y, dx, dy in (
+            (center - arm, center, head, -head),
+            (center - arm, center, head, head),
+            (center + arm, center, -head, -head),
+            (center + arm, center, -head, head),
+            (center, center - arm, -head, head),
+            (center, center - arm, head, head),
+            (center, center + arm, -head, -head),
+            (center, center + arm, head, -head),
+        ):
+            painter.drawLine(
+                QPointF(end_x, end_y), QPointF(end_x + dx, end_y + dy)
+            )
+    elif kind == 'follow':
+        outer = size * 0.30
+        inner = size * 0.105
+        painter.drawEllipse(QPointF(center, center), outer, outer)
+        painter.drawEllipse(QPointF(center, center), inner, inner)
+        gap = outer + 1.0
+        edge = size * 0.45
+        painter.drawLine(QPointF(center - edge, center), QPointF(center - gap, center))
+        painter.drawLine(QPointF(center + gap, center), QPointF(center + edge, center))
+        painter.drawLine(QPointF(center, center - edge), QPointF(center, center - gap))
+        painter.drawLine(QPointF(center, center + gap), QPointF(center, center + edge))
 
     painter.end()
     return QIcon(pixmap)
@@ -1996,6 +2075,8 @@ class MainWindow(QWidget):
         self._path_point_radius_scale = 1.0
         self._show_edge_detection = True
         self._heat_map_enabled = False
+        self._pan_mode_enabled = False
+        self._follow_object_id = None
         self._preview_object_order = []
         self._preview_suppressed = set()
         self._preview_tiles = {}
@@ -2367,6 +2448,31 @@ class MainWindow(QWidget):
         self.path_fade_button.setToolTip(
             'Adjust tracking-path appearance and Edge Assist overlay visibility'
         )
+        self.viewer_pan_button = QToolButton(self.viewer_overlay_controls)
+        self.viewer_pan_button.setObjectName('viewer_pan_button')
+        self.viewer_pan_button.setIcon(create_viewer_tool_icon('pan'))
+        self.viewer_pan_button.setIconSize(QSize(22, 22))
+        self.viewer_pan_button.setFixedSize(30, 28)
+        self.viewer_pan_button.setCheckable(True)
+        self.viewer_pan_button.setToolTip(
+            'Drag to move around the Cine while the view is zoomed in'
+        )
+        self.viewer_pan_button.setAccessibleName('Pan zoomed Cine view')
+        self.viewer_follow_button = QToolButton(self.viewer_overlay_controls)
+        self.viewer_follow_button.setObjectName('viewer_follow_button')
+        self.viewer_follow_button.setIcon(create_viewer_tool_icon('follow'))
+        self.viewer_follow_button.setIconSize(QSize(22, 22))
+        self.viewer_follow_button.setFixedSize(30, 28)
+        self.viewer_follow_button.setCheckable(True)
+        self.viewer_follow_button.setToolTip(
+            'Choose a tracked point to keep centered while scrubbing or playing'
+        )
+        self.viewer_follow_button.setAccessibleName('Follow a tracked point')
+        self.viewer_follow_menu = QMenu(self.viewer_follow_button)
+        self.viewer_follow_button.setMenu(self.viewer_follow_menu)
+        self.viewer_follow_button.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
         self.tracking_help_button = QToolButton(self.viewer_overlay_controls)
         self.tracking_help_button.setObjectName('tracking_help_button')
         self.tracking_help_button.setText('?')
@@ -2377,6 +2483,8 @@ class MainWindow(QWidget):
         self.tracking_help_button.setAccessibleName('Tracking setup help')
         # The existing icon supplies the plus sign; keep the label compact.
         self.add_object_button.setText('Add Object')
+        viewer_overlay_layout.addWidget(self.viewer_pan_button)
+        viewer_overlay_layout.addWidget(self.viewer_follow_button)
         viewer_overlay_layout.addWidget(self.path_fade_button)
         viewer_overlay_layout.addWidget(self.add_object_button)
         viewer_overlay_layout.addWidget(self.tracking_help_button)
@@ -2866,6 +2974,7 @@ class MainWindow(QWidget):
         if index == self.active_pane_index and self.vm.active_cine_index == index:
             return
         self._stop_playback()
+        self._set_follow_object(None)
         if self.clip_range.isEnabled() and self.vm.active_cine_index >= 0:
             self.workspace_clip_ranges[self.vm.active_cine_index] = (
                 self.clip_range.lowerValue(), self.clip_range.upperValue()
@@ -3189,6 +3298,9 @@ class MainWindow(QWidget):
 
     def _set_tracking_overlay_visible(self, visible):
         visible = bool(visible)
+        if not visible:
+            self._set_pan_mode(False)
+            self._set_follow_object(None)
         self.viewer_overlay_controls.setVisible(visible)
         self.path_fade_panel.setVisible(
             visible and self.path_fade_button.isChecked()
@@ -3221,6 +3333,137 @@ class MainWindow(QWidget):
         self._show_edge_detection = bool(enabled)
         if self.vm is not None:
             self.vm.redraw_cb()
+
+    def _set_pan_mode(self, enabled):
+        enabled = bool(enabled)
+        if enabled:
+            self._set_follow_object(None)
+        self._pan_mode_enabled = enabled
+        if hasattr(self, 'viewer_pan_button'):
+            blocker = QSignalBlocker(self.viewer_pan_button)
+            self.viewer_pan_button.setChecked(enabled)
+            del blocker
+        for pane in self.workspace_panes:
+            pane.graph.set_pan_enabled(enabled)
+
+    def _on_pan_mode_toggled(self, enabled):
+        self._set_pan_mode(enabled)
+
+    def _sync_follow_button(self):
+        if not hasattr(self, 'viewer_follow_button'):
+            return
+        blocker = QSignalBlocker(self.viewer_follow_button)
+        self.viewer_follow_button.setChecked(self._follow_object_id is not None)
+        del blocker
+        if self._follow_object_id is None:
+            self.viewer_follow_button.setToolTip(
+                'Choose a tracked point to keep centered while scrubbing or playing'
+            )
+            return
+        track = (
+            self.vm.track_data.get(self._follow_object_id, {})
+            if self.vm is not None
+            else {}
+        )
+        name = track.get('name', f'Object {self._follow_object_id}')
+        self.viewer_follow_button.setToolTip(
+            f'Following Point {self._follow_object_id} · {name}'
+        )
+
+    def _set_follow_object(self, object_id):
+        track_data = getattr(self.vm, 'track_data', {}) if self.vm is not None else {}
+        if object_id is not None:
+            track = track_data.get(object_id)
+            if track is None or len(track.get('points', [])) == 0:
+                object_id = None
+        if object_id is not None:
+            self._set_pan_mode(False)
+        self._follow_object_id = object_id
+        self._sync_follow_button()
+        if object_id is not None:
+            self._center_followed_object(self.graph)
+
+    def _rebuild_follow_menu(self):
+        self.viewer_follow_menu.clear()
+        action_group = QActionGroup(self.viewer_follow_menu)
+        action_group.setExclusive(True)
+        self._follow_action_group = action_group
+
+        stop_action = self.viewer_follow_menu.addAction('Stop Following')
+        stop_action.setCheckable(True)
+        stop_action.setChecked(self._follow_object_id is None)
+        stop_action.triggered.connect(
+            lambda checked=False: self._set_follow_object(None)
+        )
+        action_group.addAction(stop_action)
+
+        track_data = getattr(self.vm, 'track_data', {}) if self.vm is not None else {}
+        available = [
+            (object_id, track)
+            for object_id, track in track_data.items()
+            if len(track.get('points', [])) > 0
+        ]
+        if not available:
+            self.viewer_follow_menu.addSeparator()
+            empty_action = self.viewer_follow_menu.addAction(
+                'No tracked points available'
+            )
+            empty_action.setEnabled(False)
+            return
+
+        self.viewer_follow_menu.addSeparator()
+        for object_id, track in available:
+            name = str(track.get('name', f'Object {object_id}'))
+            action = self.viewer_follow_menu.addAction(
+                f'Point {object_id} · {name}'
+            )
+            action.setCheckable(True)
+            action.setChecked(object_id == self._follow_object_id)
+            action.triggered.connect(
+                lambda checked=False, selected_id=object_id:
+                    self._set_follow_object(selected_id)
+            )
+            action_group.addAction(action)
+
+    @staticmethod
+    def _follow_point_at_frame(track, frame):
+        """Return a tracked point at a frame, interpolating across rejected gaps."""
+        try:
+            points = np.asarray(track.get('points', []), dtype=float)
+            frames = np.asarray(track.get('frames', []), dtype=float).reshape(-1)
+        except (TypeError, ValueError):
+            return None
+        if points.ndim != 2 or points.shape[1] < 2:
+            return None
+        count = min(len(frames), len(points))
+        if count <= 0:
+            return None
+        points = points[:count, :2]
+        frames = frames[:count]
+        valid = np.isfinite(frames) & np.all(np.isfinite(points), axis=1)
+        if not np.any(valid):
+            return None
+        frames = frames[valid]
+        points = points[valid]
+        order = np.argsort(frames, kind='stable')
+        frames = frames[order]
+        points = points[order]
+        requested_frame = float(frame)
+        return (
+            float(np.interp(requested_frame, frames, points[:, 0])),
+            float(np.interp(requested_frame, frames, points[:, 1])),
+        )
+
+    def _center_followed_object(self, graph=None):
+        if self._follow_object_id is None or self.vm is None:
+            return
+        track = self.vm.track_data.get(self._follow_object_id)
+        if track is None:
+            self._set_follow_object(None)
+            return
+        point = self._follow_point_at_frame(track, self.vm.active_frame)
+        if point is not None:
+            (graph or self.graph).centerOn(QPointF(point[0], point[1]))
 
     def _heat_map_mode_supported(self):
         return (
@@ -3944,6 +4187,16 @@ class MainWindow(QWidget):
                 self.selected_row_track_table = selected_row
         else:
             self._clear_track()
+        if (
+            self._follow_object_id is not None
+            and (
+                self._follow_object_id not in track_data
+                or len(track_data[self._follow_object_id].get('points', [])) == 0
+            )
+        ):
+            self._set_follow_object(None)
+        else:
+            self._sync_follow_button()
         self._sync_object_preview_grid()
     
     def on_new_cine_load(self, cine_path, metadata):
@@ -4327,6 +4580,7 @@ class MainWindow(QWidget):
         graph = self._graph_widget(graph_name)
         self._draw_image_to_graph(graph, img, bpp, cfa, current_point)
         if graph_name == 'main_graph':
+            self._center_followed_object(graph)
             # Rebuilding every object crop creates several additional image
             # conversions per frame.  Keep the newest frame and update these
             # secondary previews once playback pauses.
@@ -5444,6 +5698,9 @@ class MainWindow(QWidget):
         self.reset_clip_button.clicked.connect(self._reset_clip_range)
         self.clip_range.rangeChanged.connect(self._on_clip_range_changed)
         self.path_fade_button.toggled.connect(self._on_path_fade_toggled)
+        self.viewer_pan_button.toggled.connect(self._on_pan_mode_toggled)
+        self.viewer_follow_menu.aboutToShow.connect(self._rebuild_follow_menu)
+        self.viewer_follow_menu.aboutToHide.connect(self._sync_follow_button)
         self.path_fade_transparency.valueChanged.connect(
             self._on_path_fade_settings_changed
         )

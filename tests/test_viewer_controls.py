@@ -46,6 +46,8 @@ class ViewerControlsTest(unittest.TestCase):
 
     def tearDown(self):
         self.window._stop_playback()
+        self.window._set_follow_object(None)
+        self.window._set_pan_mode(False)
 
     def test_clip_range_orders_and_clamps_values(self):
         self.window.clip_range.setValues(120, -10)
@@ -174,6 +176,69 @@ class ViewerControlsTest(unittest.TestCase):
         large_width = graph.scene().items()[0].path().boundingRect().width()
 
         self.assertAlmostEqual(large_width, normal_width * 2.0)
+
+    def test_pan_and_follow_controls_are_available_in_the_track_viewer(self):
+        self.assertEqual(self.window.viewer_pan_button.objectName(), 'viewer_pan_button')
+        self.assertEqual(
+            self.window.viewer_follow_button.objectName(),
+            'viewer_follow_button',
+        )
+        self.assertFalse(self.window.viewer_pan_button.icon().isNull())
+        self.assertFalse(self.window.viewer_follow_button.icon().isNull())
+        self.assertIs(
+            self.window.viewer_follow_button.menu(),
+            self.window.viewer_follow_menu,
+        )
+
+        self.window._set_pan_mode(True)
+        self.assertTrue(self.window.viewer_pan_button.isChecked())
+        self.assertTrue(all(
+            pane.graph._pan_enabled for pane in self.window.workspace_panes
+        ))
+
+    def test_follow_target_interpolates_gaps_and_disables_manual_pan(self):
+        original_vm = self.window.vm
+        original_graph = self.window.graph
+
+        class CenterRecorder:
+            def __init__(self):
+                self.points = []
+
+            def centerOn(self, point):
+                self.points.append((point.x(), point.y()))
+
+        recorder = CenterRecorder()
+        try:
+            self.window.vm = SimpleNamespace(
+                active_frame=5,
+                track_data={
+                    7: {
+                        'name': 'Falling marker',
+                        'frames': np.array([0, 10]),
+                        'points': np.array([[10.0, 20.0], [110.0, 70.0]]),
+                    },
+                },
+            )
+            self.window.graph = recorder
+            self.window._set_pan_mode(True)
+            self.window._set_follow_object(7)
+
+            self.assertFalse(self.window._pan_mode_enabled)
+            self.assertFalse(self.window.viewer_pan_button.isChecked())
+            self.assertEqual(self.window._follow_object_id, 7)
+            self.assertTrue(self.window.viewer_follow_button.isChecked())
+            self.assertEqual(recorder.points[-1], (60.0, 45.0))
+
+            self.window._rebuild_follow_menu()
+            self.assertIn(
+                'Point 7 · Falling marker',
+                [action.text() for action in self.window.viewer_follow_menu.actions()],
+            )
+        finally:
+            self.window._follow_object_id = None
+            self.window.graph = original_graph
+            self.window.vm = original_vm
+            self.window._sync_follow_button()
 
     def test_heat_map_control_is_disabled_for_unsupported_graphs(self):
         self.window.fig_dropdown.setCurrentText('X-Speed')

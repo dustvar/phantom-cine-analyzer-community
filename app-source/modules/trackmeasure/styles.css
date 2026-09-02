@@ -242,6 +242,8 @@ QFrame#path_fade_panel {
 }
 
 QToolButton#path_fade_button,
+QToolButton#viewer_pan_button,
+QToolButton#viewer_follow_button,
 QToolButton#track_preview_add_button,
 QToolButton#tracking_help_button,
 QToolButton#tracking_method_help_button,
@@ -256,6 +258,10 @@ QToolButton#qt_frame_endpoint_button {
 
 QToolButton#path_fade_button:checked,
 QToolButton#path_fade_button:pressed,
+QToolButton#viewer_pan_button:checked,
+QToolButton#viewer_pan_button:pressed,
+QToolButton#viewer_follow_button:checked,
+QToolButton#viewer_follow_button:pressed,
 QToolButton#track_preview_add_button:pressed,
 QToolButton#tracking_help_button:pressed,
 QToolButton#tracking_method_help_button:pressed,
