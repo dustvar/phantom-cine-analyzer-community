@@ -99,6 +99,15 @@ def probe_bos_preview(window, report, finished):
     panel.analyze_range.setChecked(True)
     panel.range_bar.first.setValue(panel.last_result['first']+first)
     panel.range_bar.last.setValue(panel.last_result['first']+last)
+    check_sampling = os.environ.get('PCA_STARTUP_TEST_BOS_SAMPLING') == '1'
+    if check_sampling:
+        bar = panel.range_bar
+        bar.sampling.setCurrentIndex(bar.sampling.findData('match'))
+        bar.minimum_fps.setValue(200)
+        bar.target_fps.setCurrentIndex(bar.target_fps.findData(60))
+        if bar.sample_step() != 3:
+            raise RuntimeError('200 source fps at 60 fps delivery should measure every third frame.')
+        window.grab().save(str(report.with_suffix('.range.png')))
     if not panel.range_bar.analyze.isEnabled():
         raise RuntimeError('BOS range Analyze button did not become ready.')
     panel.range_bar.analyze.click()
@@ -133,7 +142,19 @@ def probe_bos_preview(window, report, finished):
                 player.studio_button.click()
                 if not player.studio.isVisible() or player.studio.output_fps() != 60:
                     raise RuntimeError('Record Studio failed to open with the sharing preset.')
-                player.fps.setValue(240)
+                if check_sampling:
+                    offsets = list(range(first, last+1, 3))
+                    if offsets[-1] != last:
+                        offsets.append(last)
+                    expected = [panel.last_result['first']+n for n in offsets]
+                    actual = [player.clip.source_frame(i) for i in range(player.clip.count)]
+                    if actual != expected or player.fps.value() != 200:
+                        raise RuntimeError('Sampled preview did not retain the planned speed and source frames.')
+                    data['sample_step'] = 3
+                    if abs(player.edit_model.duration-(last-first+1)/200.) > 1e-8:
+                        raise RuntimeError('Sampled preview changed the duration of the marked range.')
+                else:
+                    player.fps.setValue(240)
                 player.play.click()
                 QTimer.singleShot(20,window,lambda:poll(1));return
             if stage==1:

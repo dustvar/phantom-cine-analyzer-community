@@ -476,3 +476,7 @@ BOS Vector Studio 1.14.9
 - Added customizable arrow shapes, colors and stroke width, magnitude color options and an extra-dense sampling grid.
 - Newly analyzed vector clips retain arrow geometry for independent timing, fades and appearance in Record Studio and MP4 export.
 - Raised BOS and Video Overlay source playback limits to 1,000 fps. Record Studio uses a separate encoded output rate.
+
+BOS range sampling 1.14.10
+- Analyze Range can measure every frame or spaced source frames, with estimated counts and playback guidance. Sampled results preserve source timing, native frame numbers, and both marked endpoints in the analyzed player and Record Studio.
+- Added optional outlines and a 0.5 source-pixel arrow stroke to live and analyzed vector appearance.

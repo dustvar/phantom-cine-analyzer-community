@@ -1,10 +1,15 @@
 """Shared arrow appearance editor for the live BOS workspace and Record Studio."""
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QFormLayout, QPushButton,
-                               QSpinBox, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFormLayout, QPushButton,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from bos_vectors import VectorStyle
+
+
+class _StrokeWidth(QDoubleSpinBox):
+    def valueFromText(self, text):
+        return round(super().valueFromText(text) * 2) / 2
 
 
 class VectorAppearance(QWidget):
@@ -36,13 +41,20 @@ class VectorAppearance(QWidget):
         self.shape.setAccessibleName('Arrow shape')
         self.form.addRow('Shape', self.shape)
 
-        self.thickness = QSpinBox()
+        self.thickness = _StrokeWidth()
+        self.thickness.setDecimals(1)
+        self.thickness.setSingleStep(.5)
+        self.thickness.setKeyboardTracking(False)
         self.thickness.setRange(0, 8)
         self.thickness.setSpecialValueText('Auto')
         self.thickness.setSuffix(' px')
         self.thickness.setAccessibleName('Arrow stroke thickness')
         self.thickness.setToolTip('Set the stroke width in source-image pixels. Auto follows arrow spacing.')
         self.form.addRow('Thickness', self.thickness)
+
+        self.outline = QCheckBox('Contrast outline')
+        self.outline.setToolTip('Add a contrasting border around each arrow. Turn it off for the finest stroke.')
+        self.form.addRow(self.outline)
 
         self.encoding = QComboBox()
         for label, value in [('Double tips', 'double_head'), ('Two colors', 'threshold'),
@@ -64,6 +76,7 @@ class VectorAppearance(QWidget):
         self.toggle.toggled.connect(self._expand)
         self.shape.currentIndexChanged.connect(lambda: self.changed.emit())
         self.thickness.valueChanged.connect(lambda: self.changed.emit())
+        self.outline.toggled.connect(lambda: self.changed.emit())
         self.encoding.currentIndexChanged.connect(self._encoding_changed)
         self.set_settings({})
         self._expand(False)
@@ -107,6 +120,7 @@ class VectorAppearance(QWidget):
             self.shape.setCurrentIndex(self.shape.findData(style.shape))
             self.encoding.setCurrentIndex(self.encoding.findData(style.encoding))
             self.thickness.setValue(style.thickness)
+            self.outline.setChecked(style.outline)
             self._set_color('vector_color', self.color, style.color)
             self._set_color('vector_high_color', self.high_color, style.high_color)
             self._update_rows()
@@ -114,5 +128,6 @@ class VectorAppearance(QWidget):
             self.blockSignals(blocked)
 
     def settings(self):
-        return dict(self._colors, vector_shape=self.shape.currentData(),
-                    vector_thickness=self.thickness.value(), vector_encoding=self.encoding.currentData())
+        width = self.thickness.value()
+        return dict(self._colors, vector_shape=self.shape.currentData(), vector_outline=self.outline.isChecked(),
+                    vector_thickness=int(width) if width.is_integer() else width, vector_encoding=self.encoding.currentData())

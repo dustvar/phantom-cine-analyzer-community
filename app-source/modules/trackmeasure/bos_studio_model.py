@@ -10,6 +10,8 @@ import math
 
 import numpy as np
 
+from bos_sampling import RangeSampling
+
 
 MAX_PLAYBACK_FPS = 1000
 MAX_MP4_FPS = 240
@@ -48,9 +50,12 @@ def _clamp(value, low, high):
 
 
 class StudioEdit:
-    def __init__(self, count, fps=30.):
+    def __init__(self, count, fps=30., *, sampling=None):
         if type(count) is not int or count < 1:
             raise ValueError('Record Studio needs at least one frame.')
+        self.sampling = sampling or RangeSampling(count)
+        if self.sampling.count != count:
+            raise ValueError('The frame sampling does not match the analyzed clip.')
         self.count = count
         self.overlays = [OverlaySpan(0, count-1)]
         self.vectors = self.overlays.copy()
@@ -58,14 +63,15 @@ class StudioEdit:
         self.speeds = [SpeedSpan(0, count-1, _rate(fps))]
         self._refresh_timing()
 
-    def copy(self):
-        edit = StudioEdit(self.count)
+    def copy(self, *, sampling=None):
+        edit = StudioEdit(self.count, sampling=sampling or self.sampling)
         edit.speeds = self.speeds.copy()
         edit.overlays = self.overlays.copy()
         edit.vectors = self.vectors.copy()
         edit.vector_style = self.vector_style
         edit._refresh_timing()
-        edit._alphas = self._alphas.copy()
+        if edit.sampling == self.sampling:
+            edit._alphas = self._alphas.copy()
         return edit
 
     def _refresh_timing(self):
@@ -74,7 +80,8 @@ class StudioEdit:
         duration = Fraction()
         for span in self.speeds:
             self._time_starts.append(float(duration))
-            duration += (span.last-span.first+1) / Fraction(str(span.fps))
+            source_frames = self.sampling.offset(span.last+1) - self.sampling.offset(span.first)
+            duration += source_frames / Fraction(str(span.fps))
         self._exact_duration = duration
         self._alphas = {}
 
@@ -107,7 +114,7 @@ class StudioEdit:
         frame = max(0, frame)
         i = self.speed_index(frame)
         span = self.speeds[i]
-        return self._time_starts[i] + (frame-span.first)/span.fps
+        return self._time_starts[i] + (self.sampling.offset(frame)-self.sampling.offset(span.first))/span.fps
 
     def frame_at(self, seconds):
         if not math.isfinite(seconds):
@@ -119,7 +126,7 @@ class StudioEdit:
         i = self.speed_index_at_time(seconds+tolerance)
         span = self.speeds[i]
         offset = math.floor((seconds-self._time_starts[i]+tolerance)*span.fps)
-        return _clamp(span.first+offset, span.first, span.last)
+        return _clamp(self.sampling.index_at(self.sampling.offset(span.first)+offset), span.first, span.last)
 
     def speed_index_at_time(self, seconds):
         return max(0, bisect_right(self._time_starts, seconds)-1)
@@ -130,11 +137,11 @@ class StudioEdit:
         step = self._display_step(span.fps, refresh_hz)
         return span.first + ((frame-span.first)//step)*step
 
-    @staticmethod
-    def _display_step(fps, refresh_hz):
+    def _display_step(self, fps, refresh_hz):
         # Existing rates use consecutive frames. For very fast sections, avoid
         # decoding hundreds of lossless frames each second that cannot be shown.
-        return max(1, round(fps/refresh_hz)) if fps > 240 else 1
+        samples_per_second = fps / self.sampling.step
+        return max(1, round(samples_per_second/refresh_hz)) if fps > 240 else 1
 
     def preview_indices(self, first, capacity, refresh_hz):
         """Prefetch just the frames playback can present. Exact seeks stay exact."""
@@ -270,7 +277,8 @@ class StudioEdit:
                 # cut lies inside the green span. An endpoint with a fade is raw.
                 for speed in self.speeds[self.speed_index(span.first):self.speed_index(span.last)+1]:
                     lo, hi = max(span.first, speed.first), min(span.last, speed.last)
-                    times = self.time_at(lo) + np.arange(hi-lo+1, dtype=float) / speed.fps
+                    offsets = np.minimum(np.arange(lo, hi+1)*self.sampling.step, self.sampling.source_count-1)
+                    times = self.time_at(lo) + (offsets-offsets[0])/speed.fps
                     strength = np.ones_like(times)
                     if span.fade_in:
                         strength = np.minimum(strength, (times-start)/span.fade_in)

@@ -19,7 +19,8 @@ from bos_compass import compass_rect, draw_compass
 from bos_frames import BOSFrames, validate_bos_settings
 from bos_vector_cache import max_frame_bytes, write_vectors, paint_vectors
 from bos_vectors import VectorStyle
-from bos_studio_model import MAX_MP4_FPS
+from bos_sampling import RangeSampling
+from bos_studio_model import MAX_MP4_FPS, StudioEdit
 from video_export import ExportCancelled, video_frame, write_video_frames
 
 
@@ -62,9 +63,11 @@ class CachedBOSClip:
             raise ValueError('Unsupported BOS preview cache.')
         self.times = np.load(self.directory / 'times.npy', allow_pickle=False)
         self.count = int(self.manifest['count'])
+        self.sampling = RangeSampling(self.manifest['last'] - self.manifest['first'] + 1,
+                                      self.manifest.get('sample_step', 1))
         self.width = int(self.manifest['width'])
         self.height = int(self.manifest['height'])
-        if (self.count < 1 or min(self.width, self.height) < 1
+        if (self.count != self.sampling.count or min(self.width, self.height) < 1
                 or self.times.shape != (self.count,) or self.times.dtype != np.float64):
             raise ValueError('Incomplete BOS preview index.')
         self.offsets = self._load_index('frames', 'index')
@@ -120,7 +123,7 @@ class CachedBOSClip:
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def source_frame(self, index):
-        return self.manifest['first_image_no'] + self.manifest['first'] + int(index)
+        return self.manifest['first_image_no'] + self.manifest['first'] + self.sampling.offset(int(index))
 
 
 class CacheReader:
@@ -196,7 +199,7 @@ def _write_frame(stream, image):
     return start, encoded.nbytes
 
 
-def prepare_bos_preview(settings, first, last, *, cancel=None, progress=None, root=None):
+def prepare_bos_preview(settings, first, last, *, sample_step=1, cancel=None, progress=None, root=None):
     """Render every selected source frame once and commit a private lossless cache.
 
     The frame range is inclusive and uses zero-based source indices. PNG is only
@@ -205,6 +208,7 @@ def prepare_bos_preview(settings, first, last, *, cancel=None, progress=None, ro
     state = validate_bos_settings(deepcopy(settings))
     if type(first) is not int or type(last) is not int or not 0 <= first <= last:
         raise ValueError('Choose a valid Mark In and Mark Out range.')
+    sampling = RangeSampling(last-first+1, sample_step)
     if state['reference'] is None or not state['roi']:
         raise ValueError('Pin a reference and draw an analysis region first.')
     cancel = cancel or threading.Event()
@@ -220,7 +224,7 @@ def prepare_bos_preview(settings, first, last, *, cancel=None, progress=None, ro
         session = BOSFrames(state['path'])
         if last >= session.count:
             raise ValueError('The selected range extends beyond this Cine.')
-        total = last - first + 1
+        total = sampling.count
         # Conservative upper bound, including PNG overhead. Do not fill the
         # system disk on a long analysis, even when compression is ineffective.
         worst_bytes = total * (int(session.md.ImWidth) * int(session.md.ImHeight) * 3 + 65536)
@@ -246,7 +250,8 @@ def prepare_bos_preview(settings, first, last, *, cancel=None, progress=None, ro
         vector_store = (directory/'vectors.bin').open('wb') if state['show_vectors'] else nullcontext()
         with (vector_store as vector_output, (directory / 'frames.bin').open('wb') as output,
               (directory / 'original.bin').open('wb') as original_output):
-            for local, index in enumerate(range(first, last + 1)):
+            for local in range(total):
+                index = first + sampling.offset(local)
                 _cancelled(cancel)
                 rendered = session.render(dict(measurement_settings, position=index))
                 if rendered['field'] is None:
@@ -286,7 +291,7 @@ def prepare_bos_preview(settings, first, last, *, cancel=None, progress=None, ro
         decimation = max(1, int(getattr(session.md, 'fDecimation', 1) or 1))
         manifest = dict(decimation=decimation, capture_fps=capture_fps if math.isfinite(capture_fps) and capture_fps > 0 else None,
                         format=FORMAT, settings=state, source=state['path'], first=first, last=last,
-                        first_image_no=session.first, count=total, width=image.shape[1], height=image.shape[0],
+                        first_image_no=session.first, sample_step=sample_step, count=total, width=image.shape[1], height=image.shape[0],
                         created=time.time(), seconds=time.monotonic()-started, warning_counts=dict(warnings),
                         warning_examples=warning_examples, anchor_failures=anchor_failures,
                         encoded_bytes=sum((directory / f).stat().st_size for f in ('frames.bin','original.bin')))
@@ -319,7 +324,8 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
                       compass=None, studio=None, text_renderer=None, vectors_enabled=True):
     """Encode at constant output FPS, sampling the prepared clip on its edited clock.
 
-    With no studio edits, each cached frame appears exactly once at the given FPS.
+    Dense clips without studio edits use the output FPS as their playback rate.
+    Sampled clips keep their source playback speed at every output FPS.
     text_renderer receives a private RGB frame, local source index and playback rate.
     """
     destination = Path(destination)
@@ -337,11 +343,14 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
             raise ValueError('Overlay selections must cover the analyzed clip.')
     if studio is not None and studio.count != clip.count:
         raise ValueError('These studio edits belong to a different frame count.')
-    edit = studio.copy() if studio is not None else None
+    edit = studio.copy(sampling=clip.sampling) if studio is not None else None
+    clock = edit
+    if clock is None and clip.sampling.step > 1:
+        clock = StudioEdit(clip.count, clip.manifest['settings']['playback_fps'], sampling=clip.sampling)
     opacity = edit.opacity_bytes() if edit is not None else None
     vector_opacity = edit.opacity_bytes('vectors') if edit is not None and clip.has_vector_track else None
-    indices = edit.output_frames(fps) if edit is not None else range(clip.count)
-    total = edit.output_count(fps) if edit is not None else clip.count
+    indices = clock.output_frames(fps) if clock is not None else range(clip.count)
+    total = clock.output_count(fps) if clock is not None else clip.count
     with clip.reader() as reader:
         def frames():
             previous = None
@@ -364,7 +373,7 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
                     if compass is not None and level and clip.compass_available(index, map_on=True):
                         _compass_at_opacity(frame, compass, level)
                     if text_renderer is not None:
-                        updated = text_renderer(frame, index, edit.rate_at(index) if edit else fps)
+                        updated = text_renderer(frame, index, clock.rate_at(index) if clock else fps)
                         if updated is not None:
                             frame = updated
                     result = video_frame(frame)

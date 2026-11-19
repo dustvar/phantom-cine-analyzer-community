@@ -375,7 +375,7 @@ class BOSPanel(QWidget):
         self.analyze_range = QPushButton('Analyze range…')
         self.analyze_range.setCheckable(True)
         self.analyze_range.setStyleSheet('QPushButton {background: #695477; border: 1px solid #ba8dcb; font-weight: 600; padding: 7px 12px;} QPushButton:disabled {background: #303640; color: #77818f; border-color: #45505d;}')
-        self.analyze_range.setToolTip('Calculate every frame in a selected range once, then watch the prepared result without live BOS calculations.')
+        self.analyze_range.setToolTip('Choose the Cine range and which frames to measure, then play the prepared result.')
         self.analyze_range.toggled.connect(self._toggle_range)
         data_row.addWidget(self.analyze_range)
         data_row.addWidget(self.probe_label, 2)
@@ -574,8 +574,7 @@ class BOSPanel(QWidget):
         else:
             self.preview_rate.setText(f'Live {self._preview_fps:.1f} fps')
         self.preview_rate.setToolTip(f'Requested {target:g} fps. The measured live rate includes disk reads, '
-                                    'matching and drawing. Analyze range prepares every frame first; '
-                                    'its playback does no BOS calculations.')
+                                    'matching and drawing. Analyze range measures your selected frames ahead of time.')
 
     def _labels(self):
         roi = self.state['roi']
@@ -698,7 +697,10 @@ class BOSPanel(QWidget):
             return
         from bos_preview_ui import analyze_bos_range
         try:
-            analyze_bos_range(self, self.settings(), first, last)
+            settings = self.settings()
+            if self.range_bar.sampling.currentData() == 'match':
+                settings['playback_fps'] = self.range_bar.minimum_fps.value()
+            analyze_bos_range(self, settings, first, last, sample_step=self.range_bar.sample_step())
         finally:
             self._labels()
 

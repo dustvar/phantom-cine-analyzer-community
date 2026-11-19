@@ -10,11 +10,12 @@ from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QSignalBlocker, Signal
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QDialog, QDoubleSpinBox,
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressBar, QPushButton,
-    QSizePolicy, QSlider, QSpinBox, QVBoxLayout)
+    QSizePolicy, QSlider, QStyle, QStyleOptionSlider, QVBoxLayout)
 
 from bos_compass_view import CompassViewMixin
 from bos_display import DIRECTION_COLORS
-from bos_playback_controls import ReplaySpeed
+from bos_playback_controls import ReplaySpeed, SampleFrameBox
+from bos_sampling import RangeSampling
 from bos_studio_model import StudioEdit
 from bos_studio_ui import RecordStudio
 from bos_studio_text import StudioText, capture_rate
@@ -90,6 +91,38 @@ class _Progress(QDialog):
             super().closeEvent(event)
 
 
+class _SampleTimeline(QSlider):
+    """A native-source timeline whose keyboard steps land on analyzed frames."""
+    def __init__(self, sampling):
+        super().__init__(Qt.Orientation.Horizontal)
+        self.sampling = sampling
+        self.setRange(0, sampling.source_count-1)
+        self.setPageStep(max(self.pageStep(), sampling.step))
+        self.actionTriggered.connect(self._step_sample)
+
+    def _step_sample(self, action):
+        if action in (QSlider.SliderAction.SliderSingleStepAdd.value,
+                      QSlider.SliderAction.SliderSingleStepSub.value):
+            direction = 1 if action == QSlider.SliderAction.SliderSingleStepAdd.value else -1
+            index = self.sampling.index_at(self.value())+direction
+            index = min(self.sampling.count-1, max(0, index))
+            self.setSliderPosition(self.sampling.offset(index))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            option = QStyleOptionSlider()
+            self.initStyleOption(option)
+            handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, option,
+                                                 QStyle.SubControl.SC_SliderHandle, self)
+            if not handle.contains(event.position().toPoint()):
+                # A click in the groove seeks directly; keep Qt's normal handle dragging.
+                span = max(1, self.width()-handle.width())
+                x = round(event.position().x()-handle.width()/2)
+                self.setSliderDown(True)
+                self.setValue(QStyle.sliderValueFromPosition(0, self.maximum(), x, span, option.upsideDown))
+        super().mousePressEvent(event)
+
+
 class _PlaybackView(CompassViewMixin, ImageView):
     framePainted = Signal(int)
 
@@ -132,7 +165,7 @@ class BOSPreviewWindow(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.clip = clip
         self.directional = clip.has_direction_colors or (clip.has_vector_track and clip.can_show_direction_colors)
-        self.edit_model = StudioEdit(clip.count, clip.manifest['settings']['playback_fps'])
+        self.edit_model = StudioEdit(clip.count, clip.manifest['settings']['playback_fps'], sampling=clip.sampling)
         self.capture_fps = capture_rate(clip)
         self.display_hz = 60.
         self.fast_preview = self.edit_model.speeds[0].fps > 240
@@ -187,7 +220,9 @@ class BOSPreviewWindow(QDialog):
             key.setAccessibleName('Direction key: left mint, up blue, down gold, right coral')
             key.setToolTip('Direction of apparent dot shift. Diagonal shifts blend between the arrows.')
             header.addWidget(key)
-        summary = QLabel(f'{self.clip.count:,} frames')
+        sampling = self.clip.sampling
+        summary = QLabel(f'{self.clip.count:,} frames' if sampling.step == 1 else
+                         f'{sampling.count:,} of {sampling.source_count:,} frames analyzed')
         summary.setToolTip(f'Cine {self.clip.source_frame(0):,} to '
                            f'{self.clip.source_frame(self.clip.count-1):,} · Lossless cached result')
         header.insertWidget(1, summary)
@@ -209,10 +244,10 @@ class BOSPreviewWindow(QDialog):
         self.warning.setVisible(bool(self.warning.text()))
         self.warning.setStyleSheet('color: #e4c284;')
         layout.addWidget(self.warning)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setRange(0, self.clip.count-1)
+        self.slider = _SampleTimeline(sampling)
         self.slider.setAccessibleName('Analyzed BOS timeline')
-        self.slider.valueChanged.connect(self.seek)
+        self.slider.valueChanged.connect(self._seek_source_offset)
+        self.slider.sliderReleased.connect(self._sync_slider)
         layout.addWidget(self.slider)
         transport = QHBoxLayout()
         self.previous = QPushButton('‹')
@@ -226,12 +261,9 @@ class BOSPreviewWindow(QDialog):
         self.following.setToolTip('Next frame')
         self.following.clicked.connect(lambda: self.seek(min(self.clip.count-1, self.position+1)))
         self.loop = QCheckBox('Loop')
-        self.number = QSpinBox()
-        self.number.setGroupSeparatorShown(True)
-        self.number.setRange(self.clip.source_frame(0), self.clip.source_frame(self.clip.count-1))
+        self.number = SampleFrameBox(self.clip.source_frame(0), sampling)
         self.number.setPrefix('Frame ')
-        self.number.setKeyboardTracking(False)
-        self.number.valueChanged.connect(lambda value: self.seek(value-self.clip.source_frame(0)))
+        self.number.valueChanged.connect(lambda value: self.seek(sampling.nearest(value-self.clip.source_frame(0))))
         self.speed_control = ReplaySpeed()
         self.fps = self.speed_control.number
         self.fps.setDecimals(2)
@@ -411,8 +443,8 @@ class BOSPreviewWindow(QDialog):
             self._last_controls_update = now
 
     def _update_frame_controls(self, index):
-        with QSignalBlocker(self.slider):
-            self.slider.setValue(index)
+        if not self.slider.isSliderDown():
+            self._sync_slider(index)
         with QSignalBlocker(self.number):
             self.number.setValue(self.clip.source_frame(index))
         rate = self.edit_model.rate_at(index)
@@ -431,6 +463,24 @@ class BOSPreviewWindow(QDialog):
             ('Overlay', level), ('Vectors', self._vector_levels[index])]
         active = [name if value == 255 else f'{name} {value/255:.0%}' for name, value in layers if value]
         self.frame_info.setText(f"{text} · {' + '.join(active) or 'Original'}")
+
+    def _sync_slider(self, index=None):
+        if index is None:
+            index = self.pending_seek if self.pending_seek is not None else max(0, self.position)
+        with QSignalBlocker(self.slider):
+            self.slider.setValue(self.clip.sampling.offset(index))
+
+    def _seek_source_offset(self, offset):
+        index = self.clip.sampling.index_at(offset)
+        if not self.slider.isSliderDown():
+            self._sync_slider(index)
+        if index == self.pending_seek:
+            return
+        if index == self.position and self.pending_seek is None:
+            if self.playing:
+                self.pause()
+            return
+        self.seek(index)
 
     def seek(self, index):
         if self.closing:
@@ -514,7 +564,8 @@ class BOSPreviewWindow(QDialog):
         if self.buffering:
             start = self.buffer_target if self.buffer_target is not None else max(0, self.position)
             rate = self.edit_model.rate_at(start)
-            painted_rate = min(rate, self.display_hz) if rate > 240 else rate
+            measured_rate = rate / self.clip.sampling.step
+            painted_rate = min(measured_rate, self.display_hz) if rate > 240 else measured_rate
             needed = min(len(self.reader.targets), max(2, math.ceil(painted_rate*.15)))
             if self.reader.ready_count(start) < needed:
                 self.rate.setText('Buffering cached frames…')
@@ -562,7 +613,8 @@ class BOSPreviewWindow(QDialog):
             while self.paints and now-self.paints[0] > 1.2:
                 self.paints.popleft()
             actual = ((len(self.paints)-1)/(self.paints[-1]-self.paints[0]) if len(self.paints)>1 else 0.)
-            self.rate.setText(f'{self.fps.value():g} fps requested · {actual:.1f} fps shown'
+            rate_label = 'source fps' if self.clip.sampling.step > 1 else 'fps requested'
+            self.rate.setText(f'{self.fps.value():g} {rate_label} · {actual:.1f} fps shown'
                               + (f' · {self.skipped:,} frames skipped to keep time' if self.skipped else '')
                               + ' · Cached playback')
             self._last_rate_update = now
@@ -647,11 +699,12 @@ class BOSPreviewWindow(QDialog):
             event.ignore()
 
 
-def analyze_bos_range(parent, settings, first, last):
+def analyze_bos_range(parent, settings, first, last, *, sample_step=1):
     """Called by the BOS workspace after the user confirms an inclusive range."""
     snapshot = deepcopy(settings)
-    dialog = _Progress(parent, 'Analyze BOS range', last-first+1,
-                       lambda cancel, progress: prepare_bos_preview(snapshot, first, last,
+    sampling = RangeSampling(last-first+1, sample_step)
+    dialog = _Progress(parent, 'Analyze BOS range', sampling.count,
+                       lambda cancel, progress: prepare_bos_preview(snapshot, first, last, sample_step=sample_step,
                                                                     cancel=cancel, progress=progress))
     parent._bos_preview_worker = dialog.worker
     dialog.worker.start()

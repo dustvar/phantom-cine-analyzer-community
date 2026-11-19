@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import Qt, QSignalBlocker
 from PySide6.QtWidgets import (QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout,
-                               QPushButton, QSlider, QWidget)
+                               QPushButton, QSlider, QSpinBox, QWidget)
 
 from bos_studio_model import MAX_PLAYBACK_FPS
 
@@ -46,3 +46,22 @@ class ReplaySpeed(QWidget):
     def sync_slider(self):
         with QSignalBlocker(self.slider):
             self.slider.setValue(round(self.number.value()))
+
+
+
+class SampleFrameBox(QSpinBox):
+    """Show native frame numbers and step through the measured samples."""
+    def __init__(self, first_frame, sampling):
+        super().__init__()
+        self.first_frame = first_frame
+        self.sampling = sampling
+        self.setRange(first_frame, first_frame+sampling.source_count-1)
+        self.setGroupSeparatorShown(True)
+        self.setKeyboardTracking(False)
+        if sampling.step > 1:
+            self.setToolTip('Enter a Cine frame to select the nearest analyzed frame.')
+
+    def stepBy(self, steps):
+        index = self.sampling.nearest(self.value()-self.first_frame)
+        index = max(0, min(self.sampling.count-1, index+steps))
+        self.setValue(self.first_frame+self.sampling.offset(index))

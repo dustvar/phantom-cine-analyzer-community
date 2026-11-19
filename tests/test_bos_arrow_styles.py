@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 from bos_frames import validate_bos_settings
 from bos_processing import BOSField, render_bos
 from bos_vector_controls import VectorAppearance
-from bos_vectors import VectorStyle, draw_vector_field, sample_vectors
+from bos_vectors import VectorStyle, _draw_grouped, draw_vector_field, sample_vectors
 
 
 class VectorStyleTests(unittest.TestCase):
@@ -28,6 +28,7 @@ class VectorStyleTests(unittest.TestCase):
         legacy = validate_bos_settings({'detail':True,'show_vectors':True})
         self.assertEqual(VectorStyle.from_settings(legacy), VectorStyle())
         for key, value in [('vector_thickness', True), ('vector_thickness', 9),
+                           ('vector_thickness', .3), ('vector_outline', 1),
                            ('vector_color','#123'), ('vector_high_color','blue'),
                            ('vector_shape','ring'), ('vector_encoding','rainbow')]:
             with self.subTest(key=key), self.assertRaises(ValueError):
@@ -97,13 +98,28 @@ class VectorStyleTests(unittest.TestCase):
         center_ink = lambda image: np.sum(np.all(image == [240,254,252], axis=2))
         self.assertGreater(center_ink(images[-1]),2*center_ink(images[0]))
 
+    def test_bare_half_pixel_stroke_preserves_subpixel_area_and_registration(self):
+        for y in (21., 21.25, 21.5, 21.75):
+            def draw(outline):
+                image = np.full((60, 80, 3), 128, np.uint8)
+                _draw_grouped(image, np.array([8.]), np.array([y]), np.array([48.]),
+                              np.array([0.]), np.array([1.]), np.array([False]), 48., 58.,
+                              VectorStyle(color='#ffffff', thickness=.5, outline=outline),
+                              roi=(3, 4, 73, 49))
+                return image
+            ink = draw(False)[:,25,0].astype(float) - 128
+            self.assertAlmostEqual(ink.sum()/127, .5, delta=.025)
+            self.assertAlmostEqual(np.average(np.arange(60), weights=ink), y+4, delta=.03)
+            self.assertFalse(np.any(ink < 0))
+            self.assertLess(np.min(draw(True)[:,25,0]), 128)
+
     def test_controls_restore_without_signals_and_keep_custom_colors_when_switching_modes(self):
         app = QApplication.instance() or QApplication([])
         ui=VectorAppearance()
         self.addCleanup(ui.close)
         spy=QSignalSpy(ui.changed)
         options=dict(vector_color='#2a5f89',vector_high_color='#be4618',vector_shape='filled',
-                     vector_encoding='threshold',vector_thickness=4)
+                     vector_encoding='threshold',vector_thickness=.5,vector_outline=False)
         ui.set_settings(options)
         self.assertEqual(ui.settings(),options)
         self.assertEqual(spy.count(),0)
@@ -117,4 +133,9 @@ class VectorStyleTests(unittest.TestCase):
             ui.color.click()
         self.assertEqual(ui.settings()['vector_color'],'#124442')
         self.assertEqual(spy.count(),3)
+        ui.thickness.stepUp()
+        self.assertEqual(ui.settings()['vector_thickness'],1)
+        ui.outline.click()
+        self.assertTrue(ui.settings()['vector_outline'])
+        self.assertEqual(spy.count(),5)
         app.processEvents()

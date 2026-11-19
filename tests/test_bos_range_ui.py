@@ -9,6 +9,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
 from bos_frames import BOSFrames
+from bos_range_ui import BOSRangeBar
 from test_bos_ui import BOSWorkspaceTests
 
 
@@ -57,6 +58,60 @@ class BOSRangeWorkflowTests(BOSWorkspaceTests):
         QTest.mouseClick(p.range_bar.cancel, Qt.MouseButton.LeftButton)
         self.assertFalse(p.range_bar.isVisible())
         self.assertFalse(p.analyze_range.isChecked())
+
+    def test_sampling_guide_updates_for_speed_cadence_range_and_nondivisible_tail(self):
+        bar = BOSRangeBar()
+        self.addCleanup(bar.deleteLater)
+        bar.configure(-1000, 800, 0)
+        bar.update_ready(0, can_mark=True, can_analyze=True, seconds_per_frame=1.)
+        bar.last.setValue(-401)
+        self.assertEqual(bar.sample_step(), 1)
+        self.assertIn('most detail', bar.sampling_note.text())
+        self.assertIn('longest', bar.sampling_note.text())
+        bar.sampling.setCurrentIndex(bar.sampling.findData('match'))
+        self.assertEqual(bar.sample_step(), 3)
+        self.assertIn('201 of 600', bar.summary.text())
+        self.assertIn('3.4 min', bar.summary.text())
+        self.assertIn('66.7 measurements/s', bar.sampling_note.text())
+        bar.target_fps.setCurrentIndex(bar.target_fps.findData(30))
+        self.assertEqual(bar.sample_step(), 6)
+        self.assertIn('101 of 600', bar.summary.text())
+        bar.minimum_fps.setValue(20.)
+        self.assertEqual(bar.sample_step(), 1)
+        self.assertIn('repeats images', bar.sampling_note.text())
+        bar.sampling.setCurrentIndex(bar.sampling.findData(2))
+        self.assertIn('60 source fps', bar.sampling_note.text())
+        bar.sampling.setCurrentIndex(bar.sampling.findData('custom'))
+        bar.interval.setValue(400)
+        self.assertEqual(bar.sample_step(), 400)
+        self.assertIn('3 of 600', bar.summary.text())
+        self.assertIn('will repeat images', bar.sampling_note.text())
+        bar.last.setValue(-1000)
+        self.assertIn('1 of 1', bar.summary.text())
+
+    def test_match_playback_analyze_button_opens_sampled_player_and_preserves_live_rate(self):
+        self.prepare()
+        p = self.panel
+        p.fps.setValue(30)
+        QTest.mouseClick(p.analyze_range, Qt.MouseButton.LeftButton)
+        bar = p.range_bar
+        bar.first.setValue(-10)
+        bar.last.setValue(-5)
+        bar.sampling.setCurrentIndex(bar.sampling.findData('match'))
+        self.assertTrue(bar.minimum_fps.isVisible())
+        self.assertTrue(bar.target_fps.isVisible())
+        self.assertIn('3 of 6', bar.summary.text())
+        QTest.mouseClick(bar.analyze, Qt.MouseButton.LeftButton)
+        self.wait(lambda: bool(getattr(p, '_bos_preview_windows', [])))
+        player = p._bos_preview_windows[-1]
+        try:
+            self.assertEqual([player.clip.source_frame(i) for i in range(player.clip.count)], [-10, -7, -5])
+            self.assertEqual(player.fps.value(), 200.)
+            self.assertEqual(p.settings()['playback_fps'], 30.)
+            self.assertEqual(player.edit_model.duration, 6 / 200)
+        finally:
+            player.close()
+            self.wait(lambda: player.cleaned)
 
     def test_pending_preview_cannot_start_a_stale_analysis(self):
         self.prepare()

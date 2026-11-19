@@ -45,7 +45,7 @@ class IndependentVectorTrackTests(unittest.TestCase):
             color = render(show_vectors=False)
             arrows = render(vector_background='footage')
             both = render()
-            style = VectorStyle(shape='needle', color='#9c3015', thickness=3, encoding='grayscale')
+            style = VectorStyle(shape='needle', color='#9c3015', thickness=.5, encoding='grayscale', outline=False)
             restyled = render(**style.settings())
         finally:
             session.close()
@@ -122,12 +122,15 @@ class IndependentVectorTrackTests(unittest.TestCase):
                 self.assertIsInstance(dialog, QDialog)
                 form = dialog.findChild(VectorAppearance)
                 form.shape.setCurrentIndex(form.shape.findData('needle'))
-                form.thickness.setValue(3)
+                form.thickness.setValue(.5)
+                form.outline.setChecked(False)
                 dialog.accept()
             QTimer.singleShot(0, choose_style)
             p.appearance.click()
             self.assertEqual(w.edit_model.vector_style.shape, 'needle')
             accepted = w.edit_model.vector_style
+            self.assertEqual(accepted.thickness,.5)
+            self.assertFalse(accepted.outline)
             def cancel_style():
                 dialog = app.activeModalWidget()
                 form = dialog.findChild(VectorAppearance)

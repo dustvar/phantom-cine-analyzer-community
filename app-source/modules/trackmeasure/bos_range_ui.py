@@ -1,7 +1,10 @@
-"""Explicit, inclusive source-frame selection for precomputed BOS playback."""
+"""Inclusive native-frame selection and sampling guidance for analyzed BOS playback."""
 from PySide6.QtCore import QSignalBlocker, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
-                               QSizePolicy, QSpinBox, QVBoxLayout)
+from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout,
+                               QLabel, QPushButton, QSizePolicy, QSpinBox, QVBoxLayout)
+
+from bos_sampling import RangeSampling
+from bos_studio_model import MAX_PLAYBACK_FPS
 
 
 class BOSRangeBar(QFrame):
@@ -46,11 +49,97 @@ class BOSRangeBar(QFrame):
         row.addWidget(self.analyze)
         row.addWidget(self.cancel)
         root.addLayout(row)
+
+        self.sampling = QComboBox()
+        self.sampling.setAccessibleName('Frames to analyze')
+        for label, value in [('Every frame', 1), ('Match playback', 'match'),
+                             ('Every other frame', 2), ('Every 3rd frame', 3),
+                             ('Every 4th frame', 4), ('Every 5th frame', 5),
+                             ('Every 10th frame', 10), ('Custom interval', 'custom')]:
+            self.sampling.addItem(label, value)
+        self.interval = QSpinBox()
+        self.interval.setAccessibleName('Analyze every Nth frame')
+        self.interval.setRange(1, 1_000_000)
+        self.interval.setValue(3)
+        self.interval.setKeyboardTracking(False)
+        self.minimum_fps = QDoubleSpinBox()
+        self.minimum_fps.setAccessibleName('Slowest planned playback in source frames per second')
+        self.minimum_fps.setRange(1., MAX_PLAYBACK_FPS)
+        self.minimum_fps.setDecimals(2)
+        self.minimum_fps.setValue(200.)
+        self.minimum_fps.setSuffix(' fps')
+        self.minimum_fps.setKeyboardTracking(False)
+        self.target_fps = QComboBox()
+        self.target_fps.setAccessibleName('Target movie or display frame rate')
+        for fps in (24, 30, 60, 120, 240):
+            self.target_fps.addItem(f'{fps} fps', fps)
+        self.target_fps.setCurrentIndex(self.target_fps.findData(60))
+        self.target_fps.setToolTip('How many distinct frames per second you want to show. '
+                                   'Choose your actual MP4 frame rate separately in Record Studio.')
+        sample_row = QHBoxLayout()
+        sample_row.setSpacing(6)
+        self.interval_label = QLabel('Interval')
+        self.minimum_label = QLabel('Slowest playback')
+        self.cadence_label = QLabel('Movie / display')
+        for label, editor in [(QLabel('Sampling'), self.sampling), (self.interval_label, self.interval),
+                              (self.minimum_label, self.minimum_fps), (self.cadence_label, self.target_fps)]:
+            label.setBuddy(editor)
+            sample_row.addWidget(label)
+            sample_row.addWidget(editor)
+        sample_row.addStretch()
+        root.addLayout(sample_row)
+        self.sampling_note = QLabel()
         self.summary = QLabel()
-        self.summary.setWordWrap(True)
-        self.summary.setMinimumWidth(0)
-        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        root.addWidget(self.summary)
+        for label in (self.sampling_note, self.summary):
+            label.setWordWrap(True)
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            root.addWidget(label)
+        self.sampling.currentIndexChanged.connect(self._sampling_changed)
+        self.minimum_fps.valueChanged.connect(self._sampling_changed)
+        self.target_fps.currentIndexChanged.connect(self._sampling_changed)
+        self.interval.valueChanged.connect(self._sampling_changed)
+        self._sampling_changed()
+
+    def sample_step(self):
+        mode = self.sampling.currentData()
+        if mode == 'match':
+            return max(1, int(self.minimum_fps.value() // self.target_fps.currentData()))
+        if mode == 'custom':
+            return self.interval.value()
+        return mode
+
+    def _sampling_changed(self):
+        mode = self.sampling.currentData()
+        for widget in (self.minimum_label, self.minimum_fps):
+            widget.setVisible(mode == 'match')
+        for widget in (self.interval_label, self.interval):
+            widget.setVisible(mode == 'custom')
+        # Every frame preserves all available samples whatever the delivery rate.
+        for widget in (self.cadence_label, self.target_fps):
+            widget.setVisible(mode != 1)
+        step = self.sample_step()
+        target = self.target_fps.currentData()
+        if mode == 'match':
+            slowest = self.minimum_fps.value()
+            detail = 'Every frame' if step == 1 else f'1 in {step} frames'
+            rate = f'{slowest / step:,.1f}'.rstrip('0').rstrip('.')
+            note = f'{detail} gives {rate} measurements/s. Analyzed playback starts at {slowest:g} source fps. '
+            if slowest < target:
+                note += 'Even with every frame, playback this slow repeats images at the target cadence.'
+            elif step > 1:
+                note += 'Brief events between sampled frames can disappear.'
+        elif step == 1:
+            note = 'Every frame gives the most detail and takes the longest to process. Use it to inspect brief events or play slowly.'
+        else:
+            minimum_rate = step * target
+            if minimum_rate <= MAX_PLAYBACK_FPS:
+                guidance = f'Best for {minimum_rate:,} source fps or faster at {target} fps delivery. Slower playback can repeat images.'
+            else:
+                guidance = f'Even at {MAX_PLAYBACK_FPS:,} source fps, {target} fps delivery will repeat images at this interval.'
+            note = guidance + ' Brief events between sampled frames can disappear.'
+        self.sampling_note.setText(note.strip())
+        self.refresh()
 
     def configure(self, first_native, count, current_index):
         self.first_native, self.count = int(first_native), int(count)
@@ -81,14 +170,20 @@ class BOSRangeBar(QFrame):
             self.summary.setText('Mark Out must be at or after Mark In. Use the playback slider, mark buttons, or type frame numbers.')
             return
         count = last-first+1
+        step = self.sample_step()
+        samples = RangeSampling(count, step).count
         estimate = ''
         if self.seconds_per_frame is not None and self.seconds_per_frame > 0:
-            seconds = count*self.seconds_per_frame
+            seconds = samples*self.seconds_per_frame
             estimate = (f' · measurement estimate {seconds/60:.1f} min' if seconds >= 60
                         else f' · measurement estimate {seconds:.0f} s') + ' + cache preparation'
-        self.summary.setText(f'{count:,} frame{"s" if count != 1 else ""}, both endpoints included{estimate}. '
-                             + (self.blocked_reason if not self.ready and self.blocked_reason else
-                                'Use the playback slider to mark the range. Analyze uses the current reference, region and display settings.'))
+        if step == 1:
+            coverage = f'{count:,} frame{"s" if count != 1 else ""}, both endpoints included'
+        else:
+            unit = 'frame' if count == 1 else 'frames'
+            coverage = f'Analyze {samples:,} of {count:,} source {unit}, both endpoints included'
+        note = f'. {self.blocked_reason}' if not self.ready and self.blocked_reason else ''
+        self.summary.setText(coverage + estimate + note)
 
     def _analyze(self):
         if self.analyze.isEnabled():

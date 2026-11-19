@@ -8,6 +8,7 @@ import numpy as np
 
 from PIL import Image, ImageDraw
 
+from bos_sampling import RangeSampling
 from viewer_overlay import _font
 
 
@@ -25,7 +26,10 @@ def capture_rate(clip):
     forward = intervals > 0
     if not np.any(forward):
         return None
-    return float(np.median((last-first)[forward]*1e6 / intervals[forward]))
+    sampling = getattr(clip, 'sampling', RangeSampling(clip.count))
+    source_offsets = np.minimum(valid * sampling.step, sampling.source_count-1)
+    distances = source_offsets[stride:] - source_offsets[:-stride]
+    return float(np.median(distances[forward]*1e6 / intervals[forward]))
 
 
 @lru_cache(maxsize=512)
@@ -56,6 +60,7 @@ _NUMBER_RUNS = re.compile(r'[0-9]|[^0-9]+')
 class StudioText:
     def __init__(self, clip, settings, capture_fps):
         self.clip = clip
+        self.sampling = getattr(clip, 'sampling', RangeSampling(clip.count))
         self.settings = dict(settings)
         self.capture = capture_fps
         self.fields = frozenset(settings.get('fields', ()))
@@ -73,7 +78,7 @@ class StudioText:
             return ()
         lines = self.caption.copy()
         if 'frame' in self.fields:
-            lines.append(f'Frame {index+1:,} of {self.clip.count:,}')
+            lines.append(f'Frame {self.sampling.offset(index)+1:,} of {self.sampling.source_count:,}')
         if 'playback' in self.fields:
             lines.append(f'{fps:,.2f}'.rstrip('0').rstrip('.') + ' fps playback')
         if self.capture and 'capture' in self.fields:

@@ -1,10 +1,13 @@
 """A fixed-lattice quiver plot of measured, reference-relative BOS dot displacement."""
 from dataclasses import dataclass
 from functools import lru_cache
+from math import ceil
 import re
 
 import cv2
 import numpy as np
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen
 
 
 # Nominal number of arrow sites across the longer side of the analysis region.
@@ -12,6 +15,7 @@ _DENSITIES = {'sparse': 16, 'balanced': 26, 'dense': 39}
 MIN_FRACTION = 0.16
 _INK = (22, 31, 40)
 _LIGHT = (240, 254, 252)
+_STROKE_WIDTHS = tuple(i / 2 for i in range(17))
 
 
 @dataclass(frozen=True)
@@ -20,8 +24,9 @@ class VectorStyle:
     color: str = '#f0fefc'
     high_color: str = '#ffad4d'
     shape: str = 'open'
-    thickness: int = 0
+    thickness: float = 0
     encoding: str = 'double_head'
+    outline: bool = True
 
     @classmethod
     def from_settings(cls, settings):
@@ -33,8 +38,10 @@ class VectorStyle:
                 raise ValueError('Choose an RGB color for the BOS arrows.')
         if style.shape not in ('open', 'filled', 'needle'):
             raise ValueError('Choose an open, filled, or needle arrow.')
-        if type(style.thickness) is not int or not 0 <= style.thickness <= 8:
-            raise ValueError('Choose automatic thickness or a stroke from 1 to 8 pixels.')
+        if type(style.thickness) not in (int, float) or style.thickness not in _STROKE_WIDTHS:
+            raise ValueError('Choose Auto or a stroke from 0.5 to 8 pixels in half-pixel steps.')
+        if type(style.outline) is not bool:
+            raise ValueError('Choose whether to outline the BOS arrows.')
         if style.encoding not in ('double_head', 'threshold', 'grayscale'):
             raise ValueError('Choose double tips, two colors, or black to white for magnitude.')
         return style
@@ -145,8 +152,30 @@ def _contrast(rgb):
     return _INK if luma >= 125 else _LIGHT
 
 
-def _draw_arrows(image, x, y, draw_dx, draw_dy, full_length, width, border, rgb, outline, shape, extra_head):
-    """Batch one color of glyphs using subpixel coordinates and a contrast outline."""
+def _vector_paths(groups, closed=False):
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.WindingFill)
+    # Small disjoint paths keep Qt's scan converter local to nearby arrows.
+    # One enormous stroked path makes rasterization much slower on large fields.
+    batch = []
+    for group in groups:
+        for first, *points in group.tolist():
+            path.moveTo(*first)
+            for point in points:
+                path.lineTo(*point)
+            if closed:
+                path.closeSubpath()
+            if path.elementCount() >= 96:
+                batch.append(path)
+                path = QPainterPath()
+                path.setFillRule(Qt.FillRule.WindingFill)
+    if not path.isEmpty():
+        batch.append(path)
+    return batch
+
+
+def _draw_arrows(image, x, y, draw_dx, draw_dy, full_length, width, border, rgb, outline, shape, extra_head, painter=None):
+    """Batch one color of glyphs with an optional contrast outline."""
     origins = np.column_stack((x, y))
     shifts = np.column_stack((draw_dx, draw_dy))
     lengths = np.linalg.norm(shifts, axis=1)[:, None]
@@ -173,20 +202,39 @@ def _draw_arrows(image, x, y, draw_dx, draw_dy, full_length, width, border, rgb,
             paths.append(triangles)
     if np.any(extra_head):
         paths.append(corners(tips - unit*head*.78, head)[extra_head])
+    passes = [(outline, width+2*border), (rgb, width)] if border else [(rgb, width)]
+    if painter is not None:
+        # Rasterize the requested source-pixel area directly, including strokes
+        # thinner than one pixel. OpenCV accepts only whole-pixel pen widths.
+        shafts = _vector_paths(paths)
+        solids = _vector_paths(filled, closed=True) if filled else None
+        for color, weight in passes:
+            ink = QColor(*color)
+            painter.setPen(QPen(ink, weight, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                Qt.PenJoinStyle.RoundJoin))
+            if solids is not None:
+                painter.setBrush(QBrush(ink))
+                for path in solids:
+                    painter.drawPath(path)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for path in shafts:
+                painter.drawPath(path)
+        return
     strokes = [p for group in paths for p in np.rint(group*16).astype(np.int32)]
     polygons = [p for group in filled for p in np.rint(group*16).astype(np.int32)]
-    for color, weight in ((outline, width+2*border), (rgb, width)):
+    for color, weight in passes:
+        weight = int(weight)
         if polygons:
             cv2.polylines(image, polygons, True, color, weight, cv2.LINE_AA, 4)
             cv2.fillPoly(image, polygons, color, cv2.LINE_AA, 4)
         cv2.polylines(image, strokes, False, color, weight, cv2.LINE_AA, 4)
 
 
-def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_length, pitch, style):
+def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_length, pitch, style, roi=None):
     if not len(x):
         return
     width = style.thickness or max(1, round(pitch*.044))
-    border = max(1, round(pitch*.034))
+    border = max(1, round(pitch*.034)) if style.outline else 0
     if style.encoding == 'grayscale':
         # 64 perceptual steps permit one batched draw per shade, even for Extra Dense fields.
         shade = np.minimum(63, np.floor(63*np.minimum(fraction, 1.))).astype(np.uint8)
@@ -195,16 +243,36 @@ def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_lengt
         colors = [(~saturated, _rgb(style.color)), (saturated, _rgb(style.high_color))]
     else:
         colors = [(slice(None), _rgb(style.color))]
-    for mask, rgb in colors:
-        if len(x[mask]):
-            outline = _contrast(rgb)
-            if style.encoding == 'grayscale':
-                # A sudden switch from a light to a dark outline would introduce
-                # a false boundary halfway through a smooth magnitude field.
-                shade = round(112 - 88*rgb[0]/255)
-                outline = (shade, shade, shade)
-            _draw_arrows(image, x[mask], y[mask], draw_dx[mask], draw_dy[mask], full_length,
-                         width, border, rgb, outline, style.shape, saturated[mask] & (style.encoding == 'double_head'))
+    painter = None
+    if width % 1:
+        buffer = np.ascontiguousarray(image)
+        surface = QImage(buffer.data, buffer.shape[1], buffer.shape[0], buffer.strides[0], QImage.Format.Format_RGB888)
+        painter = QPainter(surface)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if roi:
+            painter.setClipRect(*roi)
+            painter.translate(roi[0], roi[1])
+        # Qt places pixel centers half a pixel past the measured image coordinates.
+        painter.translate(.5, .5)
+    elif roi:
+        left, top, w, h = roi
+        image = image[top:top+h, left:left+w]
+    try:
+        for mask, rgb in colors:
+            if len(x[mask]):
+                outline = _contrast(rgb)
+                if style.encoding == 'grayscale':
+                    # A sudden switch from a light to a dark outline would introduce
+                    # a false boundary halfway through a smooth magnitude field.
+                    shade = round(112 - 88*rgb[0]/255)
+                    outline = (shade, shade, shade)
+                _draw_arrows(image, x[mask], y[mask], draw_dx[mask], draw_dy[mask], full_length,
+                             width, border, rgb, outline, style.shape, saturated[mask] & (style.encoding == 'double_head'), painter)
+    finally:
+        if painter is not None:
+            painter.end()
+            if buffer is not image:
+                image[:] = buffer
 
 
 @lru_cache(maxsize=64)
@@ -230,7 +298,7 @@ def _key(width, height, full_length, limit, style):
     if compact:
         key_w = 2*pad + (second_width if gradient else first_width)
     head_h = cv2.getTextSize('DOT SHIFT',font,size*.73,pen)[0][1]
-    body_h = max(round(full_length*.43),cv2.getTextSize(label,font,size,pen)[0][1],style.thickness+3)
+    body_h = max(round(full_length*.43),cv2.getTextSize(label,font,size,pen)[0][1],ceil(style.thickness)+3)
     key_h = 2*pad + head_h+gap+body_h
     if key_w > width-2*pad or key_h > height*.38 or min(width,height) < 48:
         return None
@@ -282,10 +350,10 @@ def draw_vector_field(image, field, samples, placement, style=VectorStyle()):
     """Paint centered source-grid arrows on a caller-owned RGB8 display copy."""
     if not field.valid.any():
         return
-    x, y, w, h = field.roi
-    _draw_grouped(image[y:y+h, x:x+w], samples.x-x-.5*samples.draw_dx, samples.y-y-.5*samples.draw_dy,
+    x, y = field.roi[:2]
+    _draw_grouped(image, samples.x-x-.5*samples.draw_dx, samples.y-y-.5*samples.draw_dy,
                   samples.draw_dx, samples.draw_dy, np.hypot(samples.dx,samples.dy)/samples.limit,
-                  samples.saturated, samples.full_length, samples.pitch, style)
+                  samples.saturated, samples.full_length, samples.pitch, style, roi=field.roi)
     if placement is not None:
         x, y, kw, kh = placement
         sprite = _key(image.shape[1], image.shape[0], samples.full_length, samples.limit, style)

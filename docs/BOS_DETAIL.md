@@ -18,9 +18,12 @@ For smooth review after tuning the effect:
 2. Click **Analyze range** at the lower left. Scrub to the desired start and use
    **Mark In**, then scrub to the end and use **Mark Out**. The frame fields allow
    exact endpoints. Both selected endpoints are included.
-3. Start the analysis. PCA takes a snapshot of the current settings and processes
-   every selected source frame in order. Progress and cancellation remain
-   available while the work runs.
+3. Choose how often to measure. **Every frame** keeps the most temporal detail
+   and takes the longest. **Match playback** uses the slowest playback speed
+   planned for the edit and the frame rate of the display or finished movie.
+   At 200 source frames per second, choose 60 fps to measure every third frame,
+   or 30 fps to measure every sixth. **Analyze** processes the displayed sample
+   count with your current BOS settings. Both endpoints are always measured.
 4. When analysis finishes, a separate result window opens. Its slider and playback
    rate control work on the already rendered frames; playing them does not repeat
    the BOS calculation. Choose a rate from 1 to 1,000 fps and check the achieved rate.
@@ -28,6 +31,12 @@ For smooth review after tuning the effect:
    not achieved. Very high rates still depend on the display and computer.
 5. Export an MP4 from that result window to keep a shareable rendered movie. This
    uses the analyzed result; it does not recalculate the original Cine.
+
+A sampled result keeps the original Cine frame numbers, timestamps and marked
+duration. Playback holds each measured frame until the next one is due. A brief
+event between samples may be missed. Choose the slowest section of your edit
+when planning samples, even if other sections will run at 1,000 fps. You can
+still choose the encoded frame rate separately when exporting the MP4.
 
 The rendered frames are stored losslessly in a local disk cache, with a bounded
 set of decoded frames prepared for playback. This temporary cache is removed
@@ -64,7 +73,10 @@ relative to the pinned reference. Positive X points right and positive Y points 
 
 Compare lengths to the **Dot shift** key on the image. **Full scale** sets the
 key’s value in source-image pixels. Open **Arrow style** to choose the arrow shape,
-stroke width, colors, and how to show magnitude. The default uses a double head
+stroke width, colors, and how to show magnitude. For the thinnest arrows, set
+the thickness to **0.5 px** and turn off **Contrast outline**. Stroke width is
+measured in source-image pixels, so zooming the picture also enlarges the arrows.
+Existing jobs keep their outlines. The default uses a double head
 above full scale. The two-color option switches colors at full scale. The
 black-to-white gradient gets lighter with magnitude and reaches white at full
 scale. For a 0.30 px threshold, set **Full scale** to **0.30 px**. Small shifts below the drawing threshold and unreliable

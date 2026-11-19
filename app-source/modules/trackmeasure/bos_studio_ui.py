@@ -8,9 +8,10 @@ from PySide6.QtCore import Qt, Signal, QSignalBlocker, QPointF, QRectF
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath, QFontMetrics
 from PySide6.QtWidgets import (QBoxLayout, QButtonGroup, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox,
+    QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy,
     QVBoxLayout, QWidget)
 
+from bos_playback_controls import SampleFrameBox
 from bos_studio_model import MAX_PLAYBACK_FPS
 
 
@@ -53,12 +54,14 @@ class _StudioTrack(QWidget):
 
     def x_for(self, boundary):
         lane = self.lane()
-        return lane.left()+boundary/self.studio.model.count*lane.width()
+        sampling = self.studio.model.sampling
+        return lane.left()+sampling.offset(boundary)/sampling.source_count*lane.width()
 
     def _frame(self, x):
         lane = self.lane()
-        value = int((x-lane.left())/lane.width()*self.studio.model.count)
-        return max(0, min(self.studio.model.count-1, value))
+        sampling = self.studio.model.sampling
+        offset = (x-lane.left())/lane.width()*sampling.source_count
+        return sampling.index_at(offset)
 
     def _spans(self):
         panel = self.studio
@@ -158,7 +161,7 @@ class _StudioTrack(QWidget):
         right = f'{panel.clip.source_frame(panel.model.count-1):,}'
         painter.drawText(QRectF(lane.left(),0,lane.width(),16), Qt.AlignmentFlag.AlignLeft,left)
         painter.drawText(QRectF(lane.left(),0,lane.width(),16), Qt.AlignmentFlag.AlignRight,right)
-        x = self.x_for(panel.playhead+.5)
+        x = (self.x_for(panel.playhead)+self.x_for(panel.playhead+1)) / 2
         painter.setPen(QPen(QColor('#ffdc87'),1.5))
         painter.drawLine(QPointF(x,18),QPointF(x,lane.bottom()+4))
         caret = QPainterPath(QPointF(x-4,15))
@@ -197,7 +200,13 @@ class _StudioTrack(QWidget):
         drag = self.drag
         idx, part, start, end = (drag[k] for k in ('idx','part','start','end'))
         count = self.studio.model.count
-        step = round((x-drag['x'])/self.lane().width()*count)
+        sampling = self.studio.model.sampling
+        delta = (x-drag['x'])/self.lane().width()*sampling.source_count
+        anchor = end+1 if part == 'right' else start
+        offset = sampling.offset(anchor)+delta
+        # The right trim handle can also land at the exclusive clip end.
+        boundary = count if offset >= sampling.source_count-.5 else sampling.nearest(offset)
+        step = boundary-anchor
         spans = self._spans()
         before = spans[idx-1][1]+1 if idx else 0
         after = spans[idx+1][0]-1 if idx+1 < len(spans) else count-1
@@ -419,13 +428,10 @@ class RecordStudio(QFrame):
         bounds.setSpacing(5)
         self.inspector_layout.addLayout(bounds)
         self.start = clip.source_frame(0)
-        self.first = QSpinBox()
-        self.last = QSpinBox()
+        self.first = SampleFrameBox(self.start, model.sampling)
+        self.last = SampleFrameBox(self.start, model.sampling)
         for name, field in [('In',self.first),('Out',self.last)]:
             field.setAccessibleName(f'Selected section {name.lower()} Cine frame')
-            field.setKeyboardTracking(False)
-            field.setGroupSeparatorShown(True)
-            field.setRange(self.start,clip.source_frame(model.count-1))
             # Keep focus loss from committing a stale value to a newly selected section.
             field.valueChanged.connect(lambda number,f=field:self._exact_bounds(f, number))
             bounds.addWidget(QLabel(name))
@@ -594,7 +600,7 @@ class RecordStudio(QFrame):
         first,last = spans[idx]
         for field, value in [(self.first, first),(self.last,last)]:
             with QSignalBlocker(field):
-                field.setValue(value+self.start)
+                field.setValue(self.clip.source_frame(value))
         self.first.setEnabled(self.mode != 1 or idx > 0)
         self.last.setEnabled(self.mode != 1 or idx < len(spans)-1)
         if self.layer:
@@ -666,10 +672,11 @@ class RecordStudio(QFrame):
             return
         self.editStarted.emit()
         first, last = self.track._spans()[idx]
+        sample = self.model.sampling.nearest(number-self.start)
         if field is self.first:
-            self.apply_bounds(idx,min(number-self.start,last),last,'left')
+            self.apply_bounds(idx,min(sample,last),last,'left')
         else:
-            self.apply_bounds(idx,first,max(number-self.start,first),'right')
+            self.apply_bounds(idx,first,max(sample,first),'right')
 
     def apply_bounds(self, idx, first, last, part):
         if self.layer:
