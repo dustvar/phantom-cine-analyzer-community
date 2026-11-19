@@ -4,7 +4,9 @@ import logging, os
 
 import measmodel
 import reportmodel
-from pyphantom_cine.cine_handler import CineHandler
+from cine_metadata import CineHandler
+from viewer_processing import default_grade, render_cine_image
+from viewer_timeline import default_edit
 from pyphantom_config.config import JsonConfig
 if os.name == 'nt':
     from pyphantom_ipc.ipc_api import IPCController
@@ -42,6 +44,7 @@ class SimpleMeasVM(QObject):
     #region SIGNALS
     new_track_data = Signal(object, int)
     new_cine_load = Signal(str, object)
+    cine_activated = Signal(str, object)
     draw_frame = Signal(str, object, int, str, object)
     draw_points = Signal(str, object, str)
     draw_track_points = Signal(str, object, str, object)
@@ -284,6 +287,7 @@ class SimpleMeasVM(QObject):
         self.meas_data = {}
         self.zoom_pos = (0, 0)
         self.transformed_img = None
+        self._displayed_raw = None
         self.abort_autotrack = False
         self.playback_speed = 1
         self.n_diff = 4
@@ -303,8 +307,13 @@ class SimpleMeasVM(QObject):
         self._magnifier = 'magnifier'
         self._template = 'qt_template_img'
         self._active_frame = 0
+        self._viewer_frame = 0
         self._mouse_pos = None
         self._image_scale_text = None
+        self.viewer_grade = default_grade()
+        self.viewer_edit = default_edit()
+        self._viewer_edit_undo = []
+        self._viewer_edit_redo = []
         self._image_brightness = 0
         self._image_contrast = 1
         self._image_gamma = 1
@@ -365,12 +374,28 @@ class SimpleMeasVM(QObject):
         'transformed_img', 'abort_autotrack', '_image_brightness', '_image_contrast',
         '_image_gamma', '_toggle_ftone', '_raw_enabled', '_processed_cache',
         '_processed_cache_size_bytes', '_current_processing_params', '_image_scale',
-        '_known_length', '_length_units', '_area_units', '_time_units', '_time_scale'
+        '_known_length', '_length_units', '_area_units', '_time_units', '_time_scale',
+        'viewer_grade', 'viewer_edit', '_viewer_edit_undo', '_viewer_edit_redo', '_viewer_frame'
     )
 
     def _new_workspace_context(self, handler, cine_path):
         metadata = handler.metadata
+        # Prepared by the Cine-load worker, so enabling synchronized playback
+        # never scans a potentially large timestamp tag on the GUI thread.
+        from multi_cine_timing import CaptureClock
+        try:
+            capture_clock = CaptureClock.from_handler(handler)
+            capture_clock_error = ''
+        except Exception as error:
+            capture_clock = None
+            capture_clock_error = str(error)
         return {
+            'capture_clock': capture_clock,
+            'capture_clock_error': capture_clock_error,
+            'viewer_grade': default_grade(),
+            'viewer_edit': default_edit(metadata.ImageCount),
+            '_viewer_edit_undo': [],
+            '_viewer_edit_redo': [],
             'cine_handler': handler,
             'cine_path': cine_path,
             'image_tools': ImageTools(),
@@ -381,6 +406,7 @@ class SimpleMeasVM(QObject):
             'active_object': None,
             '_active_track_tool': None,
             '_active_frame': 0,
+            '_viewer_frame': 0,
             'zoom_pos': (0, 0),
             'transformed_img': None,
             'abort_autotrack': False,
@@ -392,10 +418,13 @@ class SimpleMeasVM(QObject):
             '_processed_cache': {},
             '_processed_cache_size_bytes': 0,
             '_current_processing_params': None,
-            '_image_scale': self._image_scale,
-            '_known_length': self._known_length,
-            '_length_units': self._length_units,
-            '_area_units': self._area_units,
+            # A new recording has not been calibrated. Reusing a prior Cine's
+            # scale can produce plausible but incorrect physical measurements.
+            # Saved jobs explicitly restore their original per-Cine calibration.
+            '_image_scale': 1.0,
+            '_known_length': 1.0,
+            '_length_units': 'pix',
+            '_area_units': 'sq-pix',
             '_time_units': self._time_units,
             '_time_scale': self._time_scale,
         }
@@ -441,39 +470,56 @@ class SimpleMeasVM(QObject):
             except Exception:
                 logging.exception('Failed to close a Cine workspace handler')
 
-    def load_cine_workspace_cb(self, cine_paths):
+    def prepare_cine_workspace(self, cine_paths):
+        """Read files without changing the workspace used by the UI."""
         paths = list(dict.fromkeys(
             p for p in (cine_paths or []) if isinstance(p, str) and p
         ))[:4]
         if not paths:
-            return False
+            return []
 
         logging.info('Loading Cine workspace: %s', paths)
         new_contexts = []
+        handlers = []
         try:
             for cine_path in paths:
                 handler = CineHandler()
+                handlers.append(handler)
                 handler.load_cine(cine_path)
+                if handler.metadata.ImageCount <= 0:
+                    raise ValueError(f'Cine has no frames: {cine_path}')
                 new_contexts.append(self._new_workspace_context(handler, cine_path))
-        except Exception as e:
-            for context in new_contexts:
+        except Exception:
+            for handler in handlers:
                 try:
-                    context['cine_handler'].close()
+                    handler.close()
                 except Exception:
                     pass
-            logging.exception('Failed to load Cine workspace')
-            self.update_status_text.emit(f'Error loading Cine workspace: {e}')
-            return False
+            raise
+        return new_contexts
 
+    def load_cine_workspace_cb(self, cine_paths):
+        try:
+            contexts = self.prepare_cine_workspace(cine_paths)
+        except Exception as error:
+            logging.exception('Failed to load Cine workspace')
+            self.update_status_text.emit(f'Error loading Cine workspace: {error}')
+            return False
+        return self.install_cine_workspace(contexts)
+
+    def install_cine_workspace(self, new_contexts):
+        """Commit a fully loaded workspace on the UI thread."""
+        if not new_contexts:
+            return False
         self.close_workspace()
         self.workspace_contexts = new_contexts
         self.active_cine_index = -1
         self.workspace_changed.emit(self.workspace_summaries(), 0)
-        self.activate_cine_cb(0, save_current=False)
-        logging.info('Cine workspace loaded successfully with %s file(s)', len(paths))
+        self.activate_cine_cb(0, save_current=False, new_workspace=True)
+        logging.info('Cine workspace loaded successfully with %s file(s)', len(new_contexts))
         return True
 
-    def activate_cine_cb(self, index, save_current=True):
+    def activate_cine_cb(self, index, save_current=True, new_workspace=False):
         if not (0 <= index < len(self.workspace_contexts)):
             return False
         if save_current:
@@ -483,7 +529,10 @@ class SimpleMeasVM(QObject):
         metadata = self.cine_handler.metadata
         self.report_handler.active_report.cine_path = self.cine_path
         self.workspace_changed.emit(self.workspace_summaries(), index)
-        self.new_cine_load.emit(self.cine_path, metadata)
+        if new_workspace:
+            self.new_cine_load.emit(self.cine_path, metadata)
+        else:
+            self.cine_activated.emit(self.cine_path, metadata)
         self.first_frame = f'{metadata.FirstImageNo}'
         self.last_frame = f'{metadata.ImageCount + metadata.FirstImageNo - 1}'
         self.trigger_time = metadata.TriggerTime_displ
@@ -492,6 +541,7 @@ class SimpleMeasVM(QObject):
         self.image_gamma = self._image_gamma
         self.toggle_ftone = self._toggle_ftone
         self.image_scale_text = self.format_scale_text(self.image_scale)
+        self.active_frame_changed.emit(self.active_frame)
         self.new_track_data.emit(self.track_data, self.active_object)
         self.track_fig_changed.emit(self.track_data)
         self.draw_all()
@@ -502,27 +552,16 @@ class SimpleMeasVM(QObject):
             return None
         current_index = self.active_cine_index
         self.sync_active_workspace_context()
-        self._restore_workspace_context(index)
-        frame_index = int(np.clip(self._active_frame, 0, self.cine_handler.metadata.ImageCount - 1))
-        processing_params = (
-            self.image_brightness, self.image_contrast, self.image_gamma,
-            self.toggle_ftone, self.raw_enabled, frame_index
-        )
-        if self._cache_enabled and processing_params in self._processed_cache:
-            img = self._processed_cache[processing_params]
-        else:
-            img = self._apply_image_tools(self.cine_handler.get_img(frame_index))
-            if self._cache_enabled:
-                self._processed_cache[processing_params] = img
-                self._processed_cache_size_bytes += img.nbytes
-        self.transformed_img = img
-        img = np.copy(img)
-        display_cfa = 'Mono' if self.raw_enabled else self.cine_handler.metadata.CFA
-        result = (img, self.cine_handler.metadata.RealBPP, display_cfa)
-        self.sync_active_workspace_context()
-        if 0 <= current_index < len(self.workspace_contexts):
-            self._restore_workspace_context(current_index)
-        return result
+        try:
+            self._restore_workspace_context(index)
+            # Share the bounded processed-frame cache with the main renderer.
+            img = self._draw_frame(self._graph, emit_frame=False)
+            display_cfa = 'Mono' if self.raw_enabled else self.cine_handler.metadata.CFA
+            self.sync_active_workspace_context()
+            return (np.copy(img), self.cine_handler.metadata.RealBPP, display_cfa)
+        finally:
+            if 0 <= current_index < len(self.workspace_contexts):
+                self._restore_workspace_context(current_index)
 
         
     #region EVENT CALLBACKS
@@ -534,6 +573,12 @@ class SimpleMeasVM(QObject):
     def graph_click_cb(self, mouse_pos):
         # if meas is active, collect the points
         if self.active_tool is not None and self.cine_path != '':
+            if (isinstance(self.active_tool, AutoTrackTool)
+                    and not self.active_tool.track_select):
+                # Idle automatic-tracking clicks inspect/pan the image. Only
+                # explicit Add Object / guided setup may collect a new seed.
+                self.update_status_text.emit('Use Add Object or Edit to change an automatic tracking target.')
+                return
             if self.active_tool.clear_points():
                self.clear_scene.emit()
             self.clear_scene.emit()
@@ -595,9 +640,9 @@ class SimpleMeasVM(QObject):
         if not clear:
             self.mouse_pos = f"Coordinates:\n{(round(mouse_pos[0], 2), round(mouse_pos[1], 2))}"
             if self.transformed_img is not None:
-                clipped_x = np.clip(mouse_pos[0], 0, self.transformed_img.shape[1] - 1)
-                clipped_y = np.clip(mouse_pos[1], 0, self.transformed_img.shape[0] - 1)
-                raw = np.array(self.cine_handler.get_img(self.active_frame))
+                displayed = self._displayed_raw
+                raw = (displayed[1] if displayed is not None and displayed[0] is self.transformed_img
+                       else self.cine_handler.get_img(self.active_frame))
                 clipped_x = np.clip(mouse_pos[0], 0, raw.shape[1] - 1)
                 clipped_y = np.clip(mouse_pos[1], 0, raw.shape[0] - 1)
                 
@@ -878,8 +923,24 @@ class SimpleMeasVM(QObject):
         self.new_track_data.emit(self.track_data, self.active_object)
         self.track_fig_changed.emit(self.track_data)
         
+    def draw_prepared_frame(self, prepared):
+        """Publish the frame decoded by the playback worker through the usual overlays."""
+        self.transformed_img = prepared.image
+        self._displayed_raw = (prepared.image, prepared.raw)
+        if prepared.original_source:
+            # Keep the foreground reader's one-frame cache aligned for ROI tools
+            # and paused inspection, without reading the same frame a second time.
+            self.cine_handler.frame_i = self.active_frame
+            self.cine_handler.img = prepared.raw
+        self.draw_frame.emit(self._graph, prepared.image, prepared.metadata.RealBPP, prepared.metadata.CFA, None)
+        self._update_frame_annotations()
+
     def draw_all(self, points=None):
+        self._displayed_raw = None
         self._draw_frame(self._graph)
+        self._update_frame_annotations(points)
+
+    def _update_frame_annotations(self, points=None):
         tft = self.cine_handler.get_timestamp(self.active_frame)['time_from_trig']
         self.time_from_trigger = f'{round(tft, 2)} μs'
         self._draw_overlays(points)
@@ -933,7 +994,7 @@ class SimpleMeasVM(QObject):
                     self._template, index=fr, current_point=preview_point
                 )
         
-    def _draw_frame(self, graph=None, index=None, current_point=None):
+    def _draw_frame(self, graph=None, index=None, current_point=None, emit_frame=True):
         if index is None: 
             index = self.active_frame
         if graph == self._graph:
@@ -973,7 +1034,7 @@ class SimpleMeasVM(QObject):
             img = self.transformed_img
 
         # if graph is none, return the image
-        if graph is None:
+        if graph is None or not emit_frame:
             return img
         
         self.draw_frame.emit(graph, img, self.cine_handler.metadata.RealBPP, self.cine_handler.metadata.CFA, current_point)
@@ -988,68 +1049,15 @@ class SimpleMeasVM(QObject):
                     self.draw_points_lines(self.active_tool.points)
             
 
+    def image_settings_snapshot(self):
+        return {name: getattr(self, name) for name in (
+            'image_brightness', 'image_contrast', 'image_gamma',
+            'toggle_ftone', 'raw_enabled')}
+
     def _apply_image_tools(self, img):
-        cfa = self.cine_handler.metadata.CFA
-        bpp = self.cine_handler.metadata.RealBPP
-        r_gain = self.cine_handler.metadata.WBGain[0]
-        b_gain = self.cine_handler.metadata.WBGain[1]
-        black = self.cine_handler.metadata.BlackLevel
-        white = self.cine_handler.metadata.WhiteLevel
-        cm_calib = self.cine_handler.metadata.cmCalib
-        bright = self.image_brightness/2**int(bpp)
-        ftone = self.cine_handler.metadata.fTone
-        if not self.toggle_ftone: ftone = None
+        return render_cine_image(img, self.cine_handler.metadata,
+                                 self.image_settings_snapshot(), self.image_tools)
 
-        if white <= black:
-            white = black + 1
-
-        if self.raw_enabled:
-            if cfa != 'Mono':
-                #TODO: is this ok?
-                img = img.astype(np.float32) if img.dtype != np.float32 else img
-                img = self.image_tools.apply_wb(img, r_gain, b_gain, cfa, bpp)
-            if bpp == 8 or bpp == 10 or bpp == 12:
-                #TODO: is this ok?
-                img = img.astype(np.uint16) if img.dtype != np.uint16 else img
-                img = self.image_tools.cast_to_16bpp(img)
-            img = img * (1 << (16 - bpp))
-            return img
-
-        # defect pixel correction
-        img = img.astype(np.float32) if img.dtype != np.float32 else img
-        img = self.image_tools.apply_dmap_correction(img, cfa, bpp)
-        
-        if cfa == 'Mono':
-            img = self.image_tools.apply_brightness(img, bright)
-            img = self.image_tools.apply_contrast(img, float(self.image_contrast))
-            img = self.image_tools.apply_gamma(img, float(self.image_gamma), bpp)
-            if ftone is not None:
-                img = self.image_tools.apply_ftone(img, ftone)
-            img = self.image_tools.stretch_image_rng(img, 16, int(black), int(white))
-            img = self.image_tools.cast_to_16bpp(img)
-            return img
-
-        else:
-            bright = self.image_brightness #TODO: check if this is correct for color
-            config = ImageProcessingConfig(
-                r_gain=r_gain,
-                b_gain=b_gain,
-                brightness=bright,
-                contrast=self.image_contrast,
-                gamma=self.image_gamma,
-                cfa=cfa,
-                bpp=bpp,
-                ftone=ftone,
-                cm_calib=cm_calib,
-                black_offset=black,
-                white_level=white,
-                enable_timing=False
-            )
-
-            img = self.image_tools.apply_color_pipeline(img, config)
-           
-            return img
-        
     def track_fig_calculations(self, obj=None):
         if self.track_data != {}:
             t = self.track_data[self.active_object] if obj is None else obj
@@ -1063,49 +1071,10 @@ class SimpleMeasVM(QObject):
                 )
             t['frame_ts'] = self.cal.time_transform(np.array(time_from_start_values))
             t['frame_ts_trig'] = self.cal.time_transform(np.array(time_from_trigger_values))
-            rel_id = t['relative_to'] if 'relative_to' in t else None
-            if rel_id != None:
-                rel_obj = self.track_data[rel_id]
-                rel_frames = rel_obj['frames']
-                rel_points = rel_obj['points']
-                # For each frame in t['frames'], find the corresponding point in rel_obj, else [0,0]
-                origin = []
-                for f in t['frames']:
-                    if f in rel_frames:
-                        idx = np.where(rel_frames == f)[0][0]
-                        origin.append(rel_points[idx])
-                    else:
-                        origin.append(np.zeros_like(rel_points[0]))
-                origin = np.array(origin)
-            else:
-                # determine what the origin frame should be
-                origin_frame = t['origin_frame']
-                frames = t['frames']
-                points = t['points']
-                if origin_frame is None:
-                    origin = points[0]
-                else:
-                    idxs = np.where(frames == origin_frame)[0]
-                    if idxs.size > 0:
-                        origin = points[idxs[0]]
-                    else:
-                        origin = points[0]
-                        t['origin_frame'] = None
-
+            from tracking_kinematics import calculate_motion
+            t.setdefault('motion_filter', {'mode':'local_polynomial','window':21})
+            t.update(calculate_motion(t, self.track_data, t['frame_ts'], self.n_diff))
             frame_diff = self._n_diff(t['frame_ts'], self.n_diff)
-            disp = np.abs(t['points'] - origin)
-            diffs = self._n_diff(disp, self.n_diff)
-
-            t['X-Displacement'] = disp[:,0]
-            t['Y-Displacement'] = disp[:,1]
-            t['Displacement'] = np.linalg.norm(disp, axis=1)
-            t['X-Speed'] = diffs[:,0] / frame_diff
-            t['Y-Speed'] = diffs[:,1] / frame_diff
-            t['Speed'] = np.linalg.norm(diffs, axis=1) / frame_diff
-
-            t['X-Acceleration'] = self._n_diff(t['X-Speed'], self.n_diff) / frame_diff[self.n_diff:]
-            t['Y-Acceleration'] = self._n_diff(t['Y-Speed'], self.n_diff) / frame_diff[self.n_diff:]
-            t['Acceleration'] = np.sqrt(np.square(t['X-Acceleration']) + np.square(t['Y-Acceleration'])) / frame_diff[self.n_diff:]
 
             angles = np.asarray(t.get('angles', np.zeros(len(t['frames']))), dtype=float)
             if len(angles) != len(t['frames']):

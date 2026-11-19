@@ -8,6 +8,7 @@ import numpy as np
 import pdfreport as pdf
 import calibration
 from pyphantom_config.config import JsonConfig
+from app_runtime import settings_path
 
 class ReportHandler():
 	def __init__(self):
@@ -60,7 +61,7 @@ class BaseReport():
 		self.report_path = ''
 		self.delimiter = ","
 
-		cfg_path = os.path.join(os.path.dirname(__file__), 'config.json')
+		cfg_path = settings_path()
 		self._config = JsonConfig(cfg_path)
 
 		# Default Delimeter

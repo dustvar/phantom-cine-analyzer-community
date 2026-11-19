@@ -33,3 +33,12 @@ Certificate files are intentionally excluded from this repository.
 
 See the root [README](../README.md) and [developer handoff](../docs/DEVELOPER_HANDOFF.md)
 for the repository layout and feature-specific change maps.
+
+## Job documents
+
+`main.js` queues macOS `open-file` events before app readiness and dispatches
+`.pcajob` files using `jobOpener.js`. The Python module accepts the document path
+as a literal argument. Merge `job-file-association.plist` into a packaged app's
+Info.plist to register the document type; preserve other existing document types.
+Rebuild ASAR integrity and code signing after changing a packaged launcher.
+Run the launcher argument tests with `node ../tests/test_job_opener.cjs`.

@@ -1,4 +1,6 @@
-const { app } = require('electron');
+const { app, dialog } = require('electron');
+const config = require('./configManager');
+const { jobLaunchSpec, openJob } = require('./jobOpener');
 const { createPCCPipeServer } = require('./messageServer');
 
 const WindowManager = require('./windowManager');
@@ -7,11 +9,39 @@ const IpcHandlers = require('./ipcHandlers');
 const MessageBus = require('./messageBus');
 
 let pccPipeServer = null;
+let jobEnvironment = null;
+const pendingJobs = [];
+function launchPendingJobs() {
+    if (!jobEnvironment) return;
+    while (pendingJobs.length) {
+        const file = pendingJobs.shift();
+        try {
+            const { conda_path } = jobEnvironment.getCondaPath();
+            const spec = jobLaunchSpec(file, conda_path, config.paths.defaultModuleDir, config.paths.envName || 'PCA');
+            openJob(spec, error => dialog.showErrorBox('Open Phantom job', error.message));
+        } catch (error) {
+            dialog.showErrorBox('Open Phantom job', error.message);
+        }
+    }
+}
+// macOS may deliver the document before Electron's ready event.
+app.on('open-file', (event, file) => {
+    event.preventDefault();
+    if (file.toLowerCase().endsWith('.pcajob')) {
+        pendingJobs.push(file);
+        launchPendingJobs();
+    }
+});
+if (process.platform !== 'darwin') {
+    pendingJobs.push(...process.argv.slice(1).filter(arg => arg.toLowerCase().endsWith('.pcajob')));
+}
 const messageBus = new MessageBus();
 
 app.whenReady().then(async () => {
     const ipcHandlers = new IpcHandlers(messageBus);
     const envManager = new EnvManager(messageBus);
+    jobEnvironment = envManager;
+    launchPendingJobs();
     const windowManager = new WindowManager(messageBus);
 
     ipcHandlers.registerIpcHandlers({

@@ -17,7 +17,7 @@ MODULE_PATH = (
 )
 sys.path.insert(0, str(MODULE_PATH))
 
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QPointF, QRectF, QObject
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
@@ -30,6 +30,13 @@ from simplemeas_tools import (
 )
 import simplemeas_ui
 import simplemeas_vm
+
+
+class WindowContext(QObject):
+    """A real QObject context for deferred UI callbacks."""
+    def __init__(self, **values):
+        super().__init__()
+        self.__dict__.update(values)
 
 
 class SignalSink:
@@ -96,7 +103,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             calls.append('arm')
             active_tool.track_select = True
 
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             vm=SimpleNamespace(
                 active_tool=active_tool,
                 add_new_template_cb=arm_new_object,
@@ -185,7 +192,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
 
     def test_empty_track_list_waits_for_add_object(self):
         track_tool = object()
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             current_tool=track_tool,
             track_tool=track_tool,
             _hybrid_selection_graph=None,
@@ -212,7 +219,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             def update(self):
                 redraws.append('viewport')
 
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             vm=SimpleNamespace(
                 active_object=0,
                 track_data={0: {'relative_to': None}},
@@ -293,7 +300,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             'search_area_multiplier': 3.0,
         }
         redraws = []
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             vm=SimpleNamespace(
                 track_data={0: track},
                 cine_handler=SimpleNamespace(metadata=SimpleNamespace(
@@ -325,7 +332,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         np.testing.assert_allclose(track['template_offset'], expected_offset)
 
     def test_rotating_hybrid_uses_diagonal_sized_search_window(self):
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             vm=SimpleNamespace(cine_handler=SimpleNamespace(metadata=SimpleNamespace(
                 ImWidth=200, ImHeight=160,
             ))),
@@ -340,7 +347,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
 
     def test_hybrid_template_view_receives_pose_for_circular_preview(self):
         emitted = []
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             active_object=None,
             active_frame=3,
             _template='qt_template_img',
@@ -369,11 +376,11 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         )
         graph = simplemeas_ui.QGraphicsView()
         graph.setScene(simplemeas_ui.QGraphicsScene(graph))
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             workspace_panes=[],
             zoom_levels=[1.0],
             zoom_slider=SimpleNamespace(value=lambda: 0),
-            vm=SimpleNamespace(raw_enabled=False),
+            vm=SimpleNamespace(raw_enabled=False, active_cine_index=-1, workspace_contexts=[]),
             magnifier=None,
             theme_accent='#f47efa',
         )
@@ -451,7 +458,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         ))
         graph.resize(220, 180)
         graph.show()
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             _hybrid_selection_graph=None,
             vm=SimpleNamespace(
                 pending_tracking_method=None,
@@ -492,7 +499,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertLess(abs(after.y() - before.y()), 6.0)
         graph.close()
 
-    def test_pan_mode_uses_scroll_hand_drag_and_restores_normal_clicks(self):
+    def test_pan_mode_arms_custom_pan_and_restores_normal_clicks(self):
         parent = SimpleNamespace(
             current_tool=None,
             status_bar=QLabel(''),
@@ -504,7 +511,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         self.assertTrue(graph._pan_enabled)
         self.assertEqual(
             graph.dragMode(),
-            simplemeas_ui.QGraphicsView.DragMode.ScrollHandDrag,
+            simplemeas_ui.QGraphicsView.DragMode.NoDrag,
         )
 
         graph.set_pan_enabled(False)
@@ -689,7 +696,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
         graph.show()
         self.app.processEvents()
         active_tool = SimpleNamespace(track_select=True)
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             vm=SimpleNamespace(
                 active_frame=3,
                 track_data={0: {
@@ -738,7 +745,7 @@ class TrackingCreationWorkflowTest(unittest.TestCase):
             'angles': np.array([0.0]),
             't_angles': np.array([0.0]),
         }
-        dummy = SimpleNamespace(
+        dummy = WindowContext(
             vm=SimpleNamespace(
                 active_frame=3,
                 track_data={0: source},

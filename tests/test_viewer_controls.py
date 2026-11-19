@@ -1,3 +1,4 @@
+from PySide6.QtCore import QCoreApplication, QEvent
 import os
 import sys
 import unittest
@@ -26,6 +27,12 @@ class ViewerControlsTest(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
         cls.window = simplemeas_ui.MainWindow()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.window.hide()
+        cls.window.deleteLater(); QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)
+        cls.app.processEvents()
 
     def setUp(self):
         self.window.cine_path = '/tmp/test.cine'
@@ -140,7 +147,7 @@ class ViewerControlsTest(unittest.TestCase):
         self.assertTrue(all(isinstance(item, QGraphicsPathItem) for item in scene_items))
 
     def test_path_settings_labels_and_point_radius_scale(self):
-        self.assertEqual(self.window.path_fade_button.text(), 'Path Settings  ▾')
+        self.assertIn(self.window.path_fade_button.text(), ('Path Settings', 'Path'))
         layout = self.window.path_fade_panel.layout()
         self.assertEqual(
             layout.labelForField(self.window.path_fade_transparency).text(),
@@ -148,7 +155,7 @@ class ViewerControlsTest(unittest.TestCase):
         )
         self.assertEqual(
             layout.labelForField(self.window.path_fade_radius).text(),
-            'Transparency Distance',
+            'Radius (0 = all)',
         )
         self.assertEqual(
             layout.labelForField(self.window.path_point_radius).text(),
@@ -245,7 +252,7 @@ class ViewerControlsTest(unittest.TestCase):
         self.window._update_heat_map_availability()
         self.assertFalse(self.window.path_heat_map.isEnabled())
         self.assertIn(
-            'only applies to displacement, speed, acceleration, angle graphs',
+            'total/X/Y displacement',
             self.window.path_heat_map.toolTip(),
         )
 
@@ -256,7 +263,7 @@ class ViewerControlsTest(unittest.TestCase):
 
         self.window.fig_dropdown.setCurrentText('Y-Displacement')
         self.window._update_heat_map_availability()
-        self.assertFalse(self.window.path_heat_map.isEnabled())
+        self.assertTrue(self.window.path_heat_map.isEnabled())
         self.assertTrue(self.window.path_heat_map.isChecked())
 
         self.window.fig_dropdown.setCurrentText('Angle')
@@ -390,48 +397,32 @@ class ViewerControlsTest(unittest.TestCase):
         self.assertIn('tracking method', self.window.tracking_help_button.toolTip())
         self.assertEqual(self.window.hybrid_search_multiplier.value(), 1.5)
 
-    def test_scrubber_labels_align_with_slider_column(self):
-        self.assertEqual(self.window.scrubber_layout.spacing(), 16)
-        self.assertIs(
-            self.window.scrubber_layout.itemAt(0).widget(),
-            self.window.pcc_transport_controls,
-        )
-        slider_column = self.window.scrubber_layout.itemAt(1).layout()
-        self.assertIs(slider_column, self.window.slider_column_layout)
-        self.assertIs(slider_column.itemAt(0).layout(), self.window.frame_range_layout)
-        slider_row = slider_column.itemAt(1).layout()
-        self.assertIs(slider_row, self.window.slider_row_layout)
-        self.assertIs(slider_row.itemAt(0).widget(), self.window.frame_first_button)
-        self.assertIs(slider_row.itemAt(1).widget(), self.window.frame_slider)
-        self.assertIs(slider_row.itemAt(2).widget(), self.window.frame_last_button)
-        self.assertIs(
-            self.window.frame_range_layout.itemAt(0).widget(),
-            self.window.first_frame_disp,
-        )
-        self.assertIs(
-            self.window.frame_range_layout.itemAt(2).widget(),
-            self.window.last_frame_disp,
-        )
+    def test_seek_bar_keeps_endpoints_and_slider_below_video(self):
+        layout=self.window.seek_bar.layout()
+        self.assertIs(layout.itemAt(0).widget(),self.window.frame_first_button)
+        self.assertIs(layout.itemAt(1).widget(),self.window.frame_slider)
+        self.assertIs(layout.itemAt(2).widget(),self.window.frame_last_button)
+        self.assertIs(layout.itemAt(3).widget(),self.window.group_playback_toggle)
+        self.assertIs(layout.itemAt(4).widget(),self.window.transport_toggle)
 
-    def test_current_frame_label_stays_inside_slider_reserved_space(self):
+    def test_current_frame_label_stays_in_playback_header(self):
         self.window.resize(1200, 800)
         simplemeas_ui.QWidget.show(self.window)
+        self.addCleanup(self.window.hide)
         self.app.processEvents()
         self.window.frame_slider.setValue(50)
         self.window.update_active_frame(50)
-
-        slider_origin = self.window.frame_slider.mapTo(
-            self.window, simplemeas_ui.QPoint(0, 0)
-        )
-        slider_bottom = slider_origin.y() + self.window.frame_slider.height()
-
-        self.assertGreaterEqual(
-            self.window.active_frame_label.y(), slider_origin.y()
-        )
-        self.assertLessEqual(
-            self.window.active_frame_label.geometry().bottom(), slider_bottom
-        )
-        self.window.hide()
+        badge = self.window.active_frame_label
+        card = self.window.playback_card
+        self.assertIs(badge.parentWidget(), card)
+        self.assertTrue(card.rect().contains(badge.geometry()))
+        self.assertLessEqual(card.width(),280)
+        self.assertLessEqual(card.height(),80)
+        self.assertEqual(badge.text(), 'Frame 0')
+        # The readout belongs to its workflow and cannot float over other tabs.
+        card.hide()
+        self.assertFalse(badge.isVisible())
+        card.show()
 
     def test_scrubber_endpoint_buttons_ignore_viewer_clip(self):
         self.window.frame_slider.setValue(50)
@@ -523,15 +514,16 @@ class ViewerControlsTest(unittest.TestCase):
         )
         preview_window.deleteLater()
 
-    def test_right_details_panel_starts_open_and_cannot_collapse(self):
-        self.window.main_tab.setVisible(True)
+    def test_right_details_panel_collapses_and_opens_only_when_requested(self):
+        self.window._collapse_details()
+        self.assertTrue(self.window.main_tab.isHidden())
+        self.window._ensure_details_panel_open()
+        self.assertTrue(self.window.main_tab.isHidden())
         self.window._ensure_details_panel_open(force=True)
-        self.assertFalse(self.window.tab_splitter.isCollapsible(1))
-        self.assertGreaterEqual(self.window.main_tab.minimumWidth(), 280)
-        self.assertGreaterEqual(
-            self.window.tab_splitter.sizes()[1],
-            self.window.main_tab.minimumWidth(),
-        )
+        self.assertFalse(self.window.main_tab.isHidden())
+        self.assertTrue(self.window.tab_splitter.isCollapsible(1))
+        self.assertEqual(self.window.main_tab.minimumWidth(), 0)
+        self.window._collapse_details()
 
     def test_measurement_tools_use_full_timeline(self):
         self.window.current_tool = self.window.two_pt_tool
@@ -553,20 +545,25 @@ class ViewerControlsTest(unittest.TestCase):
             (0, 100),
         )
 
-    def test_viewer_hides_analysis_panels_and_restores_them(self):
+    def test_viewer_keeps_details_collapsed_and_restores_analysis_graphs(self):
+        self.window._collapse_details()
         self.window._set_viewer_controls_visible(True)
-        self.assertFalse(self.window.viewer_controls.isHidden())
+        self.assertTrue(self.window.viewer_controls.isHidden())
+        self.assertFalse(self.window.viewer_side_tools.isHidden())
         self.assertFalse(self.window.pcc_transport_controls.isHidden())
         self.assertTrue(self.window.status_toolbar.isHidden())
         self.assertTrue(self.window.main_tab.isHidden())
 
+        self.window.current_tool=self.window.track_tool
         self.window._set_viewer_controls_visible(False)
         self.assertTrue(self.window.viewer_controls.isHidden())
         self.assertFalse(self.window.pcc_transport_controls.isHidden())
+        self.assertTrue(self.window.status_toolbar.isHidden())  # Empty graph stays tucked away.
+        self.window._set_graphs_open(True)
         self.assertFalse(self.window.status_toolbar.isHidden())
-        self.assertFalse(self.window.main_tab.isHidden())
+        self.assertTrue(self.window.main_tab.isHidden())
 
-    def test_autotrack_dialog_uses_the_right_clicked_object(self):
+    def test_visible_tracking_setup_uses_the_right_clicked_object(self):
         class FakeAutoDialog:
             def __init__(self):
                 self.start_frame = None
@@ -633,6 +630,8 @@ class ViewerControlsTest(unittest.TestCase):
         original_vm = getattr(self.window, 'vm', None)
         original_auto = self.window.auto
         original_set_point_table = self.window._set_point_table
+        original_guide=self.window._begin_guided_tracking
+        guided=[];self.window._begin_guided_tracking=lambda method,object_id:guided.append(object_id)
         try:
             fake_auto = FakeAutoDialog()
             self.window.vm = FakeVM()
@@ -644,23 +643,23 @@ class ViewerControlsTest(unittest.TestCase):
             self.window.launch_autotrack_dialog(1, 0)
 
             self.assertEqual(self.window.vm.active_object, 42)
-            self.assertEqual(fake_auto.start_frame, -50)
-            self.assertEqual(fake_auto.end_frame, 70)
-            self.assertEqual(fake_auto.refreshes[-1]['name'], 'Right-click target')
-            self.assertTrue(fake_auto.shown)
-            self.assertTrue(fake_auto.raised)
-            self.assertTrue(fake_auto.activated)
+            panel = self.window.tracking_setup
+            self.assertEqual(guided[-1],42)
+            self.assertEqual(panel.controls['start'].value(), 10)
+            self.assertEqual(panel.controls['end'].value(), 70)
+            self.assertEqual(panel.controls['name'].text(), 'Right-click target')
+            self.assertFalse(fake_auto.shown)
 
-            # Reopen for a different object without recreating the dialog.
+            # Reuse the visible setup panel for another object.
             self.window.launch_autotrack_dialog(0, 0)
             self.assertEqual(self.window.vm.active_object, 7)
-            self.assertEqual(fake_auto.end_frame, 60)
-            self.assertEqual(fake_auto.refreshes[-1]['name'], 'First object')
-            self.assertEqual(len(fake_auto.refreshes), 2)
+            self.assertEqual(panel.controls['end'].value(), 60)
+            self.assertEqual(panel.controls['name'].text(), 'First object')
         finally:
             self.window.vm = original_vm
             self.window.auto = original_auto
             self.window._set_point_table = original_set_point_table
+            self.window._begin_guided_tracking=original_guide
 
 
 if __name__ == '__main__':

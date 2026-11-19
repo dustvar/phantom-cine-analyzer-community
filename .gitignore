@@ -44,3 +44,10 @@ args.json
 PhantomCineAnalyzer-1-1-18-mac-x64/
 Miniforge3-*
 PhantomCineAnalyzer\ 1.1.18*
+
+# Local analysis sessions, footage exports and visual QA captures
+*.pcajob
+*.mp4
+*.mov
+*.avi
+qa/ui-review-*/

@@ -1,5 +1,103 @@
 Phantom Cine Analyzer Additional Features 1.1.18
 
+Compact Workspace 1.11.0 — 2026-10-27
+
+- Collapsed tool menu and details rail; removed Comparator from navigation while
+  preserving Video Overlay and old comparator job settings. Active Cine title-bar
+  controls replace the floating tracking toolbar; narrow panes use a More menu.
+- Restored PCC two-row transport and added direct playback FPS. Fixed first-use
+  Add Object setup and separated Report from Viewer Export button connections.
+- Added draggable amber search windows and explicit-focus wheel editing.
+- Added X/Y displacement heat maps and first-point/frame/fixed-image-pixel
+  references for all methods, with saved-job persistence and point picking.
+- Corrected signed-coordinate velocity (false dips crossing the reference),
+  acceleration's extra time division and derivative midpoint graph alignment.
+  Old jobs recalculate derived metrics without retracking stored points.
+- No new third-party dependencies. See docs/COMPACT_WORKSPACE.md.
+
+Native Startup 1.10.1 — 2026-10-27
+
+- Added direct native Qt startup, a visible splash, startup diagnostics and
+  single-instance document forwarding. Finder can open Cine and saved jobs.
+- Moved writable preferences, caches and logs outside application bundles;
+  calibration/reports share the same settings. Retain corrupt settings for recovery.
+- Added self-contained Apple-silicon packaging and a Windows x64 portable builder
+  using embedded CPython and Windows wheels. Windows execution still needs checking
+  on the user's work PC. See docs/STARTUP_AND_WINDOWS.md.
+
+Sequence Editor 1.7.0 — 2026-09-14
+
+- Added side-by-side Multiply Video and Add New Video controls. Each addition
+  is a fresh, independent source pass. Cine and ordinary video sources can be
+  sequenced; video labels and cyan chain links distinguish source joins from
+  regular cuts. Joins retain speed-transition controls but their boundaries
+  stay fixed. Viewer frame indices remain separate from tracking indices.
+- Added timeline magnification with minus/plus, scrolling, and Fit.
+- Added segment zoom presets/custom factors, an adjustable yellow crop frame,
+  and timed zoom-in/out easing. Plain splits preserve existing zoom motion.
+- Added timed custom text with position, duration, size, color, background,
+  and independent zoom anchoring. Data boxes can also stay on screen or move
+  with the footage. The source guide is excluded from exports.
+- Updated recipe migration and source validation for multi-video edits.
+  Export shares preview timing/crops/text, fits differing aspect ratios, and
+  remains silent. See docs/VIEWER_SEQUENCE.md for workflow and limits.
+
+Data & Cut Editing 1.6.0 — 2026-09-14
+
+- Include Data now has Playback Data and Camera Data selectors, each with its
+  own Enable, fields, layout, decimals, size, color, background, and position.
+  Playback defaults to slowdown/playback FPS at bottom right; capture FPS is
+  optional and off by default. Camera defaults to model/capture FPS/resolution
+  at bottom left, using the selected Cine's metadata. Both boxes are draggable
+  and share preview/export rendering; recipes and undo preserve both settings.
+- Transition dialogs have an editable Cut at frame number and linked slider,
+  using the Cine's frame numbering, including negative pretrigger frames.
+  Dragging a junction previews the boundary and records one undo step on release.
+  Each neighbor retains at least one source frame. Escape cancels a drag.
+- Added Undo and Redo immediately beside the source timeline. Existing section
+  playback rates, transition settings, and other cut locations survive cut moves.
+
+Data Layouts 1.5.1 — 2026-09-14
+
+- Include Data now defaults to stacked slowdown, capture FPS, and playback FPS,
+  in descending text sizes: "3,133× slower", "94,000 fps", "30 fps playback".
+- Added Stacked / Straight buttons and an optional one-decimal-place checkbox.
+  Whole-number display is the default. Formatting does not change timing.
+- Layout and decimal choices follow each Cine, support undo/redo and edit
+  recipes, and render identically in Viewer and sharing exports.
+
+Transitions & Data 1.5.0 — 2026-09-14
+
+- Added clickable junction icons and a dedicated transition editor with left,
+  right, and half-before/half-after placement; duration; smooth, linear, ease-in,
+  and ease-out curves; adjacent playback rates; curve preview; and removal.
+  Apply is one undo action. Neighboring ramps share available footage without
+  overlapping, including across skipped sections and inside trimmed ranges.
+- Replaced FPS Visualizer with Include Data: a compact card emphasizing raw
+  capture FPS, plus selectable playback FPS and times slower than reality.
+  The slowdown is capture FPS / saved-frame decimation / playback FPS, so
+  1,000 fps footage at 10 fps reads 100× slow and at 5 fps reads 200× slow.
+- Preserved v1.4 recipe timing when loading older edits. Their previous FPS
+  overlay choices migrate to the new data fields without rewriting the file.
+- Corrected floating-point boundary errors when seeking into fast sections
+  after long slow sections, and when crossing a skipped interval inside a ramp.
+- Validated preview/export consistency and native interaction behavior; see
+  docs/VIEWER_EDITOR.md for usage and verification details.
+
+Viewer Editor 1.4.0 — 2026-09-14
+
+- Added per-Cine sections with Split Here, Merge Next, individual playback FPS,
+  reversible skipping, and smooth incoming speed transitions in output seconds.
+- Preview and export share the same time map and constant output-frame grid;
+  ramps, held frames, skipped frames, loop endpoints, and final frames agree.
+- Added an FPS Visualizer with draggable placement, percentage sizing, colors,
+  optional background, and playback, speed-label, or effective-FPS display modes.
+  The overlay updates through speed ramps and is included in sharing exports.
+- Added per-Cine timeline/overlay undo and redo, loop preview, and portable
+  .pcaedit recipes for timing, In/Out, overlay, levels, and image adjustments.
+- Updated the native Viewer layout for smaller windows and export options to
+  show the edited duration and output frame count. See docs/VIEWER_EDITOR.md.
+
 Modified: 2026-08-31
 
 - Streamlined first-time object creation: Add Object now opens the Hybrid or
@@ -186,5 +284,195 @@ Modified: 2026-08-31
   multi-Cine overlay and Angle/Angular Speed modes; existing graph calculations
   and visual styling are otherwise retained.
 
+2026-09-14 — Workspace and calibration fixes (1.2.1)
+- Fixed disappearing Cine backgrounds after calibration/canvas clicks by
+  retaining the image item, avoiding parentItem() ownership changes on that
+  item, and releasing it safely before clearing the scene for a new frame.
+  Measurement clicks and post-dialog redraws run after mouse dispatch returns.
+- Selecting a loaded Cine no longer invokes the new-workspace Viewer reset.
+  Analysis mode, details tab, per-Cine frames, clips, adjustments, calibration,
+  and tracker settings survive pane changes without reopening Add Object.
+- Pane headers now include a Hide button. Hidden Cines remain loaded as eye
+  tabs above the views; restoring a tab selects that Cine in the same mode.
+  Visible panes reflow, and the last visible Cine cannot be hidden.
+- File loading prepares handlers in a worker and commits the workspace on the
+  UI thread, without terminating a running worker. Failed loads close all
+  partially opened handlers and retain the previous workspace.
+- Preview rendering restores the active context even after decode failures,
+  uses the bounded frame cache, and derives pixel format from the frame buffer.
+- Added connected Qt regression tests for calibration, hide/restore, mode and
+  frame preservation, failed loads, and UI-thread workspace installation.
+
+2026-09-14 — Viewer tools and accurate Cine metadata (1.3.0)
+- Bounded SETUP parsing fixes older Cine frame rates and camera-model text.
+  Missing model names are explicit; valid hardware IDs remain available.
+- Calibration shows a red cursor-following line between point selections.
+- Viewer Levels & Curves adds a histogram, black/white points, midtones,
+  draggable tone curve, Auto Levels, reset, and bypass per loaded Cine.
+  Grading changes display/export without changing tracking buffers.
+- Viewer Export Clip writes the inclusive In/Out range to MP4, MOV or AVI,
+  with playback rate, size and quality options, progress, and cancellation.
+  A separate reader streams adjusted frames; failed/cancelled exports preserve
+  an existing destination. See docs/VIEWER_TOOLS.md for use and validation.
+
 This modified version remains subject to LICENSE.cineanalyzer.txt included in
 the application docs directory.
+
+2026-09-24 — Camera Comparator (v1.8.0)
+- Added an isolated native workflow below Viewer with original-source previews, explicit source assumptions, verified camera modes/options and manufacturer provenance.
+- Physical pixel-footprint mapping distinguishes cropping and 2×2 binning; unavailable scene area is hatched and no missing detail is invented.
+- Relative TIME64 reading, lower-capture-rate frame selection, sampling phase, same-FPS and event-synchronized replay, with exposure and timing qualifications.
+- Independent .pcacompare presets and atomic cancellable MP4/MOV/AVI exports share preview geometry and sampling.
+- Added synthetic, native UI and decoded-export regressions. Existing editor and tracking workflows remain independent.
+
+2026-10-02 — Video Overlay and complete jobs (v1.9.0)
+- Added a separate native Video Overlay workspace: independent Cine readers,
+  50/50 blend, opacity, difference, per-stream trigger/T0 and signed frame offsets,
+  native-pixel X/Y alignment, common-time readout, scrub/step/elapsed-time replay.
+- Added precise TIME64 capture-minus-trigger subtraction; missing footage stays
+  blank and unmatched frame rates use explicit nearest-capture timing.
+- Added complete .pcajob save/open with tracking/measurement arrays, calibration,
+  multi-Cine/editor/comparison state, source fingerprints and missing-file relink.
+  Saving replaces files atomically; data is JSON/NPY, never executable pickle.
+- Added global job buttons/shortcuts and Mac document-open launcher support using
+  shell-free arguments. Existing Viewer and Comparator presets remain supported.
+- Retained tracking-thread handles to prevent duplicate runs and closing/loading
+  footage while a tracker still uses it. No graph calculation changes.
+- Added unit/native Qt tests and usage notes in docs/VIDEO_OVERLAY_AND_JOBS.md.
+
+2026-10-02 — Viewer organization and modern interface (v1.9.1)
+- Grouped the Viewer footer into Playback, Timeline, Trim, and Finish cards,
+  each with a short label and relevant hints. Added a direct Split action,
+  explicit segment playback-FPS labels, and a stationary frame badge.
+- Timeline panning appears only when zoomed; playback, segment editing, and
+  export bounds now have distinct neutral-blue/green/gold visual cues.
+- Renamed editor entry points to Speed & Effects and Data & Text. Added plain
+  navigation labels and replaced widespread purple borders/fills with charcoal
+  surfaces and restrained Phantom selection/focus/action accents throughout
+  the native app and launcher. Existing accent preferences remain supported.
+- Assigned Choose Cines to Cmd/Ctrl-Shift-O so Cmd/Ctrl-O opens jobs unambiguously.
+- Retained source data, editor/analysis behavior, saved job formats, and tracking
+  graph calculations/styling. Added connected Split/undo, timeline-pan, and frame
+  badge regressions. See docs/VIEWER_INTERFACE.md.
+
+2026-10-09 — Three tracking methods and portable engines (v1.10.0)
+- Added a visible Track Setup panel for Classic, Edge Assist and Tumbling Objects,
+  with parameters available before selecting a point, an object selector, mask
+  preview, run/cancel actions and separate Results. Added usage/technical help tabs.
+- Added adaptive silhouette segmentation with neighboring-frame optical flow,
+  confidence-gated appearance updates, dark/bright alternatives, conservative
+  loss handling, and projected-area centroids. No physical mass or angle claims.
+- Extracted Edge Assist matching/refinement into a NumPy/OpenCV-only module and
+  provided a standalone sequence API. Tumbling is likewise independent of PCA.
+  Original PCA Classic remains in autotrackalgorithms.py unchanged.
+- Persisted tumbling settings, diagnostics and simplified contours through jobs;
+  prevented hidden legacy controls from rewriting the selected object's method.
+  Avoided object-ID reuse after deletion and guarded editing/source switches
+  while a tracking worker runs. Cancellation retains completed measurements.
+- Added standalone export script, examples, targeted dependency/license inventory
+  and regression tests. Tracking graph math/styling remains unchanged.
+
+
+1.12.0 — Guided Tracking / Video-first workspace (2026-10-27)
+- Move short Viewer actions to the side, collapse the timeline by default, and float the
+  PCC transport over footage with a Playback visibility toggle. Vertical video/plot splitter.
+- Keep Info/Adjust/Tracks on the side with an explicit Close action. Remove the inactive
+  setup page's explicit show() call that caused Setup controls to overlap Results.
+- Four-stage Add Object/Edit workflow: target, tracking region, search geometry, review.
+  Point selection is optional; region center is available for rigid tracking, silhouette
+  centroid remains the Tumbling measurement. Cancel restores drafts/edits atomically.
+- Independent search translation, resizing and rotation; expand on release to contain
+  the ROI. Constrain actual Edge/Classic match candidates to the oriented rectangle.
+  Edge search geometry follows the fitted pose; optional X/Y motion constraints.
+- Background hand panning when zoomed, with geometry handles taking precedence. Snapshot
+  geometry before queued redraws so callbacks cannot access deleted graphics items.
+- Fixed reference pixel/frame selection in Review, persistent in whole-job files.
+- Local cubic derivatives using capture times, configurable 5–101 sample window (21
+  default), and a Raw differences mode. Preserve positions/displacements and derivative
+  timestamp alignment. Do not fit across missing data or large timestamp gaps.
+- Progress and cancellation stay visible while processing. Smart range respects the
+  processing bounds chosen in Review. Camera Comparator stays hidden; Overlay retained.
+- Windows full portable replacement distribution; no additional engine dependencies.
+- Independent UI review fixes: retain Review choices across Back/Next; no-op resize
+  handle clicks; responsive guide and settings sizing; adaptive Tumbling search controls;
+  setup-frame return; hide empty graphs and prevent Manual mode interrupting the guide.
+- Preserve requested Edge processing range before resetting detected candidates.
+- Scope delayed UI work to QObject lifetimes, release scene-item caches before Qt
+  destruction, and ignore duplicate completion notifications after tracking finishes.
+- Validation: 295 automated tests passed on macOS/PySide6, including decoded Cine
+  tracking, geometry, derivative mathematics, whole-job persistence and repeated teardown.
+
+1.12.1 · Responsive playback
+- Read a bounded window of frames with an independent reader. Reuse the loaded
+  Cine index; avoid rereading frame zero after a seek. Late reads cannot publish
+  frames after pause or a source change. Retain original timeline/export sampling.
+- Use clock deadlines for presentation, and keep hidden plots out of the playback path.
+- Cache pixel-identical monochrome tone conversion when camera settings permit.
+
+1.13.0 · Background-Oriented Schlieren
+- Measure local subpixel dot movement relative to a pinned reference in a drawn rectangle.
+  Use local contrast normalization, forward/backward agreement and patch correlation.
+- View signed horizontal or vertical displacement and magnitude on a fixed pixel
+  scale. Retain the original image at unsupported locations.
+- Save and relink the analysis in whole-job files; export the displayed overlay
+  as a PNG or MP4. A separate reader streams the chosen frame range.
+
+1.13.1 · BOS fine detail
+- Normalize dot contrast in raw sensor precision before optical-flow calculations.
+  Bright features in one part of the ROI no longer suppress clear dots in another.
+- Finer sampling, optional stationary reference averaging, and point-by-point mask
+  explanations are available in BOS. New jobs remember those choices.
+
+1.14.0 · Viewer Studio
+- Scrub the Viewer and set the inclusive export range on one rail. Drag the
+  lower brackets or use Mark In and Mark Out to mark the displayed frame.
+- Original Cine streams a single contiguous source range with its camera
+  frames, acquisition metadata and timing. Rendered Cine writes the edited
+  presentation, including graphics, in uncompressed 24-bit color.
+- Tracking fade reveals measured objects, trails and optional labels at a
+  chosen Cine frame over a duration in playback seconds. Save it in the job
+  and render it in movie or RGB Cine exports.
+
+1.14.1 · BOS measurement methods and overlay noise reduction
+- Choose fixed-reference pyramidal Lucas–Kanade optical flow or windowed zero-mean
+  normalized cross-correlation with subpixel peak fitting.
+- Reduce overlay noise smooths quiet regions within each displayed frame and preserves
+  raw displacement readouts and invalid patches. Previous saved settings keep their
+  original method and appearance. BOS jobs and exports remember both choices.
+
+1.14.4 · BOS Preview (Mac update)
+- Analyze an inclusive marked source-frame range using an exact snapshot of the
+  current BOS settings. Process every frame once with progress and cancellation.
+- Review the lossless rendered result in a separate player with bounded decoded
+  prefetch, selectable playback FPS and achieved-rate/buffering feedback. Export
+  the cached result to MP4 without repeating the displacement calculations.
+- Add optional fixed stationary-anchor correction for shared background translation;
+  retain the underlying source measurements and reject unreliable anchor matches.
+- Distinguish live settings-preview throughput from requested FPS. Preserve the
+  original Cine and keep the current Windows packages unchanged for this release.
+
+Directional BOS 1.14.5
+
+- Added a two-component direction color map and compass.
+- Added a 1–240 fps slider, ten-fps buttons and exact rate entry.
+- Cached the original display alongside analyzed frames for overlay range editing and MP4 export.
+
+BOS compass 1.14.6
+
+- Added an optional on-video direction compass to analyzed BOS playback and MP4 export. Drag to place it and resize with the corner handles.
+
+BOS Record Studio 1.14.7 (Mac)
+Analyzed BOS results have an optional timeline for trimming, splitting and fading
+the overlay, changing replay speed by section, and adding timed text and data.
+The directional compass appears by default. Edited playback duration is independent
+of MP4 encoding FPS, which defaults to 60 for sharing.
+
+BOS vector field 1.14.8 (Mac)
+Fixed-grid displacement arrows can be drawn over the schlieren map or the Cine.
+Live inspection and single-frame CSV export show apparent dot displacement in
+source pixels. Range analysis, cached playback and MP4 use the same arrow layer.
+
+BOS Vector Studio 1.14.9
+- Added customizable arrow shapes, colors and stroke width, magnitude color options and an extra-dense sampling grid.
+- Newly analyzed vector clips retain arrow geometry for independent timing, fades and appearance in Record Studio and MP4 export.
+- Raised BOS and Video Overlay source playback limits to 1,000 fps. Record Studio uses a separate encoded output rate.

@@ -164,6 +164,7 @@ class MultiCineWorkspaceTest(unittest.TestCase):
                     'track_data': {0: {
                         'name': 'Bolt', 'enabled': True, 'color': '#ff0000',
                         'points': np.array([[0, 0], [1, 1]]),
+                        'frames': np.array([0, 1]),
                         'frame_ts': np.array([0.0, 1.0]),
                         'frame_ts_trig': np.array([-1.0, 0.0]),
                         'Displacement': np.array([0.0, 1.0]),
@@ -176,6 +177,7 @@ class MultiCineWorkspaceTest(unittest.TestCase):
                     'track_data': {0: {
                         'name': 'Bolt', 'enabled': True, 'color': '#00aaff',
                         'points': np.array([[0, 0], [2, 2]]),
+                        'frames': np.array([0, 1]),
                         'frame_ts': np.array([0.0, 1.0]),
                         'frame_ts_trig': np.array([0.0, 1.0]),
                         'Displacement': np.array([0.0, 2.0]),

@@ -1,0 +1,50 @@
+PCA 1.14.3 - Windows portable
+
+This package uses the same application source as PCA 1.14.3 on your Mac,
+with the Windows x64 interpreter, libraries and video encoder bundled.
+
+- Responsive playback and up to four Cine panes.
+- Trigger-T0 synchronized playback across different Cine capture frame rates.
+- Reorder panes, choose side-by-side/stacked/grid, and zoom/pan each independently.
+- Faster Classic intensity matching and reuse of reference frames during a pass.
+- Faster Edge Assist, Tumbling, BOS, Video Overlay and tracking graph updates.
+- Compact top toolbar with Tools, calibration, Choose Cines and Open/Save menus.
+- Live magnifier during guided point selection. Arrow keys nudge one image pixel;
+  Shift+arrow nudges 0.1 pixel, Enter selects, and Escape cancels the selection.
+- Rotate video at the top of Adjust, including 90-degree turns and 180 degrees.
+  Rotation is saved with jobs and rendered exports; measured sensor coordinates
+  and Original Cine exports retain the camera's original orientation.
+- Viewer playback slider with draggable In/Out brackets.
+- Original Cine export for a contiguous raw clip, preserving camera data.
+- Rendered Cine export with text, graphics and edits baked into RGB frames.
+- MP4/MOV/AVI exports, trims, speed ramps, zoom, data and text overlays.
+- Tracking fade to bring measured particle markers/trails in at impact.
+- Classic, Edge Assist and Tumbling Objects with guided setup.
+- Tracking graphs, calibration, references and displacement heat maps.
+- Video Overlay and whole-job saving/reopening.
+- Background-oriented schlieren (BOS) with optical flow or cross-correlation,
+  Fine sampling, averaged reference and optional overlay noise reduction.
+- Modern purple impossible-triangle PCA icon on a transparent background,
+  including an optional Windows desktop shortcut.
+
+WORKING ON BOTH COMPUTERS
+The application is included; recordings and personal jobs are separate.
+Bring the original media with each .pcajob. If its path changes, relink the
+media when opening the job. Cine files do not need conversion for Windows.
+Display scaling and playback speed may vary with hardware and drive speed.
+
+VALIDATION
+Windows binaries and package integrity are checked during assembly on the Mac.
+The application source has passed Mac regression and native interface testing.
+This 1.14.3 Windows package has not been executed on Windows here. Run Check
+Installation.cmd, then check a short Cine, tracking, a saved job and an export
+on the Windows PC. The installation check does not test all editing workflows.
+
+TRACKING WORKSPACE IN 1.14.3
+- Graph zoom, pan, Fit, horizontal grid, hover values and keyboard point selection.
+- Delete a point or an inclusive range; Undo guards against overwriting newer edits.
+- Physical graph units after calibration, with per-Cine scales kept separate.
+- Live Point Views during playback; heat maps and transparency work together.
+- Ruler magnifier and fine arrow/keypad control; Edge Assist accuracy presets.
+- Save > Export Tracking Analysis: MP4 or Rendered Cine, optionally with graph.
+Read Tracking tools guide.txt for the workflow and measurement/export details.

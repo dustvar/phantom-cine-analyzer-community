@@ -1,6 +1,7 @@
 from enum import Enum
 import numpy as np
 from pyphantom_config.config import JsonConfig
+from app_runtime import settings_path
 import os
 
 class CalSpace(Enum):
@@ -24,7 +25,7 @@ class Calibration:
         - _active_space: the active space (default: CalSpace.IMAGE)
         """
         try:
-            self.config = JsonConfig(os.path.join(os.path.dirname(__file__), 'config.json'))
+            self.config = JsonConfig(settings_path())
             self.phys_factor = self.config.get('image_scale', default=1)
             self.time_factor = self.config.get('time_scale', default=1)
         except:

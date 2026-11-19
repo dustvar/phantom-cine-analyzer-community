@@ -1,0 +1,934 @@
+{
+  "schema": 1,
+  "profiles": [
+    {
+      "id": "TMX7510",
+      "name": "Phantom TMX7510",
+      "native_pitch_um": 18.5,
+      "active_pixels": [
+        1280,
+        800
+      ],
+      "minimum_fps": 100,
+      "standard_exposure_us": 1.04,
+      "binning_mono_only": true,
+      "roi_increments": {
+        "standard": [
+          256,
+          32
+        ],
+        "binned": [
+          128,
+          64
+        ]
+      },
+      "variants": {
+        "standard": {
+          "label": "Standard",
+          "exposure_us": 1.04
+        },
+        "FAST95": {
+          "label": "FAST \u00b7 95 ns",
+          "exposure_us": 0.095,
+          "features": [
+            "FAST"
+          ]
+        },
+        "FAST38": {
+          "label": "FAST \u00b7 38 ns",
+          "exposure_us": 0.038,
+          "features": [
+            "FAST"
+          ]
+        }
+      },
+      "modes": [
+        {
+          "id": "1280x800-b1",
+          "width": 1280,
+          "height": 800,
+          "binning": 1,
+          "max_fps": 76000,
+          "requires": null
+        },
+        {
+          "id": "1280x640-b1",
+          "width": 1280,
+          "height": 640,
+          "binning": 1,
+          "max_fps": 94590,
+          "requires": null
+        },
+        {
+          "id": "1280x480-b1",
+          "width": 1280,
+          "height": 480,
+          "binning": 1,
+          "max_fps": 126500,
+          "requires": null
+        },
+        {
+          "id": "1280x448-b1",
+          "width": 1280,
+          "height": 448,
+          "binning": 1,
+          "max_fps": 134610,
+          "requires": null
+        },
+        {
+          "id": "1280x384-b1",
+          "width": 1280,
+          "height": 384,
+          "binning": 1,
+          "max_fps": 156710,
+          "requires": null
+        },
+        {
+          "id": "1280x320-b1",
+          "width": 1280,
+          "height": 320,
+          "binning": 1,
+          "max_fps": 187500,
+          "requires": null
+        },
+        {
+          "id": "1280x256-b1",
+          "width": 1280,
+          "height": 256,
+          "binning": 1,
+          "max_fps": 233330,
+          "requires": null
+        },
+        {
+          "id": "1280x192-b1",
+          "width": 1280,
+          "height": 192,
+          "binning": 1,
+          "max_fps": 308820,
+          "requires": null
+        },
+        {
+          "id": "1280x160-b1",
+          "width": 1280,
+          "height": 160,
+          "binning": 1,
+          "max_fps": 375000,
+          "requires": null
+        },
+        {
+          "id": "1280x128-b1",
+          "width": 1280,
+          "height": 128,
+          "binning": 1,
+          "max_fps": 456520,
+          "requires": null
+        },
+        {
+          "id": "1280x64-b1",
+          "width": 1280,
+          "height": 64,
+          "binning": 1,
+          "max_fps": 744670,
+          "requires": null
+        },
+        {
+          "id": "1280x64-b1-FAST",
+          "width": 1280,
+          "height": 64,
+          "binning": 1,
+          "max_fps": 875000,
+          "requires": "FAST"
+        },
+        {
+          "id": "1280x32-b1-FAST",
+          "width": 1280,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 1750000,
+          "requires": "FAST"
+        },
+        {
+          "id": "640x384-b2",
+          "width": 640,
+          "height": 384,
+          "binning": 2,
+          "max_fps": 308820,
+          "requires": null
+        },
+        {
+          "id": "640x320-b2",
+          "width": 640,
+          "height": 320,
+          "binning": 2,
+          "max_fps": 375000,
+          "requires": null
+        },
+        {
+          "id": "640x256-b2",
+          "width": 640,
+          "height": 256,
+          "binning": 2,
+          "max_fps": 456520,
+          "requires": null
+        },
+        {
+          "id": "640x192-b2",
+          "width": 640,
+          "height": 192,
+          "binning": 2,
+          "max_fps": 617640,
+          "requires": null
+        },
+        {
+          "id": "640x128-b2",
+          "width": 640,
+          "height": 128,
+          "binning": 2,
+          "max_fps": 744670,
+          "requires": null
+        },
+        {
+          "id": "640x128-b2-FAST",
+          "width": 640,
+          "height": 128,
+          "binning": 2,
+          "max_fps": 875000,
+          "requires": "FAST"
+        },
+        {
+          "id": "640x64-b2-FAST",
+          "width": 640,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 1750000,
+          "requires": "FAST"
+        }
+      ],
+      "sources": [
+        "https://www.phantomhighspeed.com/products/cameras/tmx/7510",
+        "https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/datasheets/web/ds_web-phantom-tmx-7510-6410-5010-rev6.ashx?download=1"
+      ],
+      "verified_on": "2026-09-24",
+      "notes": [
+        "Published sensor height conflicts: product page 14.8 mm, datasheet 15.4 mm. Geometry uses the 1280\u00d7800 active pixel array and 18.5 \u00b5m pitch (23.68\u00d714.80 mm); physical sensor/die height is not used."
+      ]
+    },
+    {
+      "id": "T2110",
+      "name": "Phantom T2110",
+      "native_pitch_um": 18.5,
+      "active_pixels": [
+        1280,
+        800
+      ],
+      "minimum_fps": 100,
+      "standard_exposure_us": 1.1,
+      "binning_mono_only": true,
+      "roi_increments": {
+        "standard": [
+          256,
+          32
+        ],
+        "binned": [
+          128,
+          64
+        ]
+      },
+      "variants": {
+        "standard": {
+          "label": "Standard",
+          "exposure_us": 1.1
+        },
+        "FAST": {
+          "label": "FAST \u00b7 190 ns",
+          "exposure_us": 0.19,
+          "features": [
+            "FAST"
+          ]
+        },
+        "E225": {
+          "label": "T2110-E225 \u00b7 225,000 fps limit",
+          "exposure_us": 1.1,
+          "max_fps": 225000
+        }
+      },
+      "modes": [
+        {
+          "id": "1280x800-b1",
+          "width": 1280,
+          "height": 800,
+          "binning": 1,
+          "max_fps": 21010,
+          "requires": null
+        },
+        {
+          "id": "1280x640-b1",
+          "width": 1280,
+          "height": 640,
+          "binning": 1,
+          "max_fps": 26460,
+          "requires": null
+        },
+        {
+          "id": "1280x480-b1",
+          "width": 1280,
+          "height": 480,
+          "binning": 1,
+          "max_fps": 34930,
+          "requires": null
+        },
+        {
+          "id": "1280x384-b1",
+          "width": 1280,
+          "height": 384,
+          "binning": 1,
+          "max_fps": 43600,
+          "requires": null
+        },
+        {
+          "id": "1280x320-b1",
+          "width": 1280,
+          "height": 320,
+          "binning": 1,
+          "max_fps": 52250,
+          "requires": null
+        },
+        {
+          "id": "1280x256-b1",
+          "width": 1280,
+          "height": 256,
+          "binning": 1,
+          "max_fps": 65160,
+          "requires": null
+        },
+        {
+          "id": "1280x192-b1",
+          "width": 1280,
+          "height": 192,
+          "binning": 1,
+          "max_fps": 86560,
+          "requires": null
+        },
+        {
+          "id": "1280x128-b1",
+          "width": 1280,
+          "height": 128,
+          "binning": 1,
+          "max_fps": 128880,
+          "requires": null
+        },
+        {
+          "id": "1280x96-b1",
+          "width": 1280,
+          "height": 96,
+          "binning": 1,
+          "max_fps": 170580,
+          "requires": null
+        },
+        {
+          "id": "1280x64-b1",
+          "width": 1280,
+          "height": 64,
+          "binning": 1,
+          "max_fps": 252170,
+          "requires": null
+        },
+        {
+          "id": "1280x32-b1",
+          "width": 1280,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 483330,
+          "requires": null
+        },
+        {
+          "id": "640x384-b2",
+          "width": 640,
+          "height": 384,
+          "binning": 2,
+          "max_fps": 86560,
+          "requires": null
+        },
+        {
+          "id": "640x320-b2",
+          "width": 640,
+          "height": 320,
+          "binning": 2,
+          "max_fps": 103570,
+          "requires": null
+        },
+        {
+          "id": "640x256-b2",
+          "width": 640,
+          "height": 256,
+          "binning": 2,
+          "max_fps": 128880,
+          "requires": null
+        },
+        {
+          "id": "640x192-b2",
+          "width": 640,
+          "height": 192,
+          "binning": 2,
+          "max_fps": 170580,
+          "requires": null
+        },
+        {
+          "id": "640x128-b2",
+          "width": 640,
+          "height": 128,
+          "binning": 2,
+          "max_fps": 252170,
+          "requires": null
+        },
+        {
+          "id": "640x64-b2",
+          "width": 640,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 483330,
+          "requires": null
+        }
+      ],
+      "sources": [
+        "https://www.phantomhighspeed.com/products/cameras/tseries/t2110",
+        "https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/datasheets/web/ds_phantom_high_speed_camera_t3610-t2410-t2110.pdf?download=1"
+      ],
+      "verified_on": "2026-09-24",
+      "notes": []
+    },
+    {
+      "id": "T2410",
+      "name": "Phantom T2410",
+      "native_pitch_um": 18.5,
+      "active_pixels": [
+        1280,
+        800
+      ],
+      "minimum_fps": 100,
+      "standard_exposure_us": 1.1,
+      "binning_mono_only": true,
+      "roi_increments": {
+        "standard": [
+          256,
+          32
+        ],
+        "binned": [
+          128,
+          64
+        ]
+      },
+      "variants": {
+        "standard": {
+          "label": "Standard",
+          "exposure_us": 1.1
+        },
+        "FAST": {
+          "label": "FAST \u00b7 190 ns",
+          "exposure_us": 0.19,
+          "features": [
+            "FAST"
+          ]
+        }
+      },
+      "modes": [
+        {
+          "id": "1280x800-b1",
+          "width": 1280,
+          "height": 800,
+          "binning": 1,
+          "max_fps": 24270,
+          "requires": null
+        },
+        {
+          "id": "1280x640-b1",
+          "width": 1280,
+          "height": 640,
+          "binning": 1,
+          "max_fps": 30310,
+          "requires": null
+        },
+        {
+          "id": "1280x480-b1",
+          "width": 1280,
+          "height": 480,
+          "binning": 1,
+          "max_fps": 40360,
+          "requires": null
+        },
+        {
+          "id": "1280x384-b1",
+          "width": 1280,
+          "height": 384,
+          "binning": 1,
+          "max_fps": 50370,
+          "requires": null
+        },
+        {
+          "id": "1280x320-b1",
+          "width": 1280,
+          "height": 320,
+          "binning": 1,
+          "max_fps": 60360,
+          "requires": null
+        },
+        {
+          "id": "1280x256-b1",
+          "width": 1280,
+          "height": 256,
+          "binning": 1,
+          "max_fps": 75280,
+          "requires": null
+        },
+        {
+          "id": "1280x192-b1",
+          "width": 1280,
+          "height": 192,
+          "binning": 1,
+          "max_fps": 100000,
+          "requires": null
+        },
+        {
+          "id": "1280x128-b1",
+          "width": 1280,
+          "height": 128,
+          "binning": 1,
+          "max_fps": 148880,
+          "requires": null
+        },
+        {
+          "id": "1280x96-b1",
+          "width": 1280,
+          "height": 96,
+          "binning": 1,
+          "max_fps": 197050,
+          "requires": null
+        },
+        {
+          "id": "1280x64-b1",
+          "width": 1280,
+          "height": 64,
+          "binning": 1,
+          "max_fps": 291300,
+          "requires": null
+        },
+        {
+          "id": "1280x32-b1",
+          "width": 1280,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 525000,
+          "requires": null
+        },
+        {
+          "id": "1280x32-b1-FAST",
+          "width": 1280,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 558330,
+          "requires": "FAST"
+        },
+        {
+          "id": "640x384-b2",
+          "width": 640,
+          "height": 384,
+          "binning": 2,
+          "max_fps": 100000,
+          "requires": null
+        },
+        {
+          "id": "640x320-b2",
+          "width": 640,
+          "height": 320,
+          "binning": 2,
+          "max_fps": 119640,
+          "requires": null
+        },
+        {
+          "id": "640x256-b2",
+          "width": 640,
+          "height": 256,
+          "binning": 2,
+          "max_fps": 148880,
+          "requires": null
+        },
+        {
+          "id": "640x192-b2",
+          "width": 640,
+          "height": 192,
+          "binning": 2,
+          "max_fps": 197050,
+          "requires": null
+        },
+        {
+          "id": "640x128-b2",
+          "width": 640,
+          "height": 128,
+          "binning": 2,
+          "max_fps": 291300,
+          "requires": null
+        },
+        {
+          "id": "640x64-b2",
+          "width": 640,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 525000,
+          "requires": null
+        },
+        {
+          "id": "640x64-b2-FAST",
+          "width": 640,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 558330,
+          "requires": "FAST"
+        }
+      ],
+      "sources": [
+        "https://www.phantomhighspeed.com/products/cameras/tseries/t2410",
+        "https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/datasheets/web/ds_phantom_high_speed_camera_t3610-t2410-t2110.pdf?download=1"
+      ],
+      "verified_on": "2026-09-24",
+      "notes": []
+    },
+    {
+      "id": "T3610",
+      "name": "Phantom T3610",
+      "native_pitch_um": 18.5,
+      "active_pixels": [
+        1280,
+        800
+      ],
+      "minimum_fps": 100,
+      "standard_exposure_us": 1.1,
+      "binning_mono_only": true,
+      "roi_increments": {
+        "standard": [
+          256,
+          32
+        ],
+        "binned": [
+          128,
+          64
+        ]
+      },
+      "variants": {
+        "standard": {
+          "label": "Standard",
+          "exposure_us": 1.1
+        },
+        "FAST": {
+          "label": "FAST \u00b7 190 ns",
+          "exposure_us": 0.19,
+          "features": [
+            "FAST"
+          ]
+        }
+      },
+      "modes": [
+        {
+          "id": "1280x800-b1",
+          "width": 1280,
+          "height": 800,
+          "binning": 1,
+          "max_fps": 38040,
+          "requires": null
+        },
+        {
+          "id": "1280x640-b1",
+          "width": 1280,
+          "height": 640,
+          "binning": 1,
+          "max_fps": 46250,
+          "requires": null
+        },
+        {
+          "id": "1280x480-b1",
+          "width": 1280,
+          "height": 480,
+          "binning": 1,
+          "max_fps": 63250,
+          "requires": null
+        },
+        {
+          "id": "1280x384-b1",
+          "width": 1280,
+          "height": 384,
+          "binning": 1,
+          "max_fps": 78940,
+          "requires": null
+        },
+        {
+          "id": "1280x320-b1",
+          "width": 1280,
+          "height": 320,
+          "binning": 1,
+          "max_fps": 94590,
+          "requires": null
+        },
+        {
+          "id": "1280x256-b1",
+          "width": 1280,
+          "height": 256,
+          "binning": 1,
+          "max_fps": 117970,
+          "requires": null
+        },
+        {
+          "id": "1280x192-b1",
+          "width": 1280,
+          "height": 192,
+          "binning": 1,
+          "max_fps": 156710,
+          "requires": null
+        },
+        {
+          "id": "1280x128-b1",
+          "width": 1280,
+          "height": 128,
+          "binning": 1,
+          "max_fps": 233330,
+          "requires": null
+        },
+        {
+          "id": "1280x96-b1",
+          "width": 1280,
+          "height": 96,
+          "binning": 1,
+          "max_fps": 308820,
+          "requires": null
+        },
+        {
+          "id": "1280x64-b1",
+          "width": 1280,
+          "height": 64,
+          "binning": 1,
+          "max_fps": 456520,
+          "requires": null
+        },
+        {
+          "id": "1280x32-b1",
+          "width": 1280,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 525000,
+          "requires": null
+        },
+        {
+          "id": "1280x32-b1-FAST",
+          "width": 1280,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 875000,
+          "requires": "FAST"
+        },
+        {
+          "id": "640x384-b2",
+          "width": 640,
+          "height": 384,
+          "binning": 2,
+          "max_fps": 156710,
+          "requires": null
+        },
+        {
+          "id": "640x320-b2",
+          "width": 640,
+          "height": 320,
+          "binning": 2,
+          "max_fps": 187500,
+          "requires": null
+        },
+        {
+          "id": "640x256-b2",
+          "width": 640,
+          "height": 256,
+          "binning": 2,
+          "max_fps": 233330,
+          "requires": null
+        },
+        {
+          "id": "640x192-b2",
+          "width": 640,
+          "height": 192,
+          "binning": 2,
+          "max_fps": 308820,
+          "requires": null
+        },
+        {
+          "id": "640x128-b2",
+          "width": 640,
+          "height": 128,
+          "binning": 2,
+          "max_fps": 456520,
+          "requires": null
+        },
+        {
+          "id": "640x64-b2",
+          "width": 640,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 525000,
+          "requires": null
+        },
+        {
+          "id": "640x64-b2-FAST",
+          "width": 640,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 875000,
+          "requires": "FAST"
+        }
+      ],
+      "sources": [
+        "https://www.phantomhighspeed.com/products/cameras/tseries/t3610",
+        "https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/datasheets/web/ds_phantom_high_speed_camera_t3610-t2410-t2110.pdf?download=1"
+      ],
+      "verified_on": "2026-09-24",
+      "notes": [
+        "T3610 at 1280\u00d7640: product page says 46,250 fps; datasheet says 47,510 fps. Conservative 46,250 ceiling used pending hardware confirmation."
+      ]
+    },
+    {
+      "id": "T4040",
+      "name": "Phantom T4040",
+      "native_pitch_um": 9.27,
+      "active_pixels": [
+        2560,
+        1664
+      ],
+      "minimum_fps": 100,
+      "standard_exposure_us": 1.04,
+      "binning_mono_only": true,
+      "roi_increments": {
+        "standard": [
+          512,
+          32
+        ],
+        "binned": [
+          256,
+          64
+        ]
+      },
+      "variants": {
+        "standard": {
+          "label": "Standard",
+          "exposure_us": 1.04
+        },
+        "FAST": {
+          "label": "FAST \u00b7 250 ns",
+          "exposure_us": 0.25,
+          "features": [
+            "FAST"
+          ]
+        }
+      },
+      "modes": [
+        {
+          "id": "2560x1664-b1",
+          "width": 2560,
+          "height": 1664,
+          "binning": 1,
+          "max_fps": 9350,
+          "requires": null
+        },
+        {
+          "id": "1536x1536-b1",
+          "width": 1536,
+          "height": 1536,
+          "binning": 1,
+          "max_fps": 10130,
+          "requires": null
+        },
+        {
+          "id": "2560x1440-b1",
+          "width": 2560,
+          "height": 1440,
+          "binning": 1,
+          "max_fps": 10810,
+          "requires": null
+        },
+        {
+          "id": "2048x1152-b1",
+          "width": 2048,
+          "height": 1152,
+          "binning": 1,
+          "max_fps": 13510,
+          "requires": null
+        },
+        {
+          "id": "2560x256-b1",
+          "width": 2560,
+          "height": 256,
+          "binning": 1,
+          "max_fps": 60500,
+          "requires": null
+        },
+        {
+          "id": "2560x32-b1",
+          "width": 2560,
+          "height": 32,
+          "binning": 1,
+          "max_fps": 444440,
+          "requires": null
+        },
+        {
+          "id": "1280x832-b2",
+          "width": 1280,
+          "height": 832,
+          "binning": 2,
+          "max_fps": 37200,
+          "requires": null
+        },
+        {
+          "id": "1280x640-b2",
+          "width": 1280,
+          "height": 640,
+          "binning": 2,
+          "max_fps": 48190,
+          "requires": null
+        },
+        {
+          "id": "1024x512-b2",
+          "width": 1024,
+          "height": 512,
+          "binning": 2,
+          "max_fps": 60150,
+          "requires": null
+        },
+        {
+          "id": "768x256-b2",
+          "width": 768,
+          "height": 256,
+          "binning": 2,
+          "max_fps": 119400,
+          "requires": null
+        },
+        {
+          "id": "1280x128-b2",
+          "width": 1280,
+          "height": 128,
+          "binning": 2,
+          "max_fps": 228570,
+          "requires": null
+        },
+        {
+          "id": "1280x64-b2",
+          "width": 1280,
+          "height": 64,
+          "binning": 2,
+          "max_fps": 444440,
+          "requires": null
+        }
+      ],
+      "sources": [
+        "https://www.phantomhighspeed.com/products/cameras/tseries/t4040",
+        "https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/datasheets/web/ds_web-t4040.pdf?download=1"
+      ],
+      "verified_on": "2026-09-24",
+      "notes": [
+        "Verified common presets only; other hardware-supported resolutions are not inferred."
+      ]
+    }
+  ]
+}

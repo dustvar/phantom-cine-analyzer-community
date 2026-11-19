@@ -1,0 +1,3 @@
+# Standard OpenCV suffices. Do not install multiple cv2 wheel variants together.
+numpy==2.2.0
+opencv-python-headless==4.11.0.86

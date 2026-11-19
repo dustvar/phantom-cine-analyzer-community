@@ -11,3 +11,10 @@ calculations or styling as part of unrelated UI or tracking work.
 
 All contributions must be compatible with the repository's Non-Commercial Open
 Source License.
+
+## Publishing updates
+
+Publish completed PCA source updates to the existing personal GitHub repository,
+`dustvar/phantom-cine-analyzer-community`. Run the regression tests, document
+user-visible changes, and review the files being published. Push the reviewed
+commit to `main` as a fast-forward and verify the remote commit ID.

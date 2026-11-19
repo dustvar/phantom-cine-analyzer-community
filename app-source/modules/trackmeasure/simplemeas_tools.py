@@ -1,11 +1,16 @@
+from tracking_geometry import search_constraint as make_search_constraint, search_bounds
 from abc import ABC, abstractmethod
 from calibration import CalSpace
 from PySide6.QtGui import *
 import numpy as np
 from autotrackalgorithms import AutoTrackAlgorithms, AutoTrackException
+from edge_tracking import EdgeMatchCache
 from collections import OrderedDict
+from tumbling_tracker import TUMBLING_TRACKING_METHOD, TrackerSettings
+from tumbling_pca_adapter import run_tumbling_track
 import logging
 import math
+import time
 
 SUBPIXEL_VALS = {'1.0 pix': 1, '1/2 pix': 2, '1/3 pix': 3, '1/4 pix': 4, '1/5 pix': 5, '1/6 pix': 6, '1/7 pix': 7, '1/8 pix': 8, '1/9 pix': 9, '1/10 pix': 10}
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
@@ -79,6 +84,18 @@ class ScaleTool(BaseTool):
     def __init__(self, vm):
         super().__init__(vm)
         self._point_target = 2
+
+    def collect_points(self, point, frame_id):
+        # Calibration uses the same fractional source coordinates as precision
+        # tracking. The base measurement picker rounds to whole pixels.
+        self.points.append((float(point[0]), float(point[1])))
+        self.points_frame_ids.append(frame_id)
+        if len(self.points) >= self._point_target:self.evaluate()
+
+    def clear_points(self):
+        cleared=super().clear_points()
+        if cleared:self.points_frame_ids=[]
+        return cleared
         
     def evaluate(self):
         super().evaluate()
@@ -151,7 +168,7 @@ class TrackTool(BaseTool):
         if self.track_select:
             # make a new object
             self.track_select = False
-            new_id = len(self.vm.track_data)
+            new_id = max(self.vm.track_data, default=-1) + 1
             tracking_method = getattr(self.vm, 'pending_tracking_method', None) or CLASSIC_TRACKING_METHOD
             is_hybrid = tracking_method == HYBRID_TRACKING_METHOD
             score = 'N/A' 
@@ -190,6 +207,12 @@ class TrackTool(BaseTool):
                         'angle': 0.0,
                     }
                 }
+            if tracking_method == TUMBLING_TRACKING_METHOD:
+                new_t.update(tumbling=TrackerSettings().to_dict(), tumbling_seed=tuple(point),
+                             tumbling_observations={}, update_template_enable=False,
+                             tpl_rng=(61,61), measurement_kind='Projected silhouette centroid')
+                new_t['angles'][:]=np.nan
+                new_t['t_angles'][:]=np.nan
             self.vm.track_data[new_id] = new_t
             self.vm.active_object = new_id
             self.draw_all(points=point)
@@ -204,6 +227,8 @@ class TrackTool(BaseTool):
                 t_ids = [self.vm.active_object]
             if len(t_ids) > 0:
                 for id in t_ids:
+                    if point == (-1, -1) and getattr(self.vm, 'abort_autotrack', False):
+                        break
                     self.vm.format_progress.emit(self.vm.track_data[id]['name'])
                     self.process_template(self.vm.track_data[id], point, frame_id)
                 self.draw_all(points=point)
@@ -416,8 +441,17 @@ class AutoTrackTool(TrackTool):
         super().__init__(vm)
 
     def process_template(self, template, point, frame_id):
+        if template.get('tracking_method') == TUMBLING_TRACKING_METHOD:
+            if point == (-1, -1):
+                run_tumbling_track(self, template)
+            else:
+                self.vm.update_status_text.emit('Tumbling measures the silhouette centroid. Use Setup to adjust its mask, or add a new object to choose another seed.')
+            return
         self.fail_cnt = 0
         if point == (-1,-1):
+            # Candidate reset may narrow displayed results to the anchor. Keep
+            # the user's processing bounds separate from those detected bounds.
+            requested_start,requested_end=template['start'],template['end']
             if template.get('tracking_method') == HYBRID_TRACKING_METHOD:
                 self.prepare_hybrid_candidates(template)
             # parameterize dictionary items
@@ -439,6 +473,11 @@ class AutoTrackTool(TrackTool):
                 # matched against itself, because a self-correlation always
                 # looks artificially perfect and is not useful confidence data.
                 final_frame = self.vm.cine_handler.metadata.ImageCount - 1
+                first_frame = 0
+                if template.get('frames_enable',False):
+                    first_image=int(self.vm.cine_handler.metadata.FirstImageNo)
+                    first_frame=max(0,int(requested_start)-first_image)
+                    final_frame=min(final_frame,int(requested_end)-first_image)
                 if anchor_fr < final_frame:
                     template = self.track(
                         anchor_fr + 1, final_frame, template,
@@ -446,10 +485,10 @@ class AutoTrackTool(TrackTool):
                     )
                 else:
                     self.vm.update_progress.emit(50)
-                if anchor_fr > 0:
+                if anchor_fr > first_frame:
                     template = self.track(
                         anchor_fr - 1,
-                        0,
+                        first_frame,
                         template,
                         progress_offset=50,
                         progress_span=50,
@@ -470,8 +509,8 @@ class AutoTrackTool(TrackTool):
                 return template
 
             enable_fr = template['frames_enable']
-            start_fr = template['start'] - int(self.vm.cine_handler.metadata.FirstImageNo)
-            last_fr = template['end'] - int(self.vm.cine_handler.metadata.FirstImageNo)
+            start_fr = requested_start - int(self.vm.cine_handler.metadata.FirstImageNo)
+            last_fr = requested_end - int(self.vm.cine_handler.metadata.FirstImageNo)
 
             # preprocess the parameters
             if enable_fr and (start_fr not in template['frames']):
@@ -595,6 +634,34 @@ class AutoTrackTool(TrackTool):
 
         cfa = self.vm.cine_handler.metadata.CFA
         bpp = self.vm.cine_handler.metadata.RealBPP
+        # Keep a bounded reference cache for this pass. Previously each step
+        # reread the unchanged setup frame, producing a backward disk seek
+        # between every pair of sequential Cine frames on external drives.
+        mono_cache = OrderedDict()
+        cache_bytes = 0
+        def mono_frame(frame):
+            nonlocal cache_bytes
+            frame = int(frame)
+            if frame in mono_cache:
+                mono_cache.move_to_end(frame)
+                return mono_cache[frame]
+            raw = self.vm.cine_handler.get_img(frame)
+            image = self.vm.image_tools.debayer(
+                np.array(raw, dtype=np.float32), cfa, bpp, force_mono=1)
+            if image.nbytes <= 64*1024*1024:
+                while mono_cache and (len(mono_cache) >= 2 or cache_bytes+image.nbytes > 64*1024*1024):
+                    _, dropped = mono_cache.popitem(last=False)
+                    cache_bytes -= dropped.nbytes
+                mono_cache[frame] = image
+                cache_bytes += image.nbytes
+            return image
+        # An unchanged Classic template needs only its tiny extracted patch;
+        # retain it even if unusually large full frames exceed the cache cap.
+        classic_patch_key = None
+        classic_patch = None
+        last_progress = None
+        last_status_time = 0.0
+        edge_cache = EdgeMatchCache() if tracking_method == HYBRID_TRACKING_METHOD else None
         setup_patch = None
         anchor_refinement_patch = None
         anchor_refinement_radius = 0
@@ -609,10 +676,7 @@ class AutoTrackTool(TrackTool):
             anchor_center = anchor_point + _rotate_tracking_offset(
                 template_offset, anchor_angle
             )
-            anchor_img = self.vm.cine_handler.get_img(anchor_frame)
-            anchor_img = self.vm.image_tools.debayer(
-                np.array(anchor_img, dtype=np.float32), cfa, bpp, force_mono=1
-            )
+            anchor_img = mono_frame(anchor_frame)
             setup_patch = AutoTrackAlgorithms.extract_oriented_patch(
                 anchor_img, anchor_center, tpl_rng, -anchor_angle
             )
@@ -649,7 +713,9 @@ class AutoTrackTool(TrackTool):
                     + 0.5
                 )
                 progress = int(np.clip(progress, 0, 100))
-                self.vm.update_progress.emit(progress)
+                if progress != last_progress:
+                    self.vm.update_progress.emit(progress)
+                    last_progress = progress
 
                 # get most recent template point and frame
                 t_index = -1
@@ -693,7 +759,15 @@ class AutoTrackTool(TrackTool):
                         template['t_points'][t_index], dtype=float
                     )
                     reference_angle = float(template['t_angles'][t_index])
-                    tpl_center = tracked_template_point
+                    tpl_center = tracked_template_point + template_offset
+                    sa_center = sa_center + template_offset
+                constraint = make_search_constraint(template,sa_center,previous_angle) if enable_sa and template.get('search_geometry_version') else None
+                if not enable_sa and template.get('motion_axis','xy')!='xy':
+                    constraint=make_search_constraint(template,sa_center,previous_angle)
+                    width,height=self.vm.cine_handler.metadata.ImWidth,self.vm.cine_handler.metadata.ImHeight
+                    constraint.update(center=((width-1)/2,(height-1)/2),size=(width,height),angle=0.)
+                if enable_sa and constraint is None:
+                    sa_center = sa_center + np.asarray(template.get('search_offset', (0., 0.)), dtype=float)
                 if not enable_sa:
                     sa_center = (math.floor(sa_rng[0]/2), math.floor(sa_rng[1]/2))
 
@@ -706,7 +780,9 @@ class AutoTrackTool(TrackTool):
                     self.vm.cine_handler.metadata.ImWidth,
                     self.vm.cine_handler.metadata.ImHeight,
                 )
-                if tracking_method == HYBRID_TRACKING_METHOD:
+                if constraint is not None:
+                    tl_sa,br_sa,sa_center,frame_sa_rng=search_bounds(constraint['center'],constraint['size'],constraint['angle'],frame_size)
+                elif tracking_method == HYBRID_TRACKING_METHOD:
                     tl_sa, br_sa, sa_center, frame_sa_rng = self._fit_search_area_to_frame(
                         sa_center, sa_rng, frame_size
                     )
@@ -722,8 +798,8 @@ class AutoTrackTool(TrackTool):
 
                 if tracking_method != HYBRID_TRACKING_METHOD:
                     not_in_range = [any(x < 0 for x in tl_sa),
-                                    br_sa[0] >= self.vm.cine_handler.metadata.ImWidth,
-                                    br_sa[1] >= self.vm.cine_handler.metadata.ImHeight,
+                                    br_sa[0] > self.vm.cine_handler.metadata.ImWidth,
+                                    br_sa[1] > self.vm.cine_handler.metadata.ImHeight,
                                     any(x < 0 for x in tl_tpl),
                                     br_tpl[0] >= self.vm.cine_handler.metadata.ImWidth,
                                     br_tpl[1] >= self.vm.cine_handler.metadata.ImHeight ]
@@ -733,16 +809,12 @@ class AutoTrackTool(TrackTool):
 
                 # crop sa and tpl
                 # if color, debayer the image into a 1 channel mono for tracking. no op for Mono cfa
-                current_img = self.vm.cine_handler.get_img(fr)
-                current_img = self.vm.image_tools.debayer(
-                    np.array(current_img, dtype=np.float32), cfa, bpp, force_mono=1
-                )
+                current_img = mono_frame(fr)
                 sa_img = current_img[tl_sa[1]:br_sa[1], tl_sa[0]:br_sa[0]]
 
                 # if color, debayer the image into a 1 channel mono for tracking. no op for Mono cfa
-                tpl_img = self.vm.cine_handler.get_img(t_frame)
-                tpl_img = self.vm.image_tools.debayer(np.array(tpl_img, dtype=np.float32), cfa, bpp, force_mono=1)
                 if tracking_method == HYBRID_TRACKING_METHOD:
+                    tpl_img = mono_frame(t_frame)
                     adjacent_patch = AutoTrackAlgorithms.extract_oriented_patch(
                         tpl_img,
                         tpl_center,
@@ -750,8 +822,12 @@ class AutoTrackTool(TrackTool):
                         -reference_angle,
                     )
                 else:
-                    # Preserve the original PCA Classic template crop exactly.
-                    tpl_img = tpl_img[tl_tpl[1]:br_tpl[1], tl_tpl[0]:br_tpl[0]]
+                    key = (int(t_frame), tl_tpl, br_tpl)
+                    if key != classic_patch_key:
+                        source = current_img if int(t_frame) == int(fr) else mono_frame(t_frame)
+                        classic_patch = source[tl_tpl[1]:br_tpl[1], tl_tpl[0]:br_tpl[0]].copy()
+                        classic_patch_key = key
+                    tpl_img = classic_patch
 
                 # run cross correlation to get expected location
                 if tracking_method == HYBRID_TRACKING_METHOD:
@@ -770,7 +846,9 @@ class AutoTrackTool(TrackTool):
                                             edge_weight=edge_weight,
                                             edge_threshold=edge_threshold,
                                             position_precision=position_precision,
-                                            angle_precision=angle_precision)
+                                            angle_precision=angle_precision,
+                                            template_cache=edge_cache,
+                                            **({'search_constraint':constraint} if constraint is not None else {}))
                     candidate_center = (float(data.x_pos), float(data.y_pos))
                     if not self._oriented_region_within_frame(
                         candidate_center,
@@ -811,6 +889,7 @@ class AutoTrackTool(TrackTool):
                         rotation_step=rotation_step,
                         edge_weight=edge_weight,
                         edge_threshold=edge_threshold,
+                        template_cache=edge_cache,
                     )
                     adjacent_score = float(adjacent_data.confid_val_ij)
                     setup_data = AutoTrackAlgorithms.hybrid_pattern_matcher(
@@ -823,6 +902,7 @@ class AutoTrackTool(TrackTool):
                         rotation_step=rotation_step,
                         edge_weight=edge_weight,
                         edge_threshold=edge_threshold,
+                        template_cache=edge_cache,
                     )
                     setup_score = float(setup_data.confid_val_ij)
                     setup_confidence_weight = 1.0 - adjacent_confidence_weight
@@ -845,9 +925,17 @@ class AutoTrackTool(TrackTool):
                                             tpl_img=tpl_img, 
                                             sa_img=sa_img, 
                                             sa_center=tuple(sa_center),
-                                            sa_rng=sa_rng,
+                                            sa_rng=frame_sa_rng,
                                             sub_pixel=subpixel,
-                                            sub_pixel_type=subpixel_type)
+                                            sub_pixel_type=subpixel_type,
+                                            # The integer crop can be centered
+                                            # fractionally away from the picked
+                                            # point. Preserve that fixed offset
+                                            # instead of snapping the track.
+                                            template_center_offset=(
+                                                tpl_center[0]-(tl_tpl[0]+(tpl_rng[0]-1)/2),
+                                                tpl_center[1]-(tl_tpl[1]+(tpl_rng[1]-1)/2)),
+                                            **({'search_constraint':constraint} if constraint is not None else {}))
                     data.angle_deg = reference_angle
 
                 score = round(float(data.confid_val_ij), 3)
@@ -857,7 +945,7 @@ class AutoTrackTool(TrackTool):
                     # its pose back to the exact point selected by the user.
                     point -= _rotate_tracking_offset(template_offset, data.angle_deg)
                     refinement = None
-                    if anchor_refinement_patch is not None:
+                    if anchor_refinement_patch is not None and template.get('motion_axis','xy')=='xy':
                         refinement = AutoTrackAlgorithms.refine_anchor_point(
                             anchor_refinement_patch,
                             current_img,
@@ -878,6 +966,11 @@ class AutoTrackTool(TrackTool):
                             if refinement is not None
                             else None
                         )
+                else:
+                    point -= template_offset
+                if constraint is not None and constraint['motion_axis']!='xy':
+                    fixed=0 if constraint['motion_axis']=='y' else 1
+                    point[fixed]=constraint['anchor_point'][fixed]
                 point = tuple(point)
 
                 if tracking_method == HYBRID_TRACKING_METHOD:
@@ -914,9 +1007,13 @@ class AutoTrackTool(TrackTool):
                         f'angle {data.angle_deg:.2f}°'
                     )
                 else:
-                    self.vm.update_status_text.emit(
-                        f'{template["name"]} track complete. Angle: {data.angle_deg:.2f}°'
-                    )
+                    now = time.monotonic()
+                    if now-last_status_time >= .2 or i == len(fr_rng)-1:
+                        native_frame = int(fr)+int(self.vm.cine_handler.metadata.FirstImageNo)
+                        self.vm.update_status_text.emit(
+                            f'{template["name"]}: frame {native_frame:,} '
+                            f'({i+1:,}/{len(fr_rng):,}), confidence {score:.3f}')
+                        last_status_time = now
 
             except (SearchAreaOutOfRange, AutoTrackException) as e:
                 if smart_frames:
