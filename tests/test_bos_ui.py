@@ -170,6 +170,10 @@ class BOSWorkspaceTests(unittest.TestCase):
             self.assertTrue(p.vector_options.isVisible())
             self.assertTrue(p.save_vectors.isEnabled())
             self.assertEqual(p.vector_background.currentData(), 'map')
+            self.assertGreaterEqual(p.vector_density.findData('ultra_dense'), 0)
+            self.assertRegex(p.vector_density.currentText(), r'^Up to [0-9,]+$')
+            samples = p.last_result['vector_samples']
+            self.assertIn(f'{len(samples.x):,} arrows', p.quality.text())
             p.vector_background.setCurrentIndex(p.vector_background.findData('footage'))
             p.vector_density.setCurrentIndex(p.vector_density.findData('dense'))
             self.wait(lambda: self.ready_at(2))

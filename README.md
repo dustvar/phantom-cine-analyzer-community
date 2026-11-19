@@ -10,6 +10,11 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
+- **BOS Record Studio (1.14.11).** Edit the overlay, vectors, speed and titles
+  on stacked tracks with a shared movie-time ruler. Position titles and the
+  displacement key directly on the picture. Camera captions can include the
+  recorded model, exposure and resolution. See the [BOS guide](docs/BOS_DETAIL.md).
+
 - **BOS range sampling (1.14.10).** Choose how many frames to analyze, with
   guidance based on the slowest planned playback rate and the desired output
   cadence. Record Studio keeps the source timing and frame numbers. Vector
@@ -162,7 +167,7 @@ Development requires access to the pyphantom helper packages listed in
 `environment.yml`. The native build uses the versions in
 `packaging/runtime-requirements.txt`.
 
-The native Mac app is at 1.14.10. The Windows x64 packaging notes describe the
+The native Mac app is at 1.14.11. The Windows x64 packaging notes describe the
 previously prepared portable build (1.14.3). See [startup and Windows portability](docs/STARTUP_AND_WINDOWS.md) for
 runtime requirements, per-user settings, packaging and validation limits.
 

@@ -480,3 +480,9 @@ BOS Vector Studio 1.14.9
 BOS range sampling 1.14.10
 - Analyze Range can measure every frame or spaced source frames, with estimated counts and playback guidance. Sampled results preserve source timing, native frame numbers, and both marked endpoints in the analyzed player and Record Studio.
 - Added optional outlines and a 0.5 source-pixel arrow stroke to live and analyzed vector appearance.
+
+BOS Record Studio 1.14.11
+- Stacked, selectable overlay, vector, speed and text tracks now share a finished-movie seconds ruler and Split tool. Retiming changes section widths across all tracks.
+- Titles start centered and can be placed and resized on the picture, along with the calibrated vector key. Split titles have independent placement and content.
+- Optional camera model, exposure, resolution and native Cine frame labels travel with cached results. Per-frame exposure is used when recorded.
+- The five arrow choices show site counts for the current region, including a new maximum of up to twice the previous densest setting. A softened magnitude background and opposite-contrast arrows appear when the color map is hidden.

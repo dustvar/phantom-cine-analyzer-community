@@ -10,12 +10,15 @@ import cv2
 import numpy as np
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QPoint, QPointF, Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog
 from bos_frames import BOSFrames, default_bos_settings
 from bos_preview import prepare_bos_preview, export_cached_bos
 from bos_preview_ui import BOSPreviewWindow
 from bos_studio_model import StudioEdit
+from bos_studio_cards import composite_card
+from bos_studio_text import StudioText
 from bos_vector_controls import VectorAppearance
 from bos_vectors import VectorStyle
 from test_bos_motion import texture, write_frames
@@ -144,13 +147,124 @@ class IndependentVectorTrackTests(unittest.TestCase):
             w.seek(5)
             settled()
             with clip.reader() as reader:
-                np.testing.assert_array_equal(w.view._pixels, reader.blended(5,0,255,w.edit_model.vector_style))
+                np.testing.assert_array_equal(w.view._pixels, reader.blended(5,0,255,w.edit_model.vector_style, include_key=False))
+                self.assertIsNotNone(w.view.vector_key_card)
             w.vectors.setChecked(False)
             settled()
             with clip.reader() as reader:
                 np.testing.assert_array_equal(w.view._pixels, reader.read(5, False))
+                self.assertIsNone(w.view.vector_key_card)
         finally:
             w.close()
             while not w.cleaned:
                 app.processEvents()
                 time.sleep(.005)
+
+    def test_canvas_text_and_calibrated_key_remain_editable_and_export_from_cache(self):
+        app = QApplication.instance() or QApplication([])
+        clip = prepare_bos_preview(self.settings, 1, 7, root=self.root/'cache')
+        self.source.unlink()
+        window = BOSPreviewWindow(None, clip)
+        window.resize(920, 700)
+        window.show()
+        def wait():
+            until = time.monotonic()+5
+            while time.monotonic() < until:
+                app.processEvents()
+                if window.position >= 0 and window.pending_seek is None:
+                    return
+                QTest.qWait(5)
+            self.fail('Cached preview seek timed out')
+        def drag(a, b):
+            QTest.mousePress(window.view, Qt.LeftButton, pos=a)
+            QTest.mouseMove(window.view, b)
+            QTest.mouseRelease(window.view, Qt.LeftButton, pos=b)
+            app.processEvents()
+        try:
+            wait()
+            window.resize(560, 700)
+            app.processEvents()
+            self.assertTrue(window.direction_swatch.isHidden())
+            self.assertGreaterEqual(window.header_title.width(),window.header_title.sizeHint().width())
+            self.assertGreaterEqual(window.sample_summary.width(),window.sample_summary.sizeHint().width())
+            window.resize(920, 700)
+            app.processEvents()
+            self.assertFalse(window.direction_swatch.isHidden())
+            window.studio_button.click()
+            studio = window.studio
+            studio.tabs[2].click()
+            def add_title():
+                dlg = app.activeModalWidget()
+                dlg.checks['frame'].setChecked(False)
+                dlg.caption.setPlainText('Sunrise')
+                dlg.accept()
+            QTimer.singleShot(0, add_title)
+            studio.add.click()
+            app.processEvents()
+            view = window.view
+            self.assertLess((view.card_view_rect('text').center()-view.image_rect().center()).manhattanLength(),3)
+            original_key = view.card_view_rect('vector_key')
+            self.assertLess((original_key.bottomRight()-view.image_rect().bottomRight()).manhattanLength(),25)
+            for name, delta in [('text', QPoint(-66,-43)),('vector_key', QPoint(-64,-38))]:
+                initial = view.card_view_rect(name)
+                drag(initial.center().toPoint(), initial.center().toPoint()+delta)
+                moved = view.card_view_rect(name)
+                self.assertLess((moved.center()-initial.center()-delta).manhattanLength(),4)
+                self.assertEqual(view.selected_card, name)
+                pos = (moved.topLeft()+QPointF(2,2)).toPoint()
+                drag(pos, pos-QPoint(34,20))
+                resized = view.card_view_rect(name)
+                self.assertGreater(resized.width(),moved.width()+5)
+                self.assertLess((resized.bottomRight()-moved.bottomRight()).manhattanLength(),4)
+            first_title = studio.text_settings()
+            self.assertIn('anchor',first_title)
+            self.assertGreater(window.vector_key_placement.scale,1.)
+            window.seek(3)
+            wait()
+            studio.tabs[2].click()
+            studio.split.click()
+            view = window.view
+            pos = view.card_view_rect('text').center().toPoint()
+            drag(pos,pos+QPoint(92,0))
+            both = studio.text_settings()
+            self.assertEqual(both['blocks'][0]['anchor'],first_title['anchor'])
+            self.assertNotEqual(both['blocks'][1]['anchor'],first_title['anchor'])
+            window.compass_button.setChecked(False)
+            studio.tabs[3].click()
+            studio.fade_in.setValue(.12)
+            window.edit_model.set_all_rates(5)
+            window.edit_model.set_fades(0,.4,0,'vectors')
+            window._studio_changed()
+            wait()
+            renderer = StudioText(clip,both,window.capture_fps)
+            movie = self.root/'placed.mp4'
+            export_cached_bos(clip, movie, 5, studio=window.edit_model, vector_key=window.vector_key_placement,
+                              text_renderer=renderer.composite)
+            cap = cv2.VideoCapture(str(movie))
+            try:
+                for index in range(clip.count):
+                    window.seek(index)
+                    wait()
+                    expected = window.view._pixels.copy()
+                    composite_card(expected,view.vector_key_card)
+                    composite_card(expected,view.text_card)
+                    ok,bgr = cap.read()
+                    self.assertTrue(ok)
+                    diff = np.abs(cv2.cvtColor(bgr,cv2.COLOR_BGR2RGB).astype(float)-expected)
+                    self.assertLess(diff.mean(),9)
+                    if index==0:
+                        self.assertIsNone(view.vector_key_card)
+                    if index==1:
+                        self.assertAlmostEqual(float(view.vector_key_card[0][0,0,3]),255*.45,delta=1)
+                    for card in (view.text_card,view.vector_key_card):
+                        if card is not None:
+                            x,y,w,h = card[1]
+                            self.assertLess(diff[y:y+h,x:x+w].mean(),9)
+                self.assertFalse(cap.read()[0])
+            finally:
+                cap.release()
+        finally:
+            window.close()
+            while not window.cleaned:
+                app.processEvents()
+                QTest.qWait(2)

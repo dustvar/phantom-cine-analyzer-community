@@ -1,4 +1,5 @@
 """Build the same source-space title and data card for BOS playback and sharing."""
+from bisect import bisect_right
 from functools import lru_cache
 import math
 import textwrap
@@ -9,6 +10,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from bos_sampling import RangeSampling
+from bos_camera_labels import camera_lines
+from bos_studio_cards import card_rect, composite_card
 from viewer_overlay import _font
 
 
@@ -63,7 +66,10 @@ class StudioText:
         self.sampling = getattr(clip, 'sampling', RangeSampling(clip.count))
         self.settings = dict(settings)
         self.capture = capture_fps
-        self.fields = frozenset(settings.get('fields', ()))
+        self.blocks = tuple(StudioText(clip, child, capture_fps) for child in settings.get('blocks', ()))
+        self._starts = [card.settings['first'] for card in self.blocks]
+        self.fields = (frozenset().union(*(card.fields for card in self.blocks)) if self.blocks
+                       else frozenset(settings.get('fields', ())))
         self.size = {'small': 2.7, 'medium': 3.8, 'large': 5.3}[settings['size']]
         line_width = max(8, int(.88*clip.width / (max(9, clip.height*self.size/100)*.65)))
         self.caption = []
@@ -73,7 +79,17 @@ class StudioText:
         # Static titles and duplicate presentation frames reuse a small sprite.
         self._graphic = lru_cache(maxsize=2)(self._render)
 
+    def at(self, index):
+        if self.blocks:
+            pos = bisect_right(self._starts, index)-1
+            return self.blocks[pos].at(index) if pos >= 0 else None
+        return self if self.settings['first'] <= index <= self.settings['last'] and self.fields else None
+
     def lines(self, index, fps):
+        if self.blocks:
+            card = self.at(index)
+            return card.lines(index, fps) if card else ()
+
         if not self.fields or not self.settings['first'] <= index <= self.settings['last']:
             return ()
         lines = self.caption.copy()
@@ -93,11 +109,15 @@ class StudioText:
             else:
                 value, label = (factor, 'slower') if factor > 1 else (1/factor, 'faster')
                 lines.append(f'{value:,.2f}'.rstrip('0').rstrip('.') + f'× {label}')
+        lines.extend(camera_lines(self.clip, self.fields, index))
         if 'time' in self.fields and math.isfinite(self.clip.times[index]):
             lines.append(f't = {self.clip.times[index]:+,.2f} µs')
         return tuple(lines)
 
     def graphic(self, index, fps):
+        if self.blocks:
+            child = self.at(index)
+            return child.graphic(index, fps) if child else None
         lines = self.lines(index, fps)
         return self._graphic(lines) if lines else None
 
@@ -106,14 +126,15 @@ class StudioText:
         margin = round(min(width, height)*.022)
         available_w = max(1, width-2*margin)
         available_h = max(1, height-2*margin)
-        size = max(9, round(available_h*self.size/100))
+        size = max(1, round(max(9, round(available_h*self.size/100))*self.settings.get('scale', 1.)))
         # Only the frame counter and trigger timestamp vary continuously. Cache
         # all other lines as complete runs, including the user’s own caption.
         dynamic = set()
         if 'frame' in self.fields:
             dynamic.add(len(self.caption))
-        if 'time' in self.fields and lines[-1].startswith('t = '):
-            dynamic.add(len(lines)-1)
+        for i, line in enumerate(lines[len(self.caption):], len(self.caption)):
+            if line.startswith(('t = ', 'Cine frame ', 'Exposure ')):
+                dynamic.add(i)
         tokens = [_NUMBER_RUNS.findall(line) if i in dynamic else [line] for i,line in enumerate(lines)]
         while True:
             pad = max(1, round(size*.3))
@@ -138,14 +159,8 @@ class StudioText:
                 left += run.shape[1]
             top += row_height + gap
         ax, ay = {'top_left': (0, 0), 'top_right': (1, 0), 'bottom_left': (0, 1),
-                  'bottom_right': (1, 1), 'center': (.5, .5)}[self.settings['position']]
-        return sprite, (margin+round(ax*(available_w-w)), margin+round(ay*(available_h-h)), w, h)
+                  'bottom_right': (1, 1), 'center': (.5, .5)}[self.settings.get('position','center')]
+        return sprite, card_rect(width, height, w, h, self.settings.get('anchor'), (ax, ay), margin)
 
     def composite(self, image, index, fps):
-        card = self.graphic(index, fps)
-        if card is not None:
-            sprite, (x,y,w,h) = card
-            patch = image[y:y+h,x:x+w]
-            alpha = sprite[:,:,3:4].astype(np.uint16)
-            patch[:] = (sprite[:,:,:3]*alpha + patch*(255-alpha) + 127)//255
-        return image
+        return composite_card(image, self.graphic(index, fps))

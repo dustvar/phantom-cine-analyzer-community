@@ -28,7 +28,9 @@ class StudioTimelineTests(unittest.TestCase):
         self.app.processEvents()
         self.track = self.panel.track
 
-    def point(self, frame, y=32):
+    def point(self, frame, y=None):
+        if y is None:
+            y = round(self.track.lane().center().y())
         return QPoint(round(self.track.x_for(frame)), y)
 
     def drag(self, begin, end):
@@ -79,7 +81,15 @@ class StudioTimelineTests(unittest.TestCase):
         p.speed.setValue(240)
         self.assertAlmostEqual(self.model.duration, 2.25)
         self.assertEqual(p.duration_label.text(), 'Length 0:02.25')
-        self.drag(60.3, 40.3)
+        # The cut stays under the handle as the new speed mix changes total length.
+        target_fraction = (40/30) / (40/30 + 80/240)
+        lane = self.track.lane()
+        offset = self.track.x_for(60.3) - self.track.x_for(60)
+        begin = self.point(60.3)
+        end = QPoint(round(lane.left()+lane.width()*target_fraction+offset), begin.y())
+        QTest.mousePress(self.track, Qt.LeftButton, pos=begin)
+        QTest.mouseMove(self.track, end)
+        QTest.mouseRelease(self.track, Qt.LeftButton, pos=end)
         self.assertEqual(self.model.speeds[0].last, 39)
         self.assertEqual(self.model.speeds[1].first, 40)
         p.first.setValue(-152)
@@ -103,15 +113,13 @@ class StudioTimelineTests(unittest.TestCase):
             dlg = self.app.activeModalWidget()
             dlg.checks['playback'].setChecked(True)
             dlg.caption.setPlainText('Ignition')
-            dlg.position.setCurrentIndex(dlg.position.findData('top_right'))
-            dlg.size.setCurrentIndex(dlg.size.findData('small'))
             dlg.accept()
         QTimer.singleShot(0, fill)
         p.add.click()
         p.first.setValue(-183)
         p.last.setValue(-108)
         self.assertEqual(p.text_settings(), dict(fields=('frame', 'playback', 'custom'),
-            custom='Ignition', first=17, last=92, position='top_right', size='small'))
+            custom='Ignition', first=17, last=92, position='center', size='medium'))
         self.drag(30.5, 40.5)
         self.assertEqual((p.text_settings()['first'], p.text_settings()['last']), (27, 102))
         QTimer.singleShot(0, lambda: self.app.activeModalWidget().reject())
@@ -158,6 +166,77 @@ class StudioTimelineTests(unittest.TestCase):
         p.resize(1080, p.sizeHint().height())
         self.app.processEvents()
         self.assertGreater(p.inspector.x(), p.delete.mapTo(p, p.delete.rect().bottomRight()).x())
+
+    def test_stacked_tracks_select_on_click_and_use_edited_seconds(self):
+        clip = SimpleNamespace(source_frame=lambda i: i-30, has_vector_track=True)
+        model = StudioEdit(600, 200)
+        model.split_speed(200)
+        model.split_speed(400)
+        model.set_speed(1, 600)
+        panel = RecordStudio(clip, model)
+        self.addCleanup(panel.close)
+        panel.resize(810, panel.sizeHint().height())
+        panel.show()
+        self.app.processEvents()
+        track = panel.track
+        self.assertEqual(track.rows, [0, 3, 1, 2])
+        left = track.x_for(200) - track.x_for(0)
+        middle = track.x_for(400) - track.x_for(200)
+        right = track.x_for(600) - track.x_for(400)
+        self.assertAlmostEqual(left / middle, 3.)
+        self.assertAlmostEqual(right / middle, 3.)
+        self.assertAlmostEqual(model.duration, 7/3)
+        tool_pos = panel.split.mapTo(panel, panel.split.rect().topLeft())
+        for mode in track.rows:
+            point = QPoint(round(track.x_for(268)), round(track.lane(mode).center().y()))
+            QTest.mouseClick(track, Qt.LeftButton, pos=point)
+            self.assertEqual(panel.mode, mode)
+            self.assertTrue(panel.tabs[mode].isChecked())
+            self.assertEqual(panel.playhead, model.frame_at(
+                (point.x()-track.lane().left()) / track.lane().width() * model.duration))
+            self.assertTrue(panel.split.isVisible())
+            self.assertEqual(panel.split.mapTo(panel, panel.split.rect().topLeft()), tool_pos)
+            self.assertEqual(panel.appearance.isVisible(), mode == 3)
+            self.assertEqual(panel.speed.isVisible(), mode == 1)
+            self.assertEqual(panel.fade_in.isVisible(), mode in (0, 3))
+        ruler_at_one_second = QPoint(round(track.x_for(200)), 8)
+        QTest.mouseClick(track, Qt.LeftButton, pos=ruler_at_one_second)
+        self.assertLess(abs(model.time_at(panel.playhead)-1), .01)
+        self.assertEqual(panel.mode, 2)
+
+    def test_split_captions_keep_independent_appearance_and_content(self):
+        panel = self.panel
+        panel.tabs[2].click()
+        def text_dialog(message):
+            def enter():
+                dialog = self.app.activeModalWidget()
+                dialog.caption.setPlainText(message)
+                for field in ('camera_model','resolution','exposure','cine_frame'):
+                    dialog.checks[field].setChecked(True)
+                dialog.accept()
+            QTimer.singleShot(0, enter)
+            panel.add.click()
+        text_dialog('Ignition')
+        panel.set_text_placement(5, dict(anchor=(.2,.3), scale=.7))
+        panel.set_position(45)
+        panel.split.click()
+        text_dialog('Hot plume')
+        panel.set_text_placement(50, dict(anchor=(.8,.6), scale=1.6))
+        blocks = panel.text_settings()['blocks']
+        self.assertEqual([(b['first'],b['last'],b['custom'],b['anchor'],b['scale']) for b in blocks],
+                         [(0,44,'Ignition',(.2,.3),.7), (45,119,'Hot plume',(.8,.6),1.6)])
+        self.assertTrue({'resolution','exposure','camera_model','cine_frame'}.issubset(blocks[0]['fields']))
+        panel.first.setValue(self.clip.source_frame(2))  # A handle cannot cross the adjacent block.
+        self.assertEqual(panel.text_blocks[1]['first'],45)
+        panel.last.setValue(self.clip.source_frame(105))
+        QTest.mouseClick(self.track, Qt.LeftButton, pos=self.point(116.5))
+        text_dialog('Cooling')
+        self.assertEqual(panel.text_blocks[2]['position'], 'center')
+        self.assertNotIn('anchor', panel.text_blocks[2])
+        self.assertEqual((panel.text_blocks[2]['first'], panel.text_blocks[2]['last']), (106,119))
+        panel.select_text_at(20)
+        panel.delete.click()
+        self.assertEqual([b['custom'] for b in panel.text_blocks], ['Hot plume','Cooling'])
 
     def test_cut_stays_at_requested_playhead_if_pausing_updates_the_display(self):
         p = self.panel

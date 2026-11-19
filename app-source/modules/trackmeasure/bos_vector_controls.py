@@ -85,10 +85,17 @@ class VectorAppearance(QWidget):
         self.panel.setVisible(visible)
         self.toggle.setArrowType(Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow)
 
+    def set_inverse_background(self, enabled):
+        if getattr(self, '_inverse', False) != enabled:
+            self._inverse = enabled
+            self._update_rows()
+
     def _update_rows(self):
         encoding = self.encoding.currentData()
-        self.form.setRowVisible(self.color, encoding != 'grayscale')
-        self.form.setRowVisible(self.high_color, encoding == 'threshold')
+        custom_colors = not getattr(self, '_inverse', False)
+        self.form.setRowVisible(self.encoding, custom_colors)
+        self.form.setRowVisible(self.color, custom_colors and encoding != 'grayscale')
+        self.form.setRowVisible(self.high_color, custom_colors and encoding == 'threshold')
 
     def _encoding_changed(self):
         self._update_rows()

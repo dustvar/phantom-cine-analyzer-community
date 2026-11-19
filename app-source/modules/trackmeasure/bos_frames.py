@@ -8,7 +8,7 @@ import numpy as np
 from bos_processing import (ANCHOR_MIN_SIZE, camera_translation, compute_bos,
                             remove_camera_translation, render_bos)
 from bos_studio_model import MAX_PLAYBACK_FPS
-from bos_vectors import VectorStyle, key_rect, sample_vectors
+from bos_vectors import DENSITY_MODES, VectorStyle, key_rect, sample_vectors
 from camera_comparator import linear_frame
 from cine_metadata import CineHandler
 from pyphantom_image.imagetools import ImageTools
@@ -45,8 +45,8 @@ def validate_bos_settings(settings):
     if type(result['show_vectors']) is not bool:
         raise ValueError('Invalid BOS vector field setting.')
     if result['vector_background'] not in ('map', 'footage'):
-        raise ValueError('Choose a displacement map or original footage for the vector background.')
-    if result['vector_density'] not in ('sparse', 'balanced', 'dense', 'extra_dense'):
+        raise ValueError('Choose a displacement map or grayscale magnitude for the vector background.')
+    if result['vector_density'] not in DENSITY_MODES:
         raise ValueError('Choose a supported vector density.')
     VectorStyle.from_settings(result)
     if type(result['reference_count']) is not int or result['reference_count'] not in (1, 4, 8):
@@ -212,7 +212,8 @@ class BOSFrames:
                         vector_samples = sample_vectors(display_field, settings['limit'],
                                                         settings.get('vector_density', 'balanced'))
                         vector_key_rect = key_rect(self.base.shape[1], self.base.shape[0], display_field,
-                                                   vector_samples, anchor_roi, vector_style)
+                                                   vector_samples, anchor_roi, vector_style,
+                                                   inverse=(settings['vector_background']=='footage' or settings['opacity']==0))
                     image = render_bos(image, display_field, component=settings['component'], limit=settings['limit'],
                                        opacity=settings['opacity'], palette=settings['palette'], soften=settings['soften'],
                                        reduce_noise=settings.get('reduce_noise', False), show_vectors=show_vectors,

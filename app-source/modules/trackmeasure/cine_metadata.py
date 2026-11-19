@@ -231,6 +231,39 @@ class CineHandler(BaseCineHandler):
         packed = np.frombuffer(data, dtype, count=md.biSizeImage // dtype.itemsize, offset=annotation)
         return unpacking_the_image(md, packed)
 
+    def exposure_ticks(self, first, last, step=1):
+        """Read selected 0.32-second exposure samples, always including the last frame.
+
+        Cine File Format §3.4.2/4: tag 1003 indexes saved images, while the
+        older 1001 tag can append exposures for the entire camera recording.
+        The returned array owns its data so it survives closing the mapping.
+        """
+        md = self.metadata
+        if not 0 <= first <= last < md.ImageCount or step < 1:
+            raise ValueError('Invalid Cine exposure range.')
+        pos = md.OffSetup + md.Length
+        end = md.OffImageOffsets
+        start = None
+        while pos + 8 <= end:
+            size, tag, _ = struct.unpack_from('<IHH', self._mmap, pos)
+            if size < 8 or size > end - pos:
+                break
+            if tag == 1003 and size == 8 + 4 * md.ImageCount:
+                start = pos + 8
+                break
+            if tag == 1001 and size == 8 + 12 * md.TotalImageCount:
+                offset = md.FirstImageNo - md.FirstMovieImage
+                if 0 <= offset <= md.TotalImageCount - md.ImageCount:
+                    start = pos + 8 + 8 * md.TotalImageCount + 4 * offset
+            pos += size
+        if start is None:
+            return None
+        values = np.frombuffer(self._mmap, dtype='<u4', count=md.ImageCount, offset=start)
+        selected = values[first:last+1:step]
+        if (last-first) % step:
+            return np.append(selected, values[last])
+        return selected.copy()
+
     def relative_capture_timestamps(self):
         """Read TIME64 relative to frame zero without epoch-float precision loss.
 

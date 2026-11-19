@@ -20,6 +20,7 @@ from bos_frames import BOSFrames, validate_bos_settings
 from bos_vector_cache import max_frame_bytes, write_vectors, paint_vectors
 from bos_vectors import VectorStyle
 from bos_sampling import RangeSampling
+from bos_studio_cards import StudioVectorKey, composite_card
 from bos_studio_model import MAX_MP4_FPS, StudioEdit
 from video_export import ExportCancelled, video_frame, write_video_frames
 
@@ -70,13 +71,19 @@ class CachedBOSClip:
         if (self.count != self.sampling.count or min(self.width, self.height) < 1
                 or self.times.shape != (self.count,) or self.times.dtype != np.float64):
             raise ValueError('Incomplete BOS preview index.')
+        self.exposure_ticks = None
+        if self.manifest.get('has_frame_exposures'):
+            self.exposure_ticks = np.load(self.directory / 'exposures.npy', allow_pickle=False)
+            if self.exposure_ticks.shape != (self.count,) or self.exposure_ticks.dtype != np.dtype('<u4'):
+                raise ValueError('Incomplete BOS preview exposure data.')
         self.offsets = self._load_index('frames', 'index')
         self.original_offsets = self._load_index('original', 'original-index')
         settings = self.manifest['settings']
         store = self.manifest.get('vector_store')
-        if store not in (None, 'sites-v1'):
+        if store not in (None, 'sites-v1', 'sites-v2'):
             raise ValueError('Unsupported cached BOS vector format.')
         self.has_vector_track = store is not None
+        self.has_magnitude_backing = store == 'sites-v2'
         self.vector_offsets = self._load_index('vectors', 'vector-index') if self.has_vector_track else None
         self.vector_style = VectorStyle.from_settings(settings) if self.has_vector_track else None
         self.map_initially_on = not (self.has_vector_track and settings.get('vector_background') == 'footage')
@@ -153,25 +160,36 @@ class CacheReader:
         """Read the initial analyzed composition or the untouched Cine frame."""
         return self.blended(index, 255 if overlay else 0)
 
-    def blended(self, index, level, vector_level=None, style=None):
+    def blended(self, index, level, vector_level=None, style=None, include_key=True):
         """Compose the map first, then the independently faded arrow artwork."""
         if vector_level is None:
             # Callers using the original single-layer API fade the whole result.
             vector_level = level
             if not self.clip.map_initially_on:
                 level = 0
+        # A zero-opacity color map also calls for the magnitude backing.
+        if self.clip.has_magnitude_backing and not self.clip.manifest['settings']['opacity']:
+            level = 0
+        original = mapped = None
         if level in (0, 255):
             image = self._read_image(index, level == 255)
         else:
             alpha = level / 255.
-            image = cv2.addWeighted(self._read_image(index, False), 1.-alpha,
-                                    self._read_image(index, True), alpha, 0.)
+            original = self._read_image(index, False)
+            mapped = self._read_image(index, True)
+            image = cv2.addWeighted(original, 1.-alpha, mapped, alpha, 0.)
         if vector_level and self.vectors is not None:
-            arrows = image if vector_level == 255 else image.copy()
+            if mapped is not None and self.clip.has_magnitude_backing:
+                arrows = mapped
+            else:
+                arrows = image if vector_level == 255 else image.copy()
             paint_vectors(self.vectors, self.clip.vector_offsets, index, arrows,
-                          self.clip.manifest['settings'], style or self.clip.vector_style)
+                          self.clip.manifest['settings'], style or self.clip.vector_style, include_key=include_key,
+                          has_backing=self.clip.has_magnitude_backing, map_level=level, original=original)
             if vector_level < 255:
                 cv2.addWeighted(image, 1.-vector_level/255., arrows, vector_level/255., 0., dst=image)
+            else:
+                image = arrows
         return image
 
     def close(self):
@@ -265,7 +283,7 @@ def prepare_bos_preview(settings, first, last, *, sample_step=1, cancel=None, pr
                 # render() already prepared this untouched display frame from the same read.
                 original_offsets[local] = _write_frame(original_output, session.base)
                 if vector_output is not None:
-                    vector_offsets[local] = write_vectors(vector_output, display_field, state)
+                    vector_offsets[local] = write_vectors(vector_output, display_field, state, session.base)
                 if rendered.get('time_us') is not None:
                     times[local] = rendered['time_us']
                 warning = rendered.get('warning', '')
@@ -296,8 +314,15 @@ def prepare_bos_preview(settings, first, last, *, sample_step=1, cancel=None, pr
                         warning_examples=warning_examples, anchor_failures=anchor_failures,
                         encoded_bytes=sum((directory / f).stat().st_size for f in ('frames.bin','original.bin')))
         if vector_offsets is not None:
-            manifest['vector_store'] = 'sites-v1'
+            manifest['vector_store'] = 'sites-v2'
             manifest['encoded_bytes'] += (directory/'vectors.bin').stat().st_size
+        manifest['camera_model'] = str(getattr(session.md, 'CameraModel', '') or '').strip()
+        setup_exposure = float(getattr(session.md, 'ExposureTime', 0.) or 0.)
+        manifest['setup_exposure_us'] = setup_exposure if math.isfinite(setup_exposure) and setup_exposure > 0 else None
+        exposures = session.reader.exposure_ticks(first, last, sample_step)
+        if exposures is not None:
+            np.save(directory / 'exposures.npy', exposures, allow_pickle=False)
+            manifest['has_frame_exposures'] = True
         (directory / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         result = CachedBOSClip(directory)
         committed = True
@@ -321,7 +346,7 @@ def _compass_at_opacity(frame, compass, level):
 
 
 def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, overlay_mask=None,
-                      compass=None, studio=None, text_renderer=None, vectors_enabled=True):
+                      compass=None, studio=None, text_renderer=None, vectors_enabled=True, vector_key=None):
     """Encode at constant output FPS, sampling the prepared clip on its edited clock.
 
     Dense clips without studio edits use the output FPS as their playback rate.
@@ -349,6 +374,7 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
         clock = StudioEdit(clip.count, clip.manifest['settings']['playback_fps'], sampling=clip.sampling)
     opacity = edit.opacity_bytes() if edit is not None else None
     vector_opacity = edit.opacity_bytes('vectors') if edit is not None and clip.has_vector_track else None
+    key_artist = StudioVectorKey(clip) if vector_key is not None and clip.has_vector_track else None
     indices = clock.output_frames(fps) if clock is not None else range(clip.count)
     total = clock.output_count(fps) if clock is not None else clip.count
     with clip.reader() as reader:
@@ -367,11 +393,14 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
                             level = level if clip.map_initially_on else 0
                         else:
                             arrows = vector_opacity[index] if vectors_enabled else 0
-                        frame = reader.blended(index, level, arrows, edit.vector_style if edit else None)
+                        style = edit.vector_style if edit else None
+                        frame = reader.blended(index, level, arrows, style, include_key=key_artist is None)
                     else:
                         frame = reader.blended(index, level)
                     if compass is not None and level and clip.compass_available(index, map_on=True):
                         _compass_at_opacity(frame, compass, level)
+                    if key_artist is not None:
+                        composite_card(frame, key_artist.graphic(index, vector_key, style, level, arrows))
                     if text_renderer is not None:
                         updated = text_renderer(frame, index, clock.rate_at(index) if clock else fps)
                         if updated is not None:
@@ -385,9 +414,10 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
 
 class PreviewReadAhead(threading.Thread):
     """Two independent cache readers, bounded RGB memory, no GUI-thread decoding."""
-    def __init__(self, clip, memory_bytes=64 * 1024 * 1024):
+    def __init__(self, clip, memory_bytes=64 * 1024 * 1024, *, include_key=True):
         super().__init__(name='PCA BOS preview decode', daemon=True)
         self.clip = clip
+        self.include_key = include_key
         self.capacity = max(1, min(120, memory_bytes // (clip.width * clip.height * 3)))
         self.condition = threading.Condition()
         self.frames = OrderedDict()
@@ -426,7 +456,7 @@ class PreviewReadAhead(threading.Thread):
         if not self.clip.has_vector_track:
             return (map_level,)
         vector_level = None if self.vector_mask is None else self.vector_mask[index]
-        return map_level, vector_level, self.vector_style
+        return map_level, vector_level, self.vector_style, self.include_key
 
     def request(self, index, targets=None):
         with self.condition:

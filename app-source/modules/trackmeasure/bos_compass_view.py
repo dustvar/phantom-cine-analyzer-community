@@ -123,7 +123,7 @@ class CompassViewMixin:
             self._paint_selection(painter, rect)
         painter.end()
 
-    def _paint_selection(self, painter, rect):
+    def _paint_selection(self, painter, rect, *, removable=True):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor('#19232c'), 3))
@@ -137,7 +137,7 @@ class CompassViewMixin:
             handle = grip.adjusted(1, 1, -1, -1)
             painter.drawRoundedRect(handle, 1.5, 1.5)
         control = self._remove_rect(rect)
-        if not control.isEmpty():
+        if removable and not control.isEmpty():
             painter.setBrush(QColor('#27323b'))
             painter.setPen(QPen(QColor('#f5f9fb'), 1.1))
             painter.drawEllipse(control.adjusted(.75, .75, -.75, -.75))

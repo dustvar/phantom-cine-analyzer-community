@@ -11,7 +11,8 @@ from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen
 
 
 # Nominal number of arrow sites across the longer side of the analysis region.
-_DENSITIES = {'sparse': 16, 'balanced': 26, 'dense': 39}
+_DENSITIES = {'sparse': 16, 'balanced': 26, 'dense': 39, 'extra_dense': 39, 'ultra_dense': 39}
+DENSITY_MODES = tuple(_DENSITIES)
 MIN_FRACTION = 0.16
 _INK = (22, 31, 40)
 _LIGHT = (240, 254, 252)
@@ -80,46 +81,52 @@ class VectorSamples:
 
 
 def _sampling_stride(width, height, step, density):
-    base_density = 'dense' if density == 'extra_dense' else density
-    return max(1, round(max(14, max(width, height)/_DENSITIES[base_density])/step))
+    return max(1, round(max(14, max(width, height)/_DENSITIES[density])/step))
 
 
-def vector_capacity(width, height, step, density):
-    """Upper bound on lattice sites, before borders and match rejection."""
+def _lattices(stride, density):
+    # Stagger the second lattice diagonally. The next pair fills the two
+    # remaining corners of each cell, always landing on measured sites.
+    if stride == 1 or density not in ('extra_dense', 'ultra_dense'):
+        return ((0, 0),)
+    half = stride // 2
+    diagonal = ((0, 0), (half, half))
+    return diagonal if density == 'extra_dense' else diagonal + ((half, 0), (0, half))
+
+
+def vector_geometry(width, height, step, density):
     stride = _sampling_stride(width, height, step, density)
-    pitch = step*stride
-    grids = 2 if density == 'extra_dense' and stride > 1 else 1
-    return grids*((width+pitch-1)//pitch)*((height+pitch-1)//pitch)
+    grids = len(_lattices(stride, density))
+    pitch = max(step, round(step*stride / np.sqrt(grids)))
+    return pitch, pitch*.80
+
+
+def _axis_sites(count, stride, phase):
+    start = ((count-1) % stride // 2 + phase) % stride
+    return range(start, count, stride)
+
+
+def vector_capacity(width, height, step, density, margin=0):
+    """Number of candidate measurement sites before signal/mask rejection."""
+    stride = _sampling_stride(width, height, step, density)
+    ny = max(0, (height-2*margin+step-1)//step)
+    nx = max(0, (width-2*margin+step-1)//step)
+    return sum(len(_axis_sites(ny,stride,ry))*len(_axis_sites(nx,stride,cx))
+               for ry,cx in _lattices(stride, density))
 
 
 def sample_vectors(field, limit, density='balanced'):
     """Select genuine measurement sites without averaging, filling holes or temporal trails."""
-    if (density not in _DENSITIES and density != 'extra_dense') or not np.isfinite(limit) or limit <= 0:
+    if density not in DENSITY_MODES or not np.isfinite(limit) or limit <= 0:
         raise ValueError('Choose a positive full scale and a supported arrow density.')
     x0,y0,w,h = field.roi
     step = field.step
     stride = _sampling_stride(w, h, step, density)
-    pitch = stride*step
-
-    def sites(size):
-        # Center the entire lattice once using geometry alone. Rejected samples
-        # leave holes; they never cause other arrows to jump to different sites.
-        return np.arange((size-1) % stride // 2, size, stride, dtype=np.intp)
-
-    rows, cols = np.meshgrid(sites(len(field.y)), sites(len(field.x)), indexing='ij')
-    rows, cols = rows.ravel(), cols.ravel()
-    if density == 'extra_dense' and stride > 1:
-        # Add a second, staggered set of measured sites between the dense arrows.
-        # Coarse acquisition grids can already be at one arrow per measurement.
-        def between(size):
-            start = ((size-1) % stride // 2 + stride//2) % stride
-            return np.arange(start, size, stride, dtype=np.intp)
-
-        extra_rows, extra_cols = np.meshgrid(between(len(field.y)), between(len(field.x)), indexing='ij')
-        rows = np.concatenate((rows, extra_rows.ravel()))
-        cols = np.concatenate((cols, extra_cols.ravel()))
-        pitch = max(step, round(pitch / np.sqrt(2)))
-    full_length = pitch*.80
+    pitch, full_length = vector_geometry(w, h, step, density)
+    grids = [np.meshgrid(_axis_sites(len(field.y), stride, ry), _axis_sites(len(field.x), stride, cx),
+                         indexing='ij') for ry,cx in _lattices(stride, density)]
+    rows, cols = (np.concatenate([grid[axis].ravel() for grid in grids]).astype(np.intp, copy=False)
+                  for axis in (0,1))
     dx, dy = field.dx[rows,cols], field.dy[rows,cols]
     magnitude = np.hypot(dx,dy)
     visible = field.valid[rows,cols] & np.isfinite(magnitude) & (magnitude >= MIN_FRACTION*limit)
@@ -230,12 +237,17 @@ def _draw_arrows(image, x, y, draw_dx, draw_dy, full_length, width, border, rgb,
         cv2.polylines(image, strokes, False, color, weight, cv2.LINE_AA, 4)
 
 
-def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_length, pitch, style, roi=None):
+def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_length, pitch, style, roi=None, inverse_luma=None):
     if not len(x):
         return
     width = style.thickness or max(1, round(pitch*.044))
     border = max(1, round(pitch*.034)) if style.outline else 0
-    if style.encoding == 'grayscale':
+    if inverse_luma is not None:
+        # Choose opposite ink from the prepared backing under each glyph.
+        # The two ranges avoid gray-on-gray at half scale.
+        bright = inverse_luma >= 118
+        colors = [(bright, (8, 13, 18)), (~bright, (250, 252, 254))]
+    elif style.encoding == 'grayscale':
         # 64 perceptual steps permit one batched draw per shade, even for Extra Dense fields.
         shade = np.minimum(63, np.floor(63*np.minimum(fraction, 1.))).astype(np.uint8)
         colors = [(shade == level, (round(int(level)*255/63),)*3) for level in np.unique(shade)]
@@ -261,7 +273,7 @@ def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_lengt
         for mask, rgb in colors:
             if len(x[mask]):
                 outline = _contrast(rgb)
-                if style.encoding == 'grayscale':
+                if style.encoding == 'grayscale' and inverse_luma is None:
                     # A sudden switch from a light to a dark outline would introduce
                     # a false boundary halfway through a smooth magnitude field.
                     shade = round(112 - 88*rgb[0]/255)
@@ -276,25 +288,27 @@ def _draw_grouped(image, x, y, draw_dx, draw_dy, fraction, saturated, full_lengt
 
 
 @lru_cache(maxsize=64)
-def _key(width, height, full_length, limit, style):
+def _key(width, height, full_length, limit, style, inverse=False, scale=1., *, allow_compact=True):
     short = min(width,height)
-    size = min(2.4,max(.36,short*.00075))
+    size = min(2.4,max(.36,short*.00075))*scale
     font = cv2.FONT_HERSHEY_SIMPLEX
     pen = max(1,round(size*1.75))
-    pad = max(4,round(short*.012))
+    pad = max(1, round(max(4,round(short*.012))*scale))
     advance = round(full_length)+pad
     label = f'{limit:g} px'
     text_width = lambda text, scale: cv2.getTextSize(text,font,scale,pen)[0][0]
-    gap = max(5,round(12*size))
+    gap = max(2,round(max(5*scale,12*size)))
     first_width = advance + text_width(label,size)
     clipped = '> '+label
-    gradient = style.encoding == 'grayscale'
-    ramp_width = max(30, round(short*.07))
+    gradient = inverse or style.encoding == 'grayscale'
+    ramp_width = max(8,round(max(30,round(short*.07))*scale))
     upper_label = f'{limit:g}+ px'
     second_width = (text_width('0',size)+2*gap+ramp_width+text_width(upper_label,size)
                     if gradient else advance+text_width(clipped,size))
     key_w = 2*pad + first_width + second_width + 2*gap
     compact = key_w > width-2*pad
+    if compact and not allow_compact:
+        return None
     if compact:
         key_w = 2*pad + (second_width if gradient else first_width)
     head_h = cv2.getTextSize('DOT SHIFT',font,size*.73,pen)[0][1]
@@ -311,7 +325,8 @@ def _key(width, height, full_length, limit, style):
         if (compact and saturated) or (gradient and (saturated or compact)):
             continue
         _draw_grouped(ink,np.array([left]),np.array([y]),np.array([full_length]),np.array([0.]),
-                      np.array([1.]),np.array([saturated]),full_length,full_length/.8,style)
+                      np.array([1.]),np.array([saturated]),full_length,full_length/.8,style,
+                      inverse_luma=np.array([0]) if inverse else None)
         cv2.putText(ink,text,(left+advance,baseline),font,size,(238,245,245),pen,cv2.LINE_AA)
     if gradient:
         left = pad if compact else pad+first_width+2*gap
@@ -321,15 +336,21 @@ def _key(width, height, full_length, limit, style):
         top = round(y-h*.5)
         cv2.rectangle(ink,(x-1,top-1),(x+ramp_width,top+h),(156,165,172),1)
         ink[top:top+h,x:x+ramp_width,:] = np.linspace(0,255,ramp_width,dtype=np.uint8)[None,:,None]
+        if inverse:
+            # Show the white-to-dark ink switch over the magnitude backing.
+            for fraction, value in ((.22,250),(.8,8)):
+                cx = x+round((ramp_width-1)*fraction)
+                cy = top+h//2
+                cv2.arrowedLine(ink,(cx-3,cy),(cx+3,cy),(value,)*3,1,cv2.LINE_AA,tipLength=.5)
         cv2.putText(ink,upper_label,(x+ramp_width+gap,baseline),font,size,(238,245,245),pen,cv2.LINE_AA)
     return ink
 
 
-def key_rect(width, height, field, samples, anchor_roi=None, style=VectorStyle()):
+def key_rect(width, height, field, samples, anchor_roi=None, style=VectorStyle(), inverse=False):
     """Locate the exported scale away from the measurement and stationary patch."""
     if not field.valid.any():
         return None
-    key = _key(width, height, samples.full_length, samples.limit, style)
+    key = _key(width, height, samples.full_length, samples.limit, style, inverse)
     if key is None:
         return None
     kh, kw = key.shape[:2]
@@ -346,16 +367,17 @@ def key_rect(width, height, field, samples, anchor_roi=None, style=VectorStyle()
     return x, y, kw, kh
 
 
-def draw_vector_field(image, field, samples, placement, style=VectorStyle()):
+def draw_vector_field(image, field, samples, placement, style=VectorStyle(), *, inverse=False):
     """Paint centered source-grid arrows on a caller-owned RGB8 display copy."""
     if not field.valid.any():
         return
     x, y = field.roi[:2]
+    luma = image[samples.y.astype(np.intp), samples.x.astype(np.intp), 0] if inverse else None
     _draw_grouped(image, samples.x-x-.5*samples.draw_dx, samples.y-y-.5*samples.draw_dy,
                   samples.draw_dx, samples.draw_dy, np.hypot(samples.dx,samples.dy)/samples.limit,
-                  samples.saturated, samples.full_length, samples.pitch, style, roi=field.roi)
+                  samples.saturated, samples.full_length, samples.pitch, style, roi=field.roi, inverse_luma=luma)
     if placement is not None:
         x, y, kw, kh = placement
-        sprite = _key(image.shape[1], image.shape[0], samples.full_length, samples.limit, style)
+        sprite = _key(image.shape[1], image.shape[0], samples.full_length, samples.limit, style, inverse)
         patch = image[y:y+kh, x:x+kw]
         cv2.addWeighted(sprite, .90, patch, .10, 0., dst=patch)

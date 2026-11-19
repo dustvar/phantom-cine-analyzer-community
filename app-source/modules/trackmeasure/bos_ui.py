@@ -15,11 +15,11 @@ from bos_display import DIRECTION_COLORS
 from bos_playback_controls import ReplaySpeed
 from bos_frames import (ANCHOR_MIN_SIZE, BOSFrames, WINDOW_FINE, WINDOW_STANDARD,
                         default_bos_settings, validate_bos_settings)
-from bos_processing import probe_support, reason_label
+from bos_processing import measurement_step, probe_support, reason_label
 from camera_comparator_ui import ImageView
 from bos_range_ui import BOSRangeBar
 from bos_vector_controls import VectorAppearance
-from bos_vectors import MIN_FRACTION
+from bos_vectors import DENSITY_MODES, MIN_FRACTION, vector_capacity
 
 
 METHOD_HELP = {
@@ -261,18 +261,15 @@ class BOSPanel(QWidget):
         vectors = QFormLayout(self.vector_options)
         vectors.setContentsMargins(7, 0, 0, 2)
         vectors.setSpacing(4)
-        self.vector_background = choice([('Arrows + map', 'map'), ('Arrows only', 'footage')])
+        self.vector_background = choice([('Arrows + map', 'map'), ('Arrows + gray magnitude', 'footage')])
         self.vector_background.setAccessibleName('Vector field layers')
-        self.vector_background.setToolTip('Draw over the selected displacement map or over the original footage.')
+        self.vector_background.setToolTip('A brighter gray backing marks stronger dot shifts. Arrows switch ink for contrast.')
         vectors.addRow('Layers', self.vector_background)
-        self.vector_density = choice([('Sparse', 'sparse'), ('Balanced', 'balanced'), ('Dense', 'dense'),
-                                      ('Extra Dense', 'extra_dense')])
-        self.vector_density.setAccessibleName('Vector arrow density')
-        self.vector_density.setToolTip('Sets the spacing of displayed arrows on a fixed grid. '
-                                       f'Shifts below {MIN_FRACTION:.0%} of full scale are omitted from the drawing. '
-                                       'Extra Dense adds a second lattice between Dense sites where samples exist. '
-                                       'Every reliable patch is available in the CSV.')
-        vectors.addRow('Density', self.vector_density)
+        self.vector_density = choice([('Draw a region', mode) for mode in DENSITY_MODES])
+        self.vector_density.setAccessibleName('Vector arrow count')
+        self.vector_density.setToolTip('Maximum arrow sites in the selected region. The displayed count changes '
+                                       f'with match quality and motion above {MIN_FRACTION:.0%} of full scale.')
+        vectors.addRow('Arrows', self.vector_density)
         self.vector_appearance = VectorAppearance()
         vectors.addRow(self.vector_appearance)
         self.save_vectors = QPushButton('Save vectors…')
@@ -619,14 +616,31 @@ class BOSPanel(QWidget):
         directional = self.state['component'] == 'direction'
         vectors = self.state['show_vectors']
         map_visible = not vectors or self.state['vector_background'] == 'map'
+        geometry = (tuple(roi or ()), self.state['window'], self.state['search'], self.state['detail'],
+                    self.state['vector_density'])
+        if getattr(self, '_arrow_grid_geometry', None) != geometry:
+            self._arrow_grid_geometry = geometry
+            step = measurement_step(self.state['window'], self.state['detail'])
+            margin = self.state['window']//2 + self.state['search']
+            counts = [vector_capacity(*roi[2:], step, mode, margin) if roi else 0 for mode in DENSITY_MODES]
+            selected = self.vector_density.currentIndex()
+            seen = set()
+            for row, n in enumerate(counts):
+                self.vector_density.setItemText(row, f'Up to {n:,}' if roi else 'Draw a region')
+                # Two presets may hit the same acquisition-grid limit on a small ROI.
+                duplicate = row != selected and (n == counts[selected] or n in seen)
+                self.vector_density.view().setRowHidden(row, duplicate)
+                seen.add(n)
+            self.vector_density.setEnabled(any(counts))
+        contrast_mode = vectors and (not map_visible or self.state['opacity'] == 0)
+        self.vector_appearance.set_inverse_background(contrast_mode)
         self.vector_options.setVisible(vectors)
         self.component.setEnabled(map_visible)
         self.palette.setEnabled(map_visible and not directional)
         self.opacity.setEnabled(map_visible)
-        self.reduce_noise.setEnabled(map_visible)
         self.soften.setEnabled(map_visible)
-        if not map_visible:
-            self.legend.setText('Arrow direction follows the dot shift. The on-image scale gives its length in source pixels.')
+        if contrast_mode:
+            self.legend.setText('Brighter gray means a larger dot shift. Arrows turn dark over bright regions and light over dark ones.')
         elif directional:
             arrows = ('→', '↘', '↓', '↙', '←', '↖', '↑', '↗')
             def swatch(index):
@@ -841,7 +855,9 @@ class BOSPanel(QWidget):
             self.frame_number.setValue(first+index)
         field = result['field']
         if field is not None:
-            self.quality.setText(f'{100*np.mean(field.valid):.0f}% matched · {field.step} px spacing')
+            samples = result.get('vector_samples')
+            arrows = f' · {len(samples.x):,} arrows' if samples is not None else ''
+            self.quality.setText(f'{100*np.mean(field.valid):.0f}% matched · {field.step} px spacing{arrows}')
             self.quality.setToolTip(f'Compared {field.valid.size:,} dot patches using '
                                     f'{self.state["window"]} × {self.state["window"]} source pixels per patch. '
                                     'Where a match is unreliable, the original image shows through.')
@@ -895,6 +911,8 @@ class BOSPanel(QWidget):
             encoding = self.presented_state.get('vector_encoding', 'double_head')
             explanation = {'double_head': 'Double tips exceed it.', 'threshold': 'The second color exceeds it.',
                            'grayscale': 'White is at or above it.'}[encoding]
+            if self.presented_state['vector_background'] == 'footage' or self.presented_state['opacity'] == 0:
+                explanation = 'The background brightens with shift. Ink switches to keep arrows visible.'
             self.probe_label.setText(f'Arrow scale {scale:g} px · {explanation}\n'
                                      f'Shifts below {scale*MIN_FRACTION:.3g} px are hidden.')
             return

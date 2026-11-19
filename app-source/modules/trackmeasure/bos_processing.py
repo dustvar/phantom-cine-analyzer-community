@@ -256,14 +256,54 @@ def render_bos(current_rgb8, field, *, component='magnitude', limit=1.0, opacity
                vector_style=VectorStyle()):
     """Render the chosen displacement layers in shared source-image coordinates."""
     if vector_background not in ('map', 'footage'):
-        raise ValueError('Choose a displacement map or footage beneath the vectors.')
-    map_opacity = 0. if show_vectors and vector_background == 'footage' else opacity
-    result = _render_map(current_rgb8, field, component, limit, map_opacity, palette, soften, reduce_noise)
+        raise ValueError('Choose a displacement map or grayscale magnitude beneath the vectors.')
+    inverse = show_vectors and (vector_background == 'footage' or opacity == 0)
+    result = _render_map(current_rgb8, field, component, limit, 0. if inverse else opacity,
+                         palette, soften, reduce_noise)
     if show_vectors and field.valid.any():
+        if inverse:
+            apply_magnitude_backing(result, field.roi, magnitude_backing(result, field, limit, reduce_noise))
         samples = _vector_samples if _vector_samples is not None else sample_vectors(field,limit,vector_density)
-        placement = key_rect(result.shape[1], result.shape[0], field, samples, anchor_roi, vector_style)
-        draw_vector_field(result, field, samples, placement, vector_style)
+        placement = key_rect(result.shape[1], result.shape[0], field, samples, anchor_roi, vector_style, inverse)
+        draw_vector_field(result, field, samples, placement, vector_style, inverse=inverse)
     return result
+
+
+def _interpolator(field):
+    # Measurement support ends at the outermost sample plus half a grid cell.
+    # Rejected grid cells are transparent rather than painted as zero flow.
+    half = field.step // 2
+    left, top, patch_width, patch_height = _sample_bounds(field)
+    ux = (np.arange(patch_width, dtype=np.float32) - half) / field.step
+    uy = (np.arange(patch_height, dtype=np.float32) - half) / field.step
+    map_x, map_y = np.meshgrid(ux, uy)
+    def interpolate(grid):
+        return cv2.remap(grid, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    weights = interpolate(field.valid.astype(np.float32))
+    def supported(values):
+        return interpolate(np.where(field.valid, values, 0).astype(np.float32)) / np.maximum(weights, 1e-6)
+    return (left,top,patch_width,patch_height), weights, supported
+
+
+def magnitude_backing(image, field, limit, reduce_noise):
+    """A grayscale ROI. Zero is reserved for pixels without reliable support."""
+    x,y,w,h = field.roi
+    result = np.zeros((h,w), np.uint8)
+    (left,top,pw,ph), weights, interpolate = _interpolator(field)
+    dx,dy = overlay_vectors(field, reduce_noise)
+    strength = np.clip(interpolate(np.hypot(dx,dy))/limit, 0., 1.)
+    # Keep a little of the real, softened scene under a fixed magnitude scale.
+    # Use a full-strength plate even when the separate map track is disabled.
+    base = cv2.cvtColor(image[top:top+ph,left:left+pw], cv2.COLOR_RGB2GRAY)
+    soft = cv2.GaussianBlur(base, (0,0), 4., borderType=cv2.BORDER_REPLICATE)
+    gray = np.rint(16. + 208.*strength + .10*soft).astype(np.uint8)
+    result[top-y:top-y+ph,left-x:left-x+pw] = np.where(weights >= _SUPPORT_THRESHOLD, gray, 0)
+    return result
+
+
+def apply_magnitude_backing(image, roi, plate):
+    x,y,w,h = roi
+    np.copyto(image[y:y+h,x:x+w], plate[...,None], where=(plate != 0)[...,None])
 
 
 def _render_map(current_rgb8, field, component, limit, opacity, palette, soften, reduce_noise):
@@ -291,21 +331,12 @@ def _render_map(current_rgb8, field, component, limit, opacity, palette, soften,
         values = np.hypot(dx, dy)
     else:
         raise ValueError('Unknown BOS displacement component.')
-    # Measurement support ends at the outermost sample plus half a grid cell.
-    # Rejected grid cells are transparent rather than painted as zero flow.
-    half = field.step // 2
-    left, top, patch_width, patch_height = _sample_bounds(field)
-    ux = (np.arange(patch_width, dtype=np.float32) - half) / field.step
-    uy = (np.arange(patch_height, dtype=np.float32) - half) / field.step
-    map_x, map_y = np.meshgrid(ux, uy)
-    def interpolate(grid):
-        return cv2.remap(grid, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-    weights = interpolate(field.valid.astype(np.float32))
-    signal = interpolate(np.where(field.valid, values, 0).astype(np.float32)) / np.maximum(weights, 1e-6)
+    (left,top,patch_width,patch_height), weights, interpolate = _interpolator(field)
+    signal = interpolate(values)
     if component == 'direction':
         # Interpolate signed components separately, so opposite directions cancel
         # before assigning hue or strength. Positive y is down in image space.
-        vertical = interpolate(np.where(field.valid, dy, 0).astype(np.float32)) / np.maximum(weights, 1e-6)
+        vertical = interpolate(dy)
         direction = direction_tone(signal, vertical)
         signal = np.hypot(signal, vertical)
     strength = np.clip(np.abs(signal) / limit, 0, 1)

@@ -155,6 +155,11 @@ def probe_bos_preview(window, report, finished):
                         raise RuntimeError('Sampled preview changed the duration of the marked range.')
                 else:
                     player.fps.setValue(240)
+                if os.environ.get('PCA_STARTUP_TEST_BOS_STUDIO') == '1':
+                    from bos_camera_labels import camera_lines
+                    data['studio_rows'] = [player.studio.tabs[i].text() for i in player.studio.track.rows]
+                    data['camera_caption'] = camera_lines(player.clip, {'camera_model','resolution','exposure'}, 0)
+                    data['vector_key_visible'] = player.view.vector_key_card is not None
                 player.play.click()
                 QTimer.singleShot(20,window,lambda:poll(1));return
             if stage==1:
@@ -171,7 +176,8 @@ def probe_bos_preview(window, report, finished):
                 output=report.with_suffix('.bos-preview.mp4')
                 placement = player.view.compass
                 fps = player.studio.output_fps()
-                export_cached_bos(player.clip, output, fps, studio=player.edit_model, compass=placement)
+                export_cached_bos(player.clip, output, fps, studio=player.edit_model, compass=placement,
+                                  vector_key=player.vector_key_placement)
                 data['edited_duration_seconds'] = player.edit_model.duration
                 if placement is not None:
                     data['compass'] = dict(x=placement.x, y=placement.y, size=placement.size)

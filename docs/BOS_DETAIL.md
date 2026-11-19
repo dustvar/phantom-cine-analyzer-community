@@ -65,9 +65,14 @@ The compass follows the color-map track in playback and export. The dot-shift sc
 
 ## Show Vector Field
 
-Click **Show Vector Field** beneath **Method**. Choose **Arrows + map** to keep the
-displacement colors, or **Arrows only** to put the arrows directly on the Cine.
-**Density** chooses how many measured sites to display. **Extra Dense** targets twice the grid sites of **Dense**. The number of visible arrows also depends on available measurements and signal strength. Each arrow stays centered on its
+Click **Show Vector Field** beneath **Method**. Choose **Arrows + map** for the
+displacement colors, or **Arrows + gray magnitude** for a softened background
+that brightens with dot displacement. In the gray view, arrows turn dark over
+strong movement and light over quiet regions. You can turn off their outlines.
+The **Arrows** choices show how many sites are available in your analysis region.
+The largest offers up to twice as many sites as the next choice, up to the number
+of measurements. The displayed count excludes weak and unreliable sites.
+Each arrow stays centered on its
 measurement site. Its direction and length update as the apparent dot shift changes
 relative to the pinned reference. Positive X points right and positive Y points down.
 
@@ -100,20 +105,33 @@ before 1.14.9 store the combined pixels. Analyze the range again to get separate
 
 ## Record Studio
 
-Open **Record Studio** in the analyzed player. The normal playback slider stays available.
+Open **Record Studio** in the analyzed player. All available tracks share the
+ruler above them, in seconds of the finished movie. Click a row or block to
+select it. The highlighted row owns the **Split** button and the controls below
+the tracks. Click or drag on the ruler to seek.
 
-- **Overlay duration** starts as one green block. Seek to a cut and click **✂ Split**.
-  Pull the facing ends apart to reveal the original footage in the gap. Drag the
+- **Overlay** starts as one green block. Seek to a cut and click **✂ Split**.
+  Pull the facing ends apart to make a gap. With vectors enabled, the gap shows the gray magnitude backing. Drag the
   middle of a block to move it. Select a block to set its exact Cine frames and
   **Fade in** or **Fade out** time in playback seconds.
 - **Vectors** gives the arrows and their scale the same trim, split, move and fade
-  controls. For example, leave **Overlay** full length, split **Vectors** at the
+  controls. In the picture, drag the **Dot shift** key to place it, then drag a
+  corner to resize it. Its reference arrow stays calibrated to the field.
+  For example, leave **Overlay** full length, split **Vectors** at the
   event and remove the preceding vector block. Set **Fade in** on the remaining
   block to introduce the arrows over an already visible map.
 - **Speed** lets you split the timeline and set a playback FPS for each section.
   This is the number of source frames that pass in one second of the finished movie.
-- **Text → + Text…** adds a caption, frame count, playback or capture FPS, slowdown,
-  or time from trigger. Drag the ends of the text block to choose when it appears.
+  For equal numbers of source frames, a 600 fps section takes one-third as much
+  space on the ruler as a 200 fps section. Every track follows the same change.
+- **Text** lets you add a caption, Cine frame number, frame count, playback or
+  capture FPS, slowdown, trigger time, camera model, exposure and resolution.
+  New titles start in the center. Drag a title on the picture to move it, or
+  drag a corner to resize it. Split the text track to change just one section.
+  A per-frame exposure follows the retained Cine frame, including after a speed
+  change. If only the camera's nominal value is available it is labeled
+  **Exposure setting**. Unavailable exposure and model fields are explicitly
+  labeled if you select them. [Phantom Cine File Format, §3.4](https://phantomhighspeed.my.salesforce-sites.com/articles/Knowledge/The-Cine-File-Format/)
 - **Export MP4** uses these edits. The **MP4** selector sets the encoded frame
   rate. At 240 fps playback, 2,400 source frames take ten seconds. A 60 fps MP4
   represents that motion with 600 frames. Select 240 fps output if every source

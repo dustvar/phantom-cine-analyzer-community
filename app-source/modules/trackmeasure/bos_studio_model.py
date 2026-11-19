@@ -128,6 +128,25 @@ class StudioEdit:
         offset = math.floor((seconds-self._time_starts[i]+tolerance)*span.fps)
         return _clamp(self.sampling.index_at(self.sampling.offset(span.first)+offset), span.first, span.last)
 
+    def nearest_boundary(self, seconds):
+        """Choose the nearest sampled start or the exclusive end of the movie."""
+        left = self.frame_at(seconds)
+        right = min(left+1, self.count)
+        return right if seconds-self.time_at(left) > self.time_at(right)-seconds else left
+
+    def speed_boundary_at_fraction(self, cut, fraction_delta):
+        """Find the cut under the pointer as the total movie length changes."""
+        left, right = self.speeds[cut-1:cut+1]
+        original = self.sampling.offset(right.first)
+        elapsed = self.time_at(right.first)
+        fraction = _clamp(elapsed/self.duration + fraction_delta, 0., 1.)
+        # Advancing the cut by N source frames lengthens the left section by
+        # N/left.fps and shortens the right by N/right.fps. Solve for N using
+        # the requested fraction of the resulting movie length.
+        scale = (1-fraction)/left.fps + fraction/right.fps
+        n = (fraction*self.duration-elapsed)/scale
+        return _clamp(self.sampling.nearest(original+n), left.first+1, right.last)
+
     def speed_index_at_time(self, seconds):
         return max(0, bisect_right(self._time_starts, seconds)-1)
 

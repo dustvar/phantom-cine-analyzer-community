@@ -1,11 +1,12 @@
 """Record Studio controls for the analyzed BOS result.
 
-The rail is in source-frame coordinates. Its time readout, fade slopes and MP4
-duration use the edited playback clock. All interval endpoints shown to the user
-are inclusive native Cine frame numbers.
+All tracks share the finished movie's clock. Exact interval controls display
+inclusive native Cine frame numbers.
 """
+import math
+
 from PySide6.QtCore import Qt, Signal, QSignalBlocker, QPointF, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath, QFontMetrics
+from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QBoxLayout, QButtonGroup, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy,
@@ -19,154 +20,196 @@ _TRACKS = ('Overlay', 'Speed', 'Text', 'Vectors')
 _COLORS = (
     ('#366f5e', '#74d8af'), ('#3b5c79', '#92c6f1'), ('#69527b', '#d4ace8'), ('#66532f', '#f0c77c')
 )
-_FIELD_NAMES = (('frame', 'Frame X of N'), ('playback', 'Playback FPS'),
+_FIELD_NAMES = (('frame', 'Frame X of N'), ('cine_frame', 'Cine frame number'), ('playback', 'Playback FPS'),
                 ('capture', 'Capture FPS'), ('slowdown', 'Slowdown'),
-                ('time', 'Time from trigger'))
-_POSITIONS = (('Top left', 'top_left'), ('Top right', 'top_right'),
-              ('Bottom left', 'bottom_left'), ('Bottom right', 'bottom_right'),
-              ('Center', 'center'))
+                ('time', 'Time from trigger'), ('camera_model', 'Camera model'),
+                ('exposure', 'Exposure time'), ('resolution', 'Resolution'))
 
 
 def _duration(seconds):
     # Avoid printing 0:60.00 around minute boundaries.
+    if seconds < .01:
+        return f'0:{seconds:06.3f}'
     centis = round(seconds * 100)
     minutes, centis = divmod(centis, 6000)
     return f'{minutes}:{centis/100:05.2f}'
 
 
 class _StudioTrack(QWidget):
-    """A draggable source-frame track with a separate ruler for seeking."""
+    """Stack the editable lanes on the same presentation-time scale as the MP4."""
+    LABEL_WIDTH = 84
+    RULER_HEIGHT = 23
+    ROW_HEIGHT = 28
+
     def __init__(self, studio):
         super().__init__(studio)
         self.studio = studio
-        self.setObjectName('studioTrack')
-        self.setAccessibleName('Record Studio timeline')
-        self.setToolTip('Click the ruler to seek. Drag a block to move it or drag either end to trim.')
-        self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setFixedHeight(54)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.rows = [0, 3, 1, 2] if getattr(studio.clip, 'has_vector_track', False) else [0, 1, 2]
         self.drag = None
         self.preview = None
+        self.preview_clock = None
+        self.setObjectName('studioTrack')
+        self.setAccessibleName('Record Studio tracks in movie seconds')
+        self.setToolTip('Click a track or block to edit it. Drag the time ruler to seek.')
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFixedHeight(self.RULER_HEIGHT+self.ROW_HEIGHT*len(self.rows)+2)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.buttons = []
+        self.group = QButtonGroup(self)
+        for mode, name in enumerate(_TRACKS):
+            button = QPushButton(name, self)
+            button.setAccessibleName(f'Edit {name.lower()} track')
+            button.setCheckable(True)
+            button.setProperty('studioTab', True)
+            button.clicked.connect(lambda checked=False, m=mode: studio.set_mode(m))
+            self.group.addButton(button, mode)
+            self.buttons.append(button)
+            if mode in self.rows:
+                y = self.RULER_HEIGHT + self.rows.index(mode)*self.ROW_HEIGHT
+                button.setGeometry(3, y+3, self.LABEL_WIDTH-6, self.ROW_HEIGHT-6)
+            else:
+                button.hide()
+        self.buttons[0].setChecked(True)
 
-    def lane(self):
-        return QRectF(7., 21., max(1., self.width()-14.), 27.)
+    def lane(self, mode=None):
+        mode = self.studio.mode if mode is None else mode
+        y = self.RULER_HEIGHT + self.rows.index(mode)*self.ROW_HEIGHT
+        return QRectF(self.LABEL_WIDTH+2, y+2, max(1., self.width()-self.LABEL_WIDTH-10), self.ROW_HEIGHT-4)
 
-    def x_for(self, boundary):
+    def row_at(self, y):
+        row = math.floor((y-self.RULER_HEIGHT)/self.ROW_HEIGHT)
+        return self.rows[row] if 0 <= row < len(self.rows) else None
+
+    def _time_x(self, seconds, clock):
         lane = self.lane()
-        sampling = self.studio.model.sampling
-        return lane.left()+sampling.offset(boundary)/sampling.source_count*lane.width()
+        return lane.left()+seconds/clock.duration*lane.width()
+
+    def x_for(self, boundary, clock=None):
+        clock = clock or self.studio.model
+        return self._time_x(clock.time_at(boundary), clock)
 
     def _frame(self, x):
         lane = self.lane()
-        sampling = self.studio.model.sampling
-        offset = (x-lane.left())/lane.width()*sampling.source_count
-        return sampling.index_at(offset)
+        clock = self.studio.model
+        return clock.frame_at((x-lane.left())/lane.width()*clock.duration)
 
-    def _spans(self):
-        panel = self.studio
-        if panel.layer:
-            return [(s.first, s.last) for s in panel.model.spans(panel.layer)]
-        if panel.mode == 1:
-            return [(s.first, s.last) for s in panel.model.speeds]
-        return [(panel._text['first'], panel._text['last'])] if panel._text['fields'] else []
+    def _spans(self, mode=None):
+        return self.studio.spans(self.studio.mode if mode is None else mode)
 
-    def span_rect(self, start, end):
-        lane = self.lane()
-        left, right = self.x_for(start), self.x_for(end+1)
-        inset = min(1.2, (right-left)*.08)
-        return QRectF(left+inset, lane.top()+1, max(1., right-left-2*inset), lane.height()-2)
+    def span_rect(self, start, end, mode=None, clock=None):
+        lane = self.lane(mode)
+        left, right = self.x_for(start, clock), self.x_for(end+1, clock)
+        inset = min(1., (right-left)*.06)
+        return QRectF(left+inset, lane.top()+2, max(.5, right-left-2*inset), lane.height()-4)
 
-    def _hit(self, pos):
-        if not self.lane().contains(pos):
+    def _hit(self, mode, pos):
+        if mode is None or not self.lane(mode).contains(pos):
             return None, None
-        spans = self._spans()
+        spans = self._spans(mode)
         for i, (start, end) in enumerate(spans):
             left, right = self.x_for(start), self.x_for(end+1)
             if left <= pos.x() < right or (i == len(spans)-1 and pos.x() == right):
                 threshold = min(8., (right-left)/3.)
-                if pos.x()-left <= threshold:
-                    if self.studio.mode != 1 or i > 0:
-                        return i, 'left'
-                if right-pos.x() <= threshold:
-                    if self.studio.mode != 1 or i < len(spans)-1:
-                        return i, 'right'
+                if pos.x()-left <= threshold and (mode != 1 or i > 0):
+                    return i, 'left'
+                if right-pos.x() <= threshold and (mode != 1 or i < len(spans)-1):
+                    return i, 'right'
                 return i, 'body'
         return None, None
 
-    def paintEvent(self, event):
-        panel = self.studio
+    def _draw_ruler(self, painter, clock):
         lane = self.lane()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor('#202831'))
-        painter.drawRoundedRect(lane, 4, 4)
-        font = painter.font()
-        font.setPointSizeF(max(7.5, font.pointSizeF()-.8))
-        painter.setFont(font)
-        color, accent = _COLORS[panel.mode]
-        spans = self._spans()
-        if self.preview is not None:
+        # Pick readable divisions from the familiar 1, 2, 5 sequence.
+        step = clock.duration * 76 / lane.width()
+        decade = 10.**math.floor(math.log10(step))
+        step = next(k for k in (1, 2, 5, 10) if k*decade >= step) * decade
+        baseline = self.RULER_HEIGHT-2
+        painter.setPen(QColor('#aebcca'))
+        painter.drawText(QRectF(8, 0, self.LABEL_WIDTH-10, baseline), Qt.AlignmentFlag.AlignVCenter, 'Seconds')
+        end_label = f'{clock.duration:,.3f}'.rstrip('0').rstrip('.')+' s'
+        fm = painter.fontMetrics()
+        end_x = lane.right()-fm.horizontalAdvance(end_label)
+        # Leave space for the exact end label, including very short clips.
+        for i in range(int(clock.duration/step)+1):
+            seconds = i*step
+            x = self._time_x(seconds, clock)
+            label = format(seconds, '.10g')
+            if x+fm.horizontalAdvance(label)+7 >= end_x and i:
+                break
+            painter.drawLine(QPointF(x, baseline-4), QPointF(x, baseline))
+            painter.drawText(QPointF(x, baseline-7), label)
+        painter.drawText(QPointF(end_x, baseline-7), end_label)
+        painter.drawLine(QPointF(lane.right(), baseline-4), QPointF(lane.right(), baseline))
+
+    def _draw_row(self, painter, mode, clock):
+        panel = self.studio
+        lane = self.lane(mode)
+        active = panel.mode == mode
+        color, accent = _COLORS[mode]
+        painter.setPen(QPen(QColor(accent), 1.4) if active else Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#2a3640' if active else '#1b222a'))
+        painter.drawRoundedRect(QRectF(1., lane.top()-1, self.width()-3., lane.height()+2), 4, 4)
+        layer = {0:'overlay', 3:'vectors'}.get(mode)
+        spans = self._spans(mode)
+        if mode == 1 and self.preview_clock is not None:
+            spans = [(s.first, s.last) for s in clock.speeds]
+        elif active and self.preview is not None:
             idx, first, last = self.preview
-            if panel.mode == 1:
-                if self.drag['part'] == 'left':
-                    spans[idx-1] = (spans[idx-1][0], first-1)
-                elif self.drag['part'] == 'right':
-                    spans[idx+1] = (last+1, spans[idx+1][1])
             spans[idx] = (first, last)
         for i, (start, end) in enumerate(spans):
-            rect = self.span_rect(start, end)
-            selected = panel.selected[panel.mode] == i
-            painter.setPen(QPen(QColor(accent if selected else '#727e87'), 1.4 if selected else .7))
+            rect = self.span_rect(start, end, mode, clock)
+            selected = active and panel.selected[mode] == i
+            painter.setPen(QPen(QColor('#f1f4f7' if selected else accent), 1.5 if selected else .6))
             painter.setBrush(QColor(color))
-            painter.drawRoundedRect(rect, min(rect.width()*.1,4.), 4)
+            painter.drawRoundedRect(rect, min(rect.width()*.1,3.), 3)
             painter.save()
             painter.setClipRect(rect)
-            if panel.layer:
-                s = panel.model.spans(panel.layer)[i]
-                if end > start and (s.fade_in or s.fade_out):
-                    t0, t1 = panel.model.time_at(start), panel.model.time_at(end)
-                    attack = min(end, max(start, panel.model.frame_at(t0+s.fade_in)))
-                    release = min(end, max(start, panel.model.frame_at(max(t0,t1-s.fade_out))))
-                    # Put the envelope below the clip name so a fade starting
-                    # at the left handle never strikes through the label.
-                    painter.setPen(QPen(QColor(accent), 1.2))
-                    if s.fade_in:
-                        painter.drawLine(QPointF(rect.left(), rect.bottom()-1), QPointF(self.x_for(attack),rect.bottom()-7))
-                    if s.fade_out:
-                        painter.drawLine(QPointF(self.x_for(release),rect.bottom()-7),QPointF(rect.right(),rect.bottom()-1))
-                label = 'Vector duration' if panel.layer == 'vectors' else 'Overlay duration'
-            elif panel.mode == 1:
-                label = f'{panel.model.speeds[i].fps:g} fps'
+            if layer:
+                span = panel.model.spans(layer)[i]
+                label = 'Vector field' if mode == 3 else 'Color map'
+                start_time, stop_time = clock.time_at(start), clock.time_at(end)
+                painter.setPen(QPen(QColor(accent), 1.2))
+                if span.fade_in:
+                    x = self._time_x(min(stop_time, start_time+span.fade_in), clock)
+                    painter.drawLine(QPointF(rect.left(), rect.bottom()-1), QPointF(x, rect.bottom()-6))
+                if span.fade_out:
+                    x = self._time_x(max(start_time, stop_time-span.fade_out), clock)
+                    painter.drawLine(QPointF(x, rect.bottom()-6), QPointF(rect.right(), rect.bottom()-1))
+            elif mode == 1:
+                label = f'{clock.speeds[i].fps:g} fps'
             else:
-                label = panel._text['custom'] if panel._text['fields'] == ('custom',) else 'Text & data'
-            if rect.width() > 34:
+                label = panel.text_blocks[i]['custom'].replace('\n', ' ') or 'Frame data'
+            if rect.width() > 32:
                 painter.setPen(QColor('#f3f7fa'))
-                label = QFontMetrics(font).elidedText(label, Qt.TextElideMode.ElideRight, int(rect.width()-20))
-                painter.drawText(rect.adjusted(9.,0.,-9.,0.), Qt.AlignmentFlag.AlignVCenter, label)
+                label = painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, int(rect.width()-16))
+                painter.drawText(rect.adjusted(8.,0.,-8.,0.), Qt.AlignmentFlag.AlignVCenter, label)
             if selected and rect.width() >= 12:
                 painter.setPen(QPen(QColor(accent), 2))
                 for x in (rect.left()+3, rect.right()-3):
-                    painter.drawLine(QPointF(x,rect.center().y()-5),QPointF(x,rect.center().y()+5))
+                    painter.drawLine(QPointF(x,rect.center().y()-4),QPointF(x,rect.center().y()+4))
             painter.restore()
         if not spans:
-            painter.setPen(QColor('#b9c4cc'))
-            message = (f'Add {_TRACKS[panel.mode].lower()} at the playhead' if panel.layer
-                       else 'Add text or frame data to the video')
-            painter.drawText(lane, Qt.AlignmentFlag.AlignCenter, message)
-        # A separate ruler allows scrubbing even where clips occupy the whole track.
-        painter.setPen(QColor('#aeb9c4'))
-        left = f'{panel.clip.source_frame(0):,}'
-        right = f'{panel.clip.source_frame(panel.model.count-1):,}'
-        painter.drawText(QRectF(lane.left(),0,lane.width(),16), Qt.AlignmentFlag.AlignLeft,left)
-        painter.drawText(QRectF(lane.left(),0,lane.width(),16), Qt.AlignmentFlag.AlignRight,right)
-        x = (self.x_for(panel.playhead)+self.x_for(panel.playhead+1)) / 2
+            painter.setPen(QColor('#aab6c3'))
+            painter.drawText(lane.adjusted(7,0,0,0), Qt.AlignmentFlag.AlignVCenter, 'No blocks')
+
+    def paintEvent(self, event):
+        clock = self.preview_clock or self.studio.model
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = painter.font()
+        font.setPointSizeF(max(7.5, font.pointSizeF()-.8))
+        painter.setFont(font)
+        self._draw_ruler(painter, clock)
+        for mode in self.rows:
+            self._draw_row(painter, mode, clock)
+        x = self.x_for(self.studio.playhead, clock)
+        y = self.RULER_HEIGHT
         painter.setPen(QPen(QColor('#ffdc87'),1.5))
-        painter.drawLine(QPointF(x,18),QPointF(x,lane.bottom()+4))
-        caret = QPainterPath(QPointF(x-4,15))
-        caret.lineTo(x+4,15)
-        caret.lineTo(x,21)
+        painter.drawLine(QPointF(x,y-4),QPointF(x,self.height()-2))
+        caret = QPainterPath(QPointF(x-4,y-7))
+        caret.lineTo(x+4,y-7)
+        caret.lineTo(x,y)
         caret.closeSubpath()
         painter.fillPath(caret,QColor('#ffdc87'))
 
@@ -174,48 +217,52 @@ class _StudioTrack(QWidget):
         self.studio.set_position(frame)
         self.studio.seekRequested.emit(frame)
 
+    def cancel_drag(self):
+        self.drag = self.preview = self.preview_clock = None
+        self.update()
+
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
         self.setFocus()
         panel = self.studio
-        panel.editStarted.emit()
         pos = event.position()
+        mode = self.row_at(pos.y())
         frame = self._frame(pos.x())
-        idx, part = self._hit(pos)
+        panel.editStarted.emit()
+        if mode is not None and mode != panel.mode:
+            panel.set_mode(mode)
+        idx, part = self._hit(mode, pos)
         if idx is None:
             self.drag = {'part': 'seek'}
-            if self.lane().contains(pos):
-                panel.selected[panel.mode] = None
+            if mode is not None:
+                panel.selected[mode] = None
             self._seek(frame)
-            panel.refresh()
         else:
-            panel.selected[panel.mode] = idx
+            panel.selected[mode] = idx
             start, end = self._spans()[idx]
             self.drag = dict(idx=idx, part=part, x=pos.x(), start=start, end=end, frame=frame)
-            panel.refresh()
+        panel.refresh()
         event.accept()
 
     def _bounds(self, x):
         drag = self.drag
         idx, part, start, end = (drag[k] for k in ('idx','part','start','end'))
-        count = self.studio.model.count
-        sampling = self.studio.model.sampling
-        delta = (x-drag['x'])/self.lane().width()*sampling.source_count
-        anchor = end+1 if part == 'right' else start
-        offset = sampling.offset(anchor)+delta
-        # The right trim handle can also land at the exclusive clip end.
-        boundary = count if offset >= sampling.source_count-.5 else sampling.nearest(offset)
-        step = boundary-anchor
+        model = self.studio.model
         spans = self._spans()
-        before = spans[idx-1][1]+1 if idx else 0
-        after = spans[idx+1][0]-1 if idx+1 < len(spans) else count-1
+        fraction_delta = (x-drag['x'])/self.lane().width()
         if self.studio.mode == 1:
-            if part == 'left':
-                start = min(end, max(spans[idx-1][0]+1, start+step))
-            elif part == 'right':
-                end = max(start, min(spans[idx+1][1]-1, end+step))
-        elif part == 'left':
+            if part == 'body':
+                return idx, start, end
+            cut = idx if part == 'left' else idx+1
+            boundary = model.speed_boundary_at_fraction(cut, fraction_delta)
+            return (idx, boundary, end) if part == 'left' else (idx, start, boundary-1)
+        anchor = start if part == 'left' else end+1 if part == 'right' else drag['frame']
+        time = model.time_at(anchor)+fraction_delta*model.duration
+        step = model.nearest_boundary(time)-anchor
+        before = spans[idx-1][1]+1 if idx else 0
+        after = spans[idx+1][0]-1 if idx+1 < len(spans) else model.count-1
+        if part == 'left':
             start = max(before, min(end, start+step))
         elif part == 'right':
             end = min(after, max(start, end+step))
@@ -227,15 +274,23 @@ class _StudioTrack(QWidget):
     def mouseMoveEvent(self, event):
         pos = event.position()
         if self.drag is None:
-            _, part = self._hit(pos)
+            mode = self.row_at(pos.y())
+            _, part = self._hit(mode, pos)
             cursor = (Qt.CursorShape.SizeHorCursor if part in ('left','right') else
-                      Qt.CursorShape.OpenHandCursor if part == 'body' and self.studio.mode != 1
+                      Qt.CursorShape.OpenHandCursor if part == 'body' and mode != 1
                       else Qt.CursorShape.PointingHandCursor)
             self.setCursor(cursor)
         elif self.drag['part'] == 'seek':
             self._seek(self._frame(pos.x()))
         elif abs(pos.x()-self.drag['x']) >= 2 or self.preview is not None:
             self.preview = self._bounds(pos.x())
+            if self.studio.mode == 1 and self.drag['part'] != 'body':
+                idx, first, last = self.preview
+                self.preview_clock = self.studio.model.copy()
+                if self.drag['part'] == 'left':
+                    self.preview_clock.move_speed_cut(idx, first)
+                else:
+                    self.preview_clock.move_speed_cut(idx+1, last+1)
             self.update()
         event.accept()
 
@@ -247,19 +302,16 @@ class _StudioTrack(QWidget):
             self._seek(self._frame(event.position().x()))
         elif abs(event.position().x()-drag['x']) >= 2 or self.preview is not None:
             idx, first, last = self._bounds(event.position().x())
-            self.drag = self.preview = None
             if (first,last) != (drag['start'],drag['end']):
                 self.studio.apply_bounds(idx, first, last, drag['part'])
         else:
             self._seek(drag['frame'])
-        self.drag = self.preview = None
-        self.update()
+        self.cancel_drag()
         event.accept()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape and self.drag is not None:
-            self.drag = self.preview = None
-            self.update()
+            self.cancel_drag()
             event.accept()
         elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.studio.delete_selected()
@@ -294,16 +346,6 @@ class _TitleDialog(QDialog):
         self.caption.setPlaceholderText('Optional caption')
         self.caption.setFixedHeight(62)
         form.addRow('Custom text', self.caption)
-        self.position = QComboBox()
-        for label, key in _POSITIONS:
-            self.position.addItem(label, key)
-        self.position.setCurrentIndex(self.position.findData(settings['position']))
-        form.addRow('Position',self.position)
-        self.size = QComboBox()
-        for key in ('small','medium','large'):
-            self.size.addItem(key.title(), key)
-        self.size.setCurrentIndex(self.size.findData(settings['size']))
-        form.addRow('Size',self.size)
         outer.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -324,8 +366,7 @@ class _TitleDialog(QDialog):
         fields = [key for key, check in self.checks.items() if check.isChecked()]
         if custom:
             fields.append('custom')
-        return dict(fields=tuple(fields), custom=custom, position=self.position.currentData(),
-                    size=self.size.currentData())
+        return dict(fields=tuple(fields), custom=custom)
 
 
 class RecordStudio(QFrame):
@@ -338,8 +379,9 @@ class RecordStudio(QFrame):
         self.clip, self.model = clip, model
         self.playhead = self.mode = 0
         self.selected = [0,0,None,0]
-        self._text = dict(fields=(),custom='',position='bottom_left',size='medium',
-                          first=0,last=model.count-1)
+        self.text_blocks = []
+        self.empty_text = dict(fields=(), custom='', position='center', size='medium',
+                               first=0, last=model.count-1)
         self.setObjectName('bosRecordStudio')
         self.setStyleSheet('''
             QFrame#bosRecordStudio { background: #242b34; border: 1px solid #45505e; border-radius: 6px; }
@@ -347,6 +389,9 @@ class RecordStudio(QFrame):
             QFrame#bosRecordStudio QPushButton { min-width: 0; min-height: 22px; padding: 2px 8px; }
             QFrame#bosRecordStudio QSpinBox, QFrame#bosRecordStudio QDoubleSpinBox {
                 min-height: 19px; padding-top: 2px; padding-bottom: 2px; }
+            QFrame#bosRecordStudio QPushButton[studioTab="true"] {
+                min-height: 0; padding: 0 6px; text-align: left; border: 1px solid transparent;
+                background: transparent; color: #bcc8d4; }
             QFrame#bosRecordStudio QPushButton[studioTab="true"]:checked {
                 background: #394550; border: 1px solid #8a9caf; color: #ffffff; }
         ''')
@@ -356,22 +401,13 @@ class RecordStudio(QFrame):
         outer.setSpacing(3)
         top = QHBoxLayout()
         top.setSpacing(4)
-        self.tab_group = QButtonGroup(self)
-        self.tabs = []
-        for index, name in enumerate(_TRACKS):
-            button = QPushButton(name)
-            button.setCheckable(True)
-            button.setProperty('studioTab', True)
-            button.setAccessibleName(f'Edit {name.lower()} track')
-            self.tab_group.addButton(button,index)
-            button.clicked.connect(lambda checked=False,i=index: self.set_mode(i))
-            if name == 'Vectors':
-                top.insertWidget(1, button)
-                button.setVisible(getattr(clip, 'has_vector_track', False))
-            else:
-                top.addWidget(button)
-            self.tabs.append(button)
-        self.tabs[0].setChecked(True)
+        self.track = _StudioTrack(self)
+        self.tabs = self.track.buttons
+        self.split = QPushButton('✂ Split')
+        self.split.setAccessibleName('Split at playhead')
+        self.split.setToolTip('Cut the active track immediately before the displayed frame.')
+        self.split.clicked.connect(self.split_at_playhead)
+        top.addWidget(self.split)
         self.header_hint = QLabel()
         self.header_hint.setMinimumWidth(0)
         self.header_hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -390,7 +426,6 @@ class RecordStudio(QFrame):
         self.encoding.setToolTip('Movie file frame rate. 60 fps is recommended for sharing. The Speed track sets movie duration.')
         top.addWidget(self.encoding)
         outer.addLayout(top)
-        self.track = _StudioTrack(self)
         outer.addWidget(self.track)
 
         self.footer = QBoxLayout(QBoxLayout.Direction.TopToBottom)
@@ -398,14 +433,11 @@ class RecordStudio(QFrame):
         outer.addLayout(self.footer)
         self.actions = QHBoxLayout()
         self.actions.setSpacing(5)
-        self.split = QPushButton('✂ Split')
-        self.split.setAccessibleName('Split at playhead')
-        self.split.clicked.connect(self.split_at_playhead)
         self.add = QPushButton('+ Overlay')
         self.add.clicked.connect(self.add_item)
         self.delete = QPushButton('Delete')
         self.delete.clicked.connect(self.delete_selected)
-        for btn in (self.split,self.add,self.delete):
+        for btn in (self.add,self.delete):
             self.actions.addWidget(btn)
         self.appearance = QPushButton('Appearance…')
         self.appearance.setAccessibleName('Edit vector appearance')
@@ -486,7 +518,33 @@ class RecordStudio(QFrame):
         self._adapt_width(event.size().width())
 
     def text_settings(self):
-        return dict(self._text)
+        values = dict(self.text_blocks[0] if self.text_blocks else self.empty_text)
+        if len(self.text_blocks) > 1:
+            values['blocks'] = tuple(dict(block) for block in self.text_blocks)
+        return values
+
+    def _text_index_at(self, index):
+        return next((i for i, block in enumerate(self.text_blocks)
+                     if block['first'] <= index <= block['last']), None)
+
+    def set_text_placement(self, index, placement):
+        i = self._text_index_at(index)
+        if i is not None:
+            self.text_blocks[i].update(placement)
+            self._edited()
+
+    def select_text_at(self, index):
+        i = self._text_index_at(index)
+        if i is not None:
+            self.set_mode(2)
+            self.selected[2] = i
+            self.refresh()
+
+    def spans(self, mode):
+        if mode == 2:
+            return [(b['first'], b['last']) for b in self.text_blocks]
+        spans = self.model.speeds if mode == 1 else self.model.spans('vectors' if mode == 3 else 'overlay')
+        return [(s.first, s.last) for s in spans]
 
     def output_fps(self):
         return self.encoding.currentData()
@@ -530,13 +588,12 @@ class RecordStudio(QFrame):
         dialog.deleteLater()
 
     def set_mode(self, mode):
-        if self.track.drag is not None:
-            self.track.drag = self.track.preview = None
+        self.track.cancel_drag()
         self.mode = mode
         self.tabs[mode].setChecked(True)
         self.selected[mode] = (self.model.overlay_index(self.playhead, self.layer) if self.layer else
                                self.model.speed_index(self.playhead) if mode == 1 else
-                               0 if self._text['fields'] else None)
+                               self._text_index_at(self.playhead))
         self.refresh()
 
     def set_position(self, index):
@@ -556,6 +613,10 @@ class RecordStudio(QFrame):
             i = self.model.speed_index(self.playhead)
             if self.playhead > self.model.speeds[i].first:
                 return i
+        else:
+            i = self._text_index_at(self.playhead)
+            if i is not None and self.playhead > self.text_blocks[i]['first']:
+                return i
         return None
 
     def _update_actions(self):
@@ -571,12 +632,10 @@ class RecordStudio(QFrame):
         idx = self.selected[self.mode]
         if idx is not None and not 0 <= idx < len(spans):
             self.selected[self.mode] = idx = None
-        self.split.setVisible(self.mode != 2)
-        self.split.setToolTip('Cut the current section immediately before the displayed frame.')
         self.add.setVisible(self.mode != 1)
         self.appearance.setVisible(self.layer == 'vectors')
         self.add.setText('+ ' + _TRACKS[self.mode] if self.layer else
-                         'Edit text…' if self._text['fields'] else '+ Text…')
+                         'Edit text…' if idx is not None else '+ Text…')
         self.add.setToolTip('Fill the gap at the playhead.' if self.layer else 'Choose a caption and data to place on the video.')
         self.delete.setText('Merge' if self.mode == 1 else 'Delete')
         self.delete.setEnabled(idx is not None and (self.mode != 1 or len(spans) > 1))
@@ -591,7 +650,7 @@ class RecordStudio(QFrame):
         self.inspector.setVisible(idx is not None)
         hint = ('Drag ends to trim. Split and pull the facing ends apart for a gap.',
                 'Split at the playhead, then set each section’s playback FPS.',
-                'Add a caption or frame data. Drag its ends to set when it appears.',
+                'Drag text on the picture to place it. Drag a corner to resize.',
                 'Trim or split the arrows independently of the color map.')[self.mode]
         self.hint.setText(hint)
         self.header_hint.setText(hint)
@@ -624,8 +683,12 @@ class RecordStudio(QFrame):
         self.editStarted.emit()
         if self.layer:
             self.selected[self.mode] = self.model.split_overlay(i, cut, self.layer)
-        else:
+        elif self.mode == 1:
             self.selected[1] = self.model.split_speed(cut)
+        else:
+            block = self.text_blocks[i]
+            self.text_blocks[i:i+1] = [dict(block, last=cut-1), dict(block, first=cut)]
+            self.selected[2] = i+1
         self._edited()
 
     def add_item(self):
@@ -639,11 +702,24 @@ class RecordStudio(QFrame):
                         default=self.model.count-1)
             self.selected[self.mode] = self.model.add_overlay(left, right, self.layer)
         elif self.mode == 2:
-            dialog = _TitleDialog(self._text,self)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
+            idx = self.selected[2]
+            if idx is None:
+                idx = self._text_index_at(frame)
+            block = self.text_blocks[idx] if idx is not None else self.empty_text
+            dialog = _TitleDialog(block, self)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            content = dialog.settings() if accepted else None
+            dialog.deleteLater()
+            if not accepted:
                 return
-            self._text.update(dialog.settings())
-            self.selected[2] = 0
+            if idx is None:
+                idx = sum(b['last'] < frame for b in self.text_blocks)
+                first = self.text_blocks[idx-1]['last']+1 if idx else 0
+                last = self.text_blocks[idx]['first']-1 if idx < len(self.text_blocks) else self.model.count-1
+                block = dict(self.empty_text, first=first, last=last)
+                self.text_blocks.insert(idx, block)
+            block.update(content)
+            self.selected[2] = idx
         else:
             return
         self._edited()
@@ -662,8 +738,8 @@ class RecordStudio(QFrame):
             self.model.remove_speed_cut(max(1,idx))
             self.selected[1] = self.model.speed_index(self.playhead)
         else:
-            self._text.update(fields=(),custom='',first=0,last=self.model.count-1)
-            self.selected[2] = None
+            del self.text_blocks[idx]
+            self.selected[2] = self._text_index_at(self.playhead)
         self._edited()
 
     def _exact_bounds(self, field, number):
@@ -690,7 +766,9 @@ class RecordStudio(QFrame):
             elif part == 'right' and idx+1 < len(self.model.speeds):
                 self.model.move_speed_cut(idx+1,last+1)
         else:
-            self._text.update(first=first,last=last)
+            previous_end = self.text_blocks[idx-1]['last'] if idx else -1
+            next_start = self.text_blocks[idx+1]['first'] if idx+1 < len(self.text_blocks) else self.model.count
+            self.text_blocks[idx].update(first=max(first, previous_end+1), last=min(last, next_start-1))
         self._edited()
 
     def _fades_changed(self):

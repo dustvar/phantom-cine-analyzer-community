@@ -6,13 +6,14 @@ from pathlib import Path
 import threading
 import time
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QSignalBlocker, Signal
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import Qt, QThread, QTimer, QSignalBlocker, Signal
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QDialog, QDoubleSpinBox,
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QProgressBar, QPushButton,
     QSizePolicy, QSlider, QStyle, QStyleOptionSlider, QVBoxLayout)
 
-from bos_compass_view import CompassViewMixin
+from bos_studio_card_view import StudioCardViewMixin
+from bos_studio_cards import CardPlacement, StudioVectorKey
 from bos_display import DIRECTION_COLORS
 from bos_playback_controls import ReplaySpeed, SampleFrameBox
 from bos_sampling import RangeSampling
@@ -123,7 +124,7 @@ class _SampleTimeline(QSlider):
         super().mousePressEvent(event)
 
 
-class _PlaybackView(CompassViewMixin, ImageView):
+class _PlaybackView(StudioCardViewMixin, ImageView):
     framePainted = Signal(int)
 
     def __init__(self, parent=None):
@@ -144,15 +145,6 @@ class _PlaybackView(CompassViewMixin, ImageView):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.text_card and self.image is not None:
-            pixels, (x, y, w, h) = self.text_card
-            card = QImage(pixels.data, w, h, pixels.strides[0], QImage.Format.Format_RGBA8888)
-            target = self.image_rect()
-            sx, sy = target.width()/self.image.width(), target.height()/self.image.height()
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            painter.drawImage(QRectF(target.x()+x*sx, target.y()+y*sy, w*sx, h*sy), card)
-            painter.end()
         if self.index != self.painted_index:
             self.painted_index = self.index
             self.framePainted.emit(self.index)
@@ -175,7 +167,9 @@ class BOSPreviewWindow(QDialog):
             self._levels = self._raw
         self._vector_levels = self.edit_model.opacity_bytes('vectors') if clip.has_vector_track else None
         self._vector_style = None
-        self.reader = PreviewReadAhead(clip)
+        self.vector_key_placement = CardPlacement()
+        self.key_artist = StudioVectorKey(clip)
+        self.reader = PreviewReadAhead(clip, include_key=False)
         self.reader.set_layers(self._levels, self._vector_levels)
         self.position = -1
         self.playing = False
@@ -209,6 +203,8 @@ class BOSPreviewWindow(QDialog):
         layout.setSpacing(3)
         title = QLabel('Analyzed BOS')
         title.setStyleSheet('font-size: 20px; font-weight: 600;')
+        self.header_title = title
+        self.direction_swatch = None
         header = QHBoxLayout()
         header.setSpacing(6)
         header.addWidget(title)
@@ -219,17 +215,23 @@ class BOSPreviewWindow(QDialog):
             key.setStyleSheet('font-size: 19px;')
             key.setAccessibleName('Direction key: left mint, up blue, down gold, right coral')
             key.setToolTip('Direction of apparent dot shift. Diagonal shifts blend between the arrows.')
+            self.direction_swatch = key
             header.addWidget(key)
         sampling = self.clip.sampling
-        summary = QLabel(f'{self.clip.count:,} frames' if sampling.step == 1 else
-                         f'{sampling.count:,} of {sampling.source_count:,} frames analyzed')
-        summary.setToolTip(f'Cine {self.clip.source_frame(0):,} to '
-                           f'{self.clip.source_frame(self.clip.count-1):,} · Lossless cached result')
+        self.full_count = (f'{self.clip.count:,} frames' if sampling.step == 1 else
+                           f'{sampling.count:,} of {sampling.source_count:,} frames analyzed')
+        self.short_count = (self.full_count if sampling.step == 1 else
+                            f'{sampling.count:,} / {sampling.source_count:,}')
+        self.sample_summary = summary = QLabel(self.full_count)
+        summary.setAccessibleName(self.full_count)
+        summary.setToolTip(f'{self.full_count} · Cine {self.clip.source_frame(0):,} to '
+                           f'{self.clip.source_frame(self.clip.count-1):,}')
         header.insertWidget(1, summary)
         header.insertStretch(2, 1)
         layout.addLayout(header)
         self.view = _PlaybackView(self)
         self.view.message = 'Loading analyzed frames…'
+        self.view.setToolTip('Drag text or a key to move it. Select a graphic and drag a corner to resize it.')
         self.view.framePainted.connect(self._painted)
         layout.addWidget(self.view, 1)
         self.warning = QLabel()
@@ -316,6 +318,10 @@ class BOSPreviewWindow(QDialog):
         self.compass_button.setAccessibleName('Show direction compass on video and export')
         self.compass_button.setToolTip('Add a movable, resizable direction key to the video and exported MP4.')
         header.addWidget(self.compass_button)
+        self.view.card_selected = self._select_card
+        self.view.card_placement = self._card_placement
+        self.view.card_placed = self._place_card
+        self.view.card_restored = self._save_card_placement
         self.view.compass_edit_started = self.pause
         self.view.compass_removed = lambda: self.compass_button.setChecked(False)
         self.compass_button.toggled.connect(self._toggle_compass)
@@ -354,6 +360,21 @@ class BOSPreviewWindow(QDialog):
         self.play.setEnabled(False)
         self.studio.encoding.currentIndexChanged.connect(self._update_export_summary)
         self._update_export_summary()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, 'sample_summary'):
+            return
+        width = event.size().width()
+        # Allow for longer numbers on large Cines and platform font differences.
+        controls = (self.header_title, self.overlay, self.vectors, self.compass_button)
+        fixed = sum(widget.sizeHint().width() for widget in controls if not widget.isHidden()) + 76
+        full_width = self.sample_summary.fontMetrics().horizontalAdvance(self.full_count)
+        swatch_width = self.direction_swatch.sizeHint().width()+8 if self.direction_swatch else 0
+        wide = width >= max(680, fixed+full_width+swatch_width)
+        if self.direction_swatch is not None:
+            self.direction_swatch.setVisible(wide)
+        self.sample_summary.setText(self.full_count if wide else self.short_count)
 
     def _update_export_summary(self):
         fps = self.studio.output_fps()
@@ -420,6 +441,54 @@ class BOSPreviewWindow(QDialog):
 
     def _update_card(self, index):
         self.view.text_card = self._text.graphic(index, self.edit_model.rate_at(index))
+        self.view.vector_key_card = self._key_graphic(index, self.vector_key_placement)
+
+    def _key_graphic(self, index, placement):
+        if self._vector_levels is None or index < 0:
+            return None
+        return self.key_artist.graphic(index, placement, self._vector_style,
+                                       self._levels[index], self._vector_levels[index])
+
+    def _select_card(self, name):
+        self.pause()
+        if self.studio.isVisible():
+            if name == 'text':
+                self.studio.select_text_at(self.position)
+            else:
+                self.studio.set_mode(3)
+
+    def _card_placement(self, name):
+        if name == 'vector_key':
+            return self.vector_key_placement
+        settings = self._text.at(self.position).settings
+        return CardPlacement(settings.get('anchor'), settings.get('scale', 1.))
+
+    def _place_card(self, name, scale, corner, fixed):
+        if name == 'text':
+            card = self.view.text_card
+            text = self._text.at(self.position)
+            if text is None:
+                return
+            if scale != text.settings.get('scale', 1.):
+                artist = StudioText(self.clip, dict(text.settings, scale=scale), self.capture_fps)
+                card = artist.graphic(self.position, self.edit_model.rate_at(self.position))
+        else:
+            card = self._key_graphic(self.position, CardPlacement(scale=scale))
+        if card is None:
+            return
+        _, _, w, h = card[1]
+        ax = (corner[0]-fixed[0]*w)/max(1,self.clip.width-w)
+        ay = (corner[1]-fixed[1]*h)/max(1,self.clip.height-h)
+        placement = CardPlacement((max(0.,min(1.,ax)), max(0.,min(1.,ay))), scale)
+        self._save_card_placement(name, placement)
+
+    def _save_card_placement(self, name, placement):
+        if name == 'text':
+            self.studio.set_text_placement(self.position, dict(anchor=placement.anchor,scale=placement.scale))
+        else:
+            self.vector_key_placement = placement
+            self.view.vector_key_card = self._key_graphic(self.position, placement)
+            self.view.update()
 
     def _painted(self, index):
         if self.playing and not self.buffering:
@@ -506,6 +575,7 @@ class BOSPreviewWindow(QDialog):
             self.paints.clear()
             self.skipped = 0
             self.view.deselect_compass()
+            self.view.clear_card_selection()
             self._update_compass_frame(self.position)
             self.play.setText('Pause')
             self._tick()
@@ -639,10 +709,11 @@ class BOSPreviewWindow(QDialog):
         titles = StudioText(self.clip, self.studio.text_settings(), self.capture_fps)
         compass = self.view.compass if self.compass_button.isChecked() else None
         vectors_enabled = self.vectors.isChecked()
+        key_placement = self.vector_key_placement
         dialog = _Progress(self, title, total,
                            lambda cancel, progress: export_cached_bos(self.clip, path, fps, cancel, progress,
                                                                     overlay_mask=mask, compass=compass, studio=edit,
-                                                                    vectors_enabled=vectors_enabled,
+                                                                    vectors_enabled=vectors_enabled, vector_key=key_placement,
                                                                     text_renderer=titles.composite if titles.fields else None))
         self.export_worker = dialog.worker
         self.export.setEnabled(False)
