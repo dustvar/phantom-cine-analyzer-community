@@ -4,15 +4,17 @@ All tracks share the finished movie's clock. Exact interval controls display
 inclusive native Cine frame numbers.
 """
 import math
+import sys
 
-from PySide6.QtCore import Qt, Signal, QSignalBlocker, QPointF, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
+from PySide6.QtCore import QCoreApplication, Qt, Signal, QSignalBlocker, QPointF, QRectF
+from PySide6.QtGui import QContextMenuEvent, QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QBoxLayout, QButtonGroup, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout,
-    QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy,
+    QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QPushButton, QSizePolicy,
     QVBoxLayout, QWidget)
 
 from bos_playback_controls import SampleFrameBox
+from bos_speed_ramp_ui import SpeedRampDialog, rate_curve
 from bos_studio_model import MAX_PLAYBACK_FPS
 
 
@@ -118,6 +120,47 @@ class _StudioTrack(QWidget):
                 return i, 'body'
         return None, None
 
+    def _cut_at(self, pos):
+        lane = self.lane(1)
+        if not lane.contains(pos):
+            return None
+        clock = self.studio.model
+        cuts = range(1, len(clock.speeds))
+        near = min(cuts, key=lambda i: abs(self.x_for(clock.speeds[i].first)-pos.x()), default=None)
+        if near is not None and abs(self.x_for(clock.speeds[near].first)-pos.x()) <= 9:
+            return near
+        if pos.y() >= lane.bottom()-10:
+            for cut in cuts:
+                if clock.speeds[cut].ramp:
+                    first, last = clock.ramp_bounds(cut)
+                    if self._time_x(first, clock) <= pos.x() <= self._time_x(last, clock):
+                        return cut
+        return None
+
+    def _draw_speed_cuts(self, painter, clock):
+        lane = self.lane(1)
+        for cut, span in enumerate(clock.speeds[1:], 1):
+            x = self.x_for(span.first, clock)
+            accent = QColor('#b4e1ff' if span.ramp else '#92aac0')
+            if span.ramp:
+                first, last = clock.ramp_bounds(cut)
+                x0, x1 = self._time_x(first, clock), self._time_x(last, clock)
+                band = QRectF(x0, lane.bottom()-7, max(1., x1-x0), 6)
+                painter.fillRect(band, QColor('#273a4d'))
+                painter.setPen(QPen(accent, 1.4))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPath(rate_curve(band.adjusted(0, 1, 0, -1), clock.speeds[cut-1].fps,
+                                            span.fps, span.curve))
+            y = lane.top()+5
+            mark = QPainterPath(QPointF(x, y-3.5))
+            mark.lineTo(x+3.5, y)
+            mark.lineTo(x, y+3.5)
+            mark.lineTo(x-3.5, y)
+            mark.closeSubpath()
+            painter.setPen(QPen(accent, 1.1))
+            painter.setBrush(accent if span.ramp else QColor('#273a4d'))
+            painter.drawPath(mark)
+
     def _draw_ruler(self, painter, clock):
         lane = self.lane()
         # Pick readable divisions from the familiar 1, 2, 5 sequence.
@@ -183,12 +226,16 @@ class _StudioTrack(QWidget):
             if rect.width() > 32:
                 painter.setPen(QColor('#f3f7fa'))
                 label = painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, int(rect.width()-16))
-                painter.drawText(rect.adjusted(8.,0.,-8.,0.), Qt.AlignmentFlag.AlignVCenter, label)
+                # Leave the lower edge free for the playback-rate curve.
+                caption = rect.adjusted(8., 0., -8., -4. if mode == 1 else 0.)
+                painter.drawText(caption, Qt.AlignmentFlag.AlignVCenter, label)
             if selected and rect.width() >= 12:
                 painter.setPen(QPen(QColor(accent), 2))
                 for x in (rect.left()+3, rect.right()-3):
                     painter.drawLine(QPointF(x,rect.center().y()-4),QPointF(x,rect.center().y()+4))
             painter.restore()
+        if mode == 1:
+            self._draw_speed_cuts(painter, clock)
         if not spans:
             painter.setPen(QColor('#aab6c3'))
             painter.drawText(lane.adjusted(7,0,0,0), Qt.AlignmentFlag.AlignVCenter, 'No blocks')
@@ -221,7 +268,34 @@ class _StudioTrack(QWidget):
         self.drag = self.preview = self.preview_clock = None
         self.update()
 
+    def contextMenuEvent(self, event):
+        if event.reason() == QContextMenuEvent.Reason.Keyboard:
+            if self.studio.mode == 1:
+                self.studio.choose_ramp()
+                event.accept()
+                return
+        else:
+            cut = self._cut_at(event.pos())
+            if cut is not None:
+                self.studio.edit_speed_ramp(cut)
+                event.accept()
+                return
+        super().contextMenuEvent(event)
+
     def mousePressEvent(self, event):
+        # On Cocoa the physical Control key maps to Qt Meta unless swapping
+        # was disabled. Treat Control-click like the trackpad secondary click.
+        mac_control = (Qt.KeyboardModifier.ControlModifier if QCoreApplication.testAttribute(
+            Qt.ApplicationAttribute.AA_MacDontSwapCtrlAndMeta) else Qt.KeyboardModifier.MetaModifier)
+        secondary = (event.button() == Qt.MouseButton.RightButton or
+                     sys.platform == 'darwin' and event.button() == Qt.MouseButton.LeftButton
+                     and bool(event.modifiers() & mac_control))
+        if secondary:
+            cut = self._cut_at(event.position())
+            if cut is not None:
+                self.studio.edit_speed_ramp(cut)
+                event.accept()
+                return
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
         self.setFocus()
@@ -401,6 +475,7 @@ class RecordStudio(QFrame):
         outer.setSpacing(3)
         top = QHBoxLayout()
         top.setSpacing(4)
+        self._ramp_dialog = None
         self.track = _StudioTrack(self)
         self.tabs = self.track.buttons
         self.split = QPushButton('✂ Split')
@@ -444,6 +519,11 @@ class RecordStudio(QFrame):
         self.appearance.setToolTip('Change the arrow color, symbol and thickness throughout this analyzed clip.')
         self.appearance.clicked.connect(self.edit_appearance)
         self.actions.addWidget(self.appearance)
+        self.ramp = QPushButton('Speed ramp…')
+        self.ramp.setAccessibleName('Edit a speed ramp')
+        self.ramp.setToolTip('Choose a speed cut and set how long it takes to reach the next playback speed.')
+        self.ramp.clicked.connect(self.choose_ramp)
+        self.actions.addWidget(self.ramp)
         self.actions.addSpacing(6)
         self.hint = QLabel()
         self.hint.setMinimumWidth(0)
@@ -558,6 +638,49 @@ class RecordStudio(QFrame):
     def layer(self):
         return {0: 'overlay', 3: 'vectors'}.get(self.mode)
 
+    def choose_ramp(self):
+        spans = self.model.speeds
+        if len(spans) < 2:
+            return
+        if len(spans) == 2:
+            self.edit_speed_ramp(1)
+            return
+        menu = QMenu(self.ramp)
+        for cut, span in enumerate(spans[1:], 1):
+            frame = self.clip.source_frame(span.first)
+            label = f'Frame {frame:,}   ·   {spans[cut-1].fps:g} → {span.fps:g} fps'
+            if span.ramp:
+                label += f'   ·   {span.ramp:g} s'
+            action = menu.addAction(label)
+            action.triggered.connect(lambda checked=False, i=cut: self.edit_speed_ramp(i))
+            if cut == max(1, self.selected[1] or 0):
+                menu.setActiveAction(action)
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(self.ramp.mapToGlobal(self.ramp.rect().bottomLeft()))
+
+    def edit_speed_ramp(self, cut):
+        if self._ramp_dialog is not None:
+            return
+        self.editStarted.emit()
+        self.set_mode(1)
+        self.selected[1] = cut
+        self.refresh()
+        span = self.model.speeds[cut]
+        dialog = SpeedRampDialog(self.model, cut, self.clip.source_frame(span.first), self)
+        self._ramp_dialog = dialog
+
+        def finish(result):
+            self._ramp_dialog = None
+            if result == QDialog.DialogCode.Accepted:
+                duration, curve = dialog.settings()
+                if duration != span.ramp or curve != span.curve:
+                    self.model.set_ramp(cut, duration, curve)
+                    self._edited()
+            dialog.deleteLater()
+
+        dialog.finished.connect(finish)
+        dialog.open()
+
     def edit_appearance(self):
         from bos_vector_controls import VectorAppearance
         from bos_vectors import VectorStyle
@@ -633,6 +756,8 @@ class RecordStudio(QFrame):
         if idx is not None and not 0 <= idx < len(spans):
             self.selected[self.mode] = idx = None
         self.add.setVisible(self.mode != 1)
+        self.ramp.setVisible(self.mode == 1)
+        self.ramp.setEnabled(len(self.model.speeds) > 1)
         self.appearance.setVisible(self.layer == 'vectors')
         self.add.setText('+ ' + _TRACKS[self.mode] if self.layer else
                          'Edit text…' if idx is not None else '+ Text…')
@@ -649,7 +774,8 @@ class RecordStudio(QFrame):
         self.speed.setVisible(self.mode == 1)
         self.inspector.setVisible(idx is not None)
         hint = ('Drag ends to trim. Split and pull the facing ends apart for a gap.',
-                'Split at the playhead, then set each section’s playback FPS.',
+                ('Split at the playhead to set a new playback FPS.' if len(self.model.speeds) < 2 else
+                 'Right-click a speed cut to ramp between sections.'),
                 'Drag text on the picture to place it. Drag a corner to resize.',
                 'Trim or split the arrows independently of the color map.')[self.mode]
         self.hint.setText(hint)

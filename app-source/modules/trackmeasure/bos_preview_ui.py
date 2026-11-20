@@ -272,8 +272,8 @@ class BOSPreviewWindow(QDialog):
         self.fps.setKeyboardTracking(False)
         self.fps.setSuffix(' fps')
         self.fps.setValue(self.clip.manifest['settings']['playback_fps'])
-        self.fps.setToolTip('Requested replay rate. The shown rate reports frames painted by the app; '
-                            'your display refresh rate can limit visible motion at very high rates.')
+        self.fps.setToolTip('Playback FPS at the playhead, including speed ramps. '
+                            'Editing this value sets the selected speed section’s target FPS.')
         self.fps.valueChanged.connect(self._rate_changed)
         for widget in (self.previous, self.play, self.following, self.loop):
             transport.addWidget(widget)
@@ -439,8 +439,10 @@ class BOSPreviewWindow(QDialog):
             self._update_card(self.position)
             self.view.update()
 
-    def _update_card(self, index):
-        self.view.text_card = self._text.graphic(index, self.edit_model.rate_at(index))
+    def _update_card(self, index, rate=None):
+        if rate is None:
+            rate = self.edit_model.rate_at(index)
+        self.view.text_card = self._text.graphic(index, rate)
         self.view.vector_key_card = self._key_graphic(index, self.vector_key_placement)
 
     def _key_graphic(self, index, placement):
@@ -500,24 +502,27 @@ class BOSPreviewWindow(QDialog):
             targets = self.edit_model.preview_indices(index, self.reader.capacity, self.display_hz)
         self.reader.request(index, targets)
 
-    def _present(self, index, image):
+    def _present(self, index, image, rate=None):
+        if rate is None:
+            rate = self.edit_model.rate_at(index)
         self.position = index
         self._update_compass_frame(index)
-        self._update_card(index)
+        self._update_card(index, rate)
         self.view.present(image, index)
         self._request_frames(index)
         now = time.monotonic()
         if not self.playing or self.fps.value() <= 120 or now-self._last_controls_update >= 1/30:
-            self._update_frame_controls(index)
+            self._update_frame_controls(index, rate)
             self._last_controls_update = now
 
-    def _update_frame_controls(self, index):
+    def _update_frame_controls(self, index, rate=None):
         if not self.slider.isSliderDown():
             self._sync_slider(index)
         with QSignalBlocker(self.number):
             self.number.setValue(self.clip.source_frame(index))
-        rate = self.edit_model.rate_at(index)
-        if self.fps.value() != rate:
+        if rate is None:
+            rate = self.edit_model.rate_at(index)
+        if self.fps.value() != round(rate, self.fps.decimals()):
             with QSignalBlocker(self.fps):
                 self.fps.setValue(rate)
             self.speed_control.sync_slider()
@@ -589,6 +594,8 @@ class BOSPreviewWindow(QDialog):
         if not self.closing:
             if self.position >= 0 and self.pending_seek is None:
                 self._update_frame_controls(self.position)
+                self._update_card(self.position)
+                self.view.update()
                 self._update_compass_frame(self.position)
             self.rate.setText(f'Paused · {self.fps.value():g} fps replay · no live BOS calculation')
 
@@ -664,6 +671,7 @@ class BOSPreviewWindow(QDialog):
                     self.seek(self.clip.count-1)
             return
         target = self.edit_model.frame_at(elapsed)
+        rate = self.edit_model.rate_at_time(elapsed)
         if self.fast_preview:
             target = max(self.position, self.edit_model.preview_frame(target, self.display_hz))
         if target != self.position:
@@ -678,7 +686,15 @@ class BOSPreviewWindow(QDialog):
                 self.rate.setText('Buffering cached frames…')
                 return
             self.skipped += max(0, target-self.position-1)
-            self._present(target, image)
+            self._present(target, image, rate)
+        elif (now-self._last_controls_update >= 1/30 and
+              self.fps.value() != round(rate, self.fps.decimals())):
+            # The picture can be held between measured frames while the ramp
+            # continues. Keep both the readout and its on-picture title moving.
+            self._update_frame_controls(target, rate)
+            self.view.text_card = self._text.graphic(target, rate)
+            self.view.update()
+            self._last_controls_update = now
         if now-self._last_rate_update >= .25:
             while self.paints and now-self.paints[0] > 1.2:
                 self.paints.popleft()

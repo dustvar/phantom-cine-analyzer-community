@@ -160,6 +160,20 @@ def probe_bos_preview(window, report, finished):
                     data['studio_rows'] = [player.studio.tabs[i].text() for i in player.studio.track.rows]
                     data['camera_caption'] = camera_lines(player.clip, {'camera_model','resolution','exposure'}, 0)
                     data['vector_key_visible'] = player.view.vector_key_card is not None
+                if os.environ.get('PCA_STARTUP_TEST_BOS_RAMP') == '1':
+                    clock = player.edit_model
+                    cut = clock.split_speed(player.clip.count // 2)
+                    clock.set_speed(cut, 800)
+                    player.studio.edit_speed_ramp(cut)
+                    dialog = player.studio._ramp_dialog
+                    dialog.duration.setValue(.1)
+                    dialog.grab().save(str(report.with_suffix('.speed-ramp.png')))
+                    dialog.accept()
+                    start, end = clock.ramp_bounds(cut)
+                    rates = [clock.rate_at_time(start + (end-start)*u) for u in (0, .25, .5, .75, 1)]
+                    if abs(end-start-.1) > 1e-8 or any(abs(a-b) > .01 for a,b in zip(rates, (200,293.75,500,706.25,800))):
+                        raise RuntimeError('Speed ramp duration or easing differs from the finished-video clock.')
+                    data['ramp'] = dict(seconds=end-start, rates=rates)
                 player.play.click()
                 QTimer.singleShot(20,window,lambda:poll(1));return
             if stage==1:

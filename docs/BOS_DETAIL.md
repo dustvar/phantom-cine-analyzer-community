@@ -124,6 +124,13 @@ the tracks. Click or drag on the ruler to seek.
   This is the number of source frames that pass in one second of the finished movie.
   For equal numbers of source frames, a 600 fps section takes one-third as much
   space on the ruler as a 200 fps section. Every track follows the same change.
+  Right-click a cut between two speed sections to edit its ramp. On Mac, you can
+  also Control-click. The **Speed ramp…** button opens the editor from the Speed row.
+  Enter a duration in finished-video seconds. **Linear** changes the rate evenly.
+  **Ease in and out** starts and finishes the change gently. The ramp is centered
+  on the cut, and the editor shows how much time fits between adjacent cuts.
+  Set the duration to zero to return to an instant change. Preview, on-screen
+  playback FPS and MP4 export follow the same ramp.
 - **Text** lets you add a caption, Cine frame number, frame count, playback or
   capture FPS, slowdown, trigger time, camera model, exposure and resolution.
   New titles start in the center. Drag a title on the picture to move it, or

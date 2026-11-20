@@ -486,3 +486,6 @@ BOS Record Studio 1.14.11
 - Titles start centered and can be placed and resized on the picture, along with the calibrated vector key. Split titles have independent placement and content.
 - Optional camera model, exposure, resolution and native Cine frame labels travel with cached results. Per-frame exposure is used when recorded.
 - The five arrow choices show site counts for the current region, including a new maximum of up to twice the previous densest setting. A softened magnitude background and opposite-contrast arrows appear when the color map is hidden.
+
+BOS speed ramps 1.14.12
+- Speed cuts support linear and eased transitions in finished-movie seconds in Record Studio, with shared timing for preview, captions, the seconds ruler and MP4 export.

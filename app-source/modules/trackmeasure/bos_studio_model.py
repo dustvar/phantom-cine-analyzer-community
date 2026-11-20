@@ -11,6 +11,7 @@ import math
 import numpy as np
 
 from bos_sampling import RangeSampling
+from bos_speed_clock import RampClock, ramp_limit
 
 
 MAX_PLAYBACK_FPS = 1000
@@ -30,6 +31,8 @@ class SpeedSpan:
     first: int
     last: int
     fps: float
+    ramp: float = 0.
+    curve: str = 'smooth'
 
 
 def _rate(value, maximum=MAX_PLAYBACK_FPS):
@@ -76,6 +79,16 @@ class StudioEdit:
 
     def _refresh_timing(self):
         self._speed_starts = [s.first for s in self.speeds]
+        self._alphas = {}
+        self._ramp_clock = None
+        if any(s.ramp for s in self.speeds[1:]):
+            self._ramp_clock = RampClock(self.speeds, self.sampling)
+            for i, actual in self._ramp_clock.actual.items():
+                if self.speeds[i].ramp != actual:
+                    self.speeds[i] = replace(self.speeds[i], ramp=actual)
+            self._exact_duration = self._ramp_clock.duration
+            self._time_starts = [self._ramp_clock.time_at(self.sampling.offset(i)) for i in self._speed_starts]
+            return
         self._time_starts = []
         duration = Fraction()
         for span in self.speeds:
@@ -83,7 +96,6 @@ class StudioEdit:
             source_frames = self.sampling.offset(span.last+1) - self.sampling.offset(span.first)
             duration += source_frames / Fraction(str(span.fps))
         self._exact_duration = duration
-        self._alphas = {}
 
     @property
     def duration(self):
@@ -106,12 +118,23 @@ class StudioEdit:
         return None
 
     def rate_at(self, frame):
+        if self._ramp_clock is not None:
+            return self.rate_at_time(self.time_at(frame))
         return self.speeds[self.speed_index(frame)].fps
+
+    def rate_at_time(self, seconds):
+        if not math.isfinite(seconds):
+            raise ValueError('Choose a finite time.')
+        if self._ramp_clock is not None:
+            return self._ramp_clock.sample(_clamp(seconds, 0., self.duration))[1]
+        return self.speeds[self.speed_index_at_time(seconds)].fps
 
     def time_at(self, frame):
         if frame >= self.count:
             return self.duration
         frame = max(0, frame)
+        if self._ramp_clock is not None:
+            return self._ramp_clock.time_at(self.sampling.offset(frame))
         i = self.speed_index(frame)
         span = self.speeds[i]
         return self._time_starts[i] + (self.sampling.offset(frame)-self.sampling.offset(span.first))/span.fps
@@ -120,6 +143,8 @@ class StudioEdit:
         if not math.isfinite(seconds):
             raise ValueError('Choose a finite time.')
         seconds = _clamp(seconds, 0., self.duration)
+        if self._ramp_clock is not None:
+            return self.sampling.index_at(self._ramp_clock.sample(seconds)[0])
         # An exact boundary can round just below an integer after converting
         # decimal FPS and subtracting preceding segment durations.
         tolerance = 4*math.ulp(max(1., seconds))
@@ -140,6 +165,22 @@ class StudioEdit:
         original = self.sampling.offset(right.first)
         elapsed = self.time_at(right.first)
         fraction = _clamp(elapsed/self.duration + fraction_delta, 0., 1.)
+        if self._ramp_clock is not None:
+            # A drag can shorten an adjacent ramp. Solve on the resulting
+            # clocks, so the cut stays under the pointer as the ruler rescales.
+            probe = self.copy()
+            def at(candidate):
+                probe.speeds = self.speeds.copy()
+                probe.move_speed_cut(cut, candidate)
+                return probe.time_at(candidate)/probe.duration
+            low, high = left.first+1, right.last
+            while high-low > 1:
+                mid = (low+high)//2
+                if at(mid) < fraction:
+                    low = mid
+                else:
+                    high = mid
+            return min((low, high), key=lambda candidate: abs(at(candidate)-fraction))
         # Advancing the cut by N source frames lengthens the left section by
         # N/left.fps and shortens the right by N/right.fps. Solve for N using
         # the requested fraction of the resulting movie length.
@@ -153,8 +194,18 @@ class StudioEdit:
     def preview_frame(self, frame, refresh_hz):
         """Choose a source frame on the display grid, preserving cut boundaries."""
         span = self.speeds[self.speed_index(frame)]
+        if self._ramp_clock is not None:
+            origin = self.time_at(span.first)
+            next_tick = self._next_preview_tick(frame, origin, refresh_hz)
+            return _clamp(self.frame_at(origin+(next_tick-1)/refresh_hz), span.first, frame)
         step = self._display_step(span.fps, refresh_hz)
         return span.first + ((frame-span.first)//step)*step
+
+    def _next_preview_tick(self, frame, origin, refresh_hz):
+        next_time = self.time_at(frame+1)
+        ticks = (next_time-origin)*refresh_hz
+        tolerance = 8*math.ulp(max(1., next_time))*refresh_hz
+        return max(1, math.ceil(ticks-tolerance))
 
     def _display_step(self, fps, refresh_hz):
         # Existing rates use consecutive frames. For very fast sections, avoid
@@ -168,8 +219,13 @@ class StudioEdit:
         while len(frames) < capacity and frames[-1] < self.count-1:
             current = frames[-1]
             span = self.speeds[self.speed_index(current)]
-            step = self._display_step(span.fps, refresh_hz)
-            following = span.first + ((current-span.first)//step+1)*step
+            if self._ramp_clock is not None:
+                origin = self.time_at(span.first)
+                tick = self._next_preview_tick(current, origin, refresh_hz)
+                following = max(current+1, self.frame_at(origin+tick/refresh_hz))
+            else:
+                step = self._display_step(span.fps, refresh_hz)
+                following = span.first + ((current-span.first)//step+1)*step
             frames.append(min(following, span.last+1, self.count-1))
         return tuple(frames)
 
@@ -187,9 +243,29 @@ class StudioEdit:
         span = self.speeds[i]
         if not span.first < frame <= span.last:
             raise ValueError('Place the playhead inside a speed section to split it.')
-        self.speeds[i:i+1] = [replace(span, last=frame-1), replace(span, first=frame)]
+        self.speeds[i:i+1] = [replace(span, last=frame-1), replace(span, first=frame, ramp=0., curve='smooth')]
         self._refresh_timing()
         return i+1
+
+    def ramp_limit(self, cut, curve='smooth'):
+        if not 1 <= cut < len(self.speeds):
+            raise ValueError('Choose a cut between two speed sections.')
+        if curve not in ('smooth', 'linear'):
+            raise ValueError('Choose Smooth or Linear for the speed ramp.')
+        return ramp_limit(self.speeds, self.sampling, cut, curve)
+
+    def ramp_bounds(self, cut):
+        span = self.speeds[cut]
+        center = self.time_at(span.first)
+        return max(0., center-span.ramp/2), min(self.duration, center+span.ramp/2)
+
+    def set_ramp(self, cut, duration, curve='smooth'):
+        maximum = self.ramp_limit(cut, curve)
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError('Choose a finite, non-negative ramp duration.')
+        self.speeds[cut] = replace(self.speeds[cut], ramp=min(float(duration), maximum), curve=curve)
+        self._refresh_timing()
+        return cut
 
     def set_speed(self, index, fps):
         self.speeds[index] = replace(self.speeds[index], fps=_rate(fps))
@@ -297,7 +373,10 @@ class StudioEdit:
                 for speed in self.speeds[self.speed_index(span.first):self.speed_index(span.last)+1]:
                     lo, hi = max(span.first, speed.first), min(span.last, speed.last)
                     offsets = np.minimum(np.arange(lo, hi+1)*self.sampling.step, self.sampling.source_count-1)
-                    times = self.time_at(lo) + (offsets-offsets[0])/speed.fps
+                    if self._ramp_clock is None:
+                        times = self.time_at(lo) + (offsets-offsets[0])/speed.fps
+                    else:
+                        times = self._ramp_clock.times_for_offsets(offsets)
                     strength = np.ones_like(times)
                     if span.fade_in:
                         strength = np.minimum(strength, (times-start)/span.fade_in)

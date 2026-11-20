@@ -351,7 +351,8 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
 
     Dense clips without studio edits use the output FPS as their playback rate.
     Sampled clips keep their source playback speed at every output FPS.
-    text_renderer receives a private RGB frame, local source index and playback rate.
+    text_renderer receives a private RGB frame, local source index and playback rate
+    at the encoded frame's presentation timestamp, including held samples.
     """
     destination = Path(destination)
     source = Path(clip.manifest['source'])
@@ -380,8 +381,9 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
     with clip.reader() as reader:
         def frames():
             previous = None
+            previous_rate = None
             result = None
-            for index in indices:
+            for output_index, index in enumerate(indices):
                 _cancelled(cancel)
                 if index != previous:
                     level = opacity[index] if opacity is not None else 255
@@ -401,12 +403,19 @@ def export_cached_bos(clip, destination, fps, cancel=None, progress=None, *, ove
                         _compass_at_opacity(frame, compass, level)
                     if key_artist is not None:
                         composite_card(frame, key_artist.graphic(index, vector_key, style, level, arrows))
-                    if text_renderer is not None:
-                        updated = text_renderer(frame, index, clock.rate_at(index) if clock else fps)
-                        if updated is not None:
-                            frame = updated
-                    result = video_frame(frame)
-                    previous = index
+                rate = fps
+                if clock is not None and text_renderer is not None:
+                    rate = clock.rate_at_time(output_index / fps)
+                if index != previous or rate != previous_rate:
+                    if text_renderer is None:
+                        result = video_frame(frame)
+                    else:
+                        # A held measurement may need a new FPS title on each
+                        # encoded frame. Preserve the undecorated image for it.
+                        titled = frame.copy()
+                        updated = text_renderer(titled, index, rate)
+                        result = video_frame(titled if updated is None else updated)
+                    previous, previous_rate = index, rate
                 yield result
         width, height = clip.width + clip.width % 2, clip.height + clip.height % 2
         return write_video_frames(destination, frames(), width, height, fps, total, cancel, progress, full_rate_intent=fps >= 120)
