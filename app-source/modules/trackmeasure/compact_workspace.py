@@ -137,7 +137,7 @@ class CompactWorkspaceMixin:
         tools.addWidget(self.mode_button,0,0);tools.addWidget(self.scale_tool,0,1)
         self.analysis_tools.setMinimumWidth(0);self.analysis_tools.setMaximumWidth(16777215)
         self.analysis_tools.setSizePolicy(QSizePolicy.Maximum,QSizePolicy.Fixed)
-        self.mode_button.setFixedSize(96,38);self.mode_button.setToolTip('Choose Viewer, Track, measurements, Overlay or BOS')
+        self.mode_button.setFixedSize(96,38);self.mode_button.setToolTip('Choose a viewing or analysis tool')
         self.mode_button.setStyleSheet('QToolButton { background: #704f7c; color: #ffffff; border: 1px solid #b18ac1; font-weight: 600; font-size: 14px; padding: 4px 10px; } QToolButton:hover { background: #83608f; } QToolButton:disabled { background: #34313a; color: #8d8492; }')
         self.scale_tool.setFixedSize(38,38);self.scale_tool.setAccessibleName('Calibrate image scale')
         self.scale_tool.setStyleSheet('padding: 4px; min-width: 28px; min-height: 28px;')
@@ -145,6 +145,7 @@ class CompactWorkspaceMixin:
         cine_grid=self.cine_disp_col.layout()
         cine_header=cine_grid.itemAtPosition(0,0).layout()
         cine_grid.removeItem(cine_header)
+        self._viewer_source_row = cine_header
         header.addLayout(cine_header,1)
         header.addWidget(self.job_controls)
         outer=self.layout()
@@ -174,6 +175,12 @@ class CompactWorkspaceMixin:
         self._sync_compact_control_metrics()
         analysis=self.workflow_stack.currentWidget() is self.tab_splitter
         tracking=analysis and self.current_tool is self.track_tool
+        event_open = self.workflow_stack.currentWidget() is self.event_finder
+        for index in range(self._viewer_source_row.count()):
+            widget = self._viewer_source_row.itemAt(index).widget()
+            if widget is not None and widget is not self.theme_button:
+                widget.setVisible(not event_open)
+        self.scale_tool.setVisible(not event_open)
         self.details_rail.setVisible(analysis)
         self.details_buttons[2].setVisible(tracking)
         self.details_buttons[2].setToolTip('Tracked objects, measured points and object settings')
@@ -208,6 +215,7 @@ class CompactWorkspaceMixin:
         self.mode_menu = QMenu(self.mode_button); self.mode_button.setMenu(self.mode_menu)
         self.mode_actions = {}
         names = [('Viewer', self.viewer_tool, 'viewer-eye.svg'), ('Video Overlay', self.overlay_tool, 'viewer-eye.svg'),
+                 ('Event Finder', self.event_tool, 'target-32.png'),
                  ('Background-Oriented Schlieren (BOS)', self.bos_tool, 'bos.svg'),
                  ('Track', self.track_tool, 'target-32.png'), ('Distance', self.two_pt_tool, 'line-32.png'),
                  ('Angle', self.three_pt_tool, 'angle-32.png'), ('Lines', self.two_line_tool, '2-line-32.png'),
@@ -336,7 +344,9 @@ class CompactWorkspaceMixin:
     def _sync_mode_menu(self):
         panel = self.workflow_stack.currentWidget()
         active = self.current_tool
-        if panel is self.bos_panel:
+        if panel is self.event_finder:
+            active = self.event_tool
+        elif panel is self.bos_panel:
             active = self.bos_tool
         elif panel is self.overlay_panel:
             active = self.overlay_tool

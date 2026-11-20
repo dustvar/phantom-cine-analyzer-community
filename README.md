@@ -10,6 +10,11 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
+- **Event Finder (1.14.13).** Draw a rectangle in a saved Cine or a completed
+  Phantom RAM recording and scan every frame for short-lived changes. Jump
+  between ranked candidate intervals and inspect the original frames. See the
+  [Event Finder guide](docs/EVENT_FINDER.md) for the USB-C Ethernet workflow.
+
 - **BOS speed ramps (1.14.12).** Right-click a cut on the Speed track to ramp
   between playback rates over a duration in finished-video seconds. Choose a
   linear change or ease in and out. Preview and MP4 use the same timing.
@@ -171,7 +176,7 @@ Development requires access to the pyphantom helper packages listed in
 `environment.yml`. The native build uses the versions in
 `packaging/runtime-requirements.txt`.
 
-The native Mac app is at 1.14.12. The Windows x64 packaging notes describe the
+The native Mac app is at 1.14.13. The Windows x64 packaging notes describe the
 previously prepared portable build (1.14.3). See [startup and Windows portability](docs/STARTUP_AND_WINDOWS.md) for
 runtime requirements, per-user settings, packaging and validation limits.
 

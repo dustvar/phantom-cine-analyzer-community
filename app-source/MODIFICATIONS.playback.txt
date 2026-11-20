@@ -489,3 +489,7 @@ BOS Record Studio 1.14.11
 
 BOS speed ramps 1.14.12
 - Speed cuts support linear and eased transitions in finished-movie seconds in Record Studio, with shared timing for preview, captions, the seconds ruler and MP4 export.
+
+Event Finder 1.14.13
+- Added a post-recording, full-cadence ROI scan for brief changes in saved Cines and supported completed Phantom RAM Cines. Results show candidate frame ranges and peak frames for inspection.
+- Added a standard Ethernet PH16 reader for completed RAM partitions and native frame numbers. The operator keeps control of recording and triggering.

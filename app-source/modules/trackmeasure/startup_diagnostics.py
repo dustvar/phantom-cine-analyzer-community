@@ -75,6 +75,9 @@ def record_ready(window, started):
             return
         try:
             inspect()
+            if os.environ.get('PCA_STARTUP_TEST_EVENT_FINDER') == '1':
+                probe_event_finder(window, target, finish)
+                return
             if os.environ.get('PCA_STARTUP_TEST_BOS_PREVIEW') == '1':
                 probe_bos_preview(window, target, finish)
                 return
@@ -86,6 +89,58 @@ def record_ready(window, started):
             target.write_text(json.dumps({'error': traceback.format_exc()}), encoding='utf-8')
         finish()
     QTimer.singleShot(500, capture)
+
+
+def probe_event_finder(window, report, finished):
+    """Rescan a saved ROI and follow the strongest candidate into the Viewer."""
+    panel = window.event_finder
+    deadline = time.monotonic()+45
+    data = {}
+
+    def poll(stage=0):
+        try:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f'Event Finder check timed out at stage {stage}: {panel.status.text()}')
+            if stage == 0:
+                if window.workflow_stack.currentWidget() is not panel:
+                    raise RuntimeError('The saved job did not reopen in Event Finder.')
+                if panel.analyze.isEnabled():
+                    data.update(path=panel.current, roi=panel.roi, count=panel.info.count,
+                                first_frame=panel.info.first)
+                    panel.analyze.click()
+                    stage = 1
+            elif stage == 1 and panel.scanned and not panel.activity:
+                if not panel.hits.events:
+                    raise RuntimeError('The saved Event Finder region returned no candidates.')
+                first = panel.info.first
+                data['candidates'] = [dict(first=first+e.first, peak=first+e.peak, last=first+e.last)
+                                      for e in panel.hits.events]
+                peak = data['candidates'][0]['peak']
+                if panel.native.value() != peak or not panel.viewer.isEnabled():
+                    raise RuntimeError('Event Finder did not present the candidate peak.')
+                if not window.grab().save(str(report.with_suffix('.event-finder.png'))):
+                    raise RuntimeError('Could not save the Event Finder screenshot.')
+                panel.viewer.click()
+                stage = 2
+            elif stage == 2 and window.workflow_stack.currentWidget() is window.tab_splitter:
+                peak = data['candidates'][0]['peak']
+                offset = peak-data['first_frame']
+                if (window.current_tool is window.viewer_tool and window.cine_path and
+                        Path(window.cine_path).resolve() == Path(data['path']).resolve() and
+                        window.vm.active_frame == offset and window.frame_slider.value() == offset):
+                    data['viewer_frame'] = data['first_frame'] + window.vm.active_frame
+                    result = json.loads(report.read_text())
+                    result['event_finder'] = data
+                    report.write_text(json.dumps(result, indent=2), encoding='utf-8')
+                    finished()
+                    return
+            QTimer.singleShot(30, window, lambda: poll(stage))
+        except Exception:
+            result = json.loads(report.read_text())
+            result['error'] = traceback.format_exc()
+            report.write_text(json.dumps(result, indent=2), encoding='utf-8')
+            finished()
+    poll()
 
 
 def probe_bos_preview(window, report, finished):

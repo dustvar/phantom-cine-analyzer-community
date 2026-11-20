@@ -22,6 +22,7 @@ from viewer_editor_mixin import ViewerEditorMixin
 from camera_comparator_ui import CameraComparatorPanel
 from video_overlay_ui import VideoOverlayPanel
 from bos_ui import BOSPanel
+from event_finder_ui import EventFinderPanel
 from workspace_job_ui import WorkspaceJobMixin
 from viewer_timeline import frame_label, copy_options
 from autotrackalgorithms import AutoTrackAlgorithms
@@ -47,7 +48,7 @@ import pandas as pd
 
 # constants
 MINIGRAPH_SIZE = 160
-VERSION = '1.14.12 · BOS Speed Ramps'
+VERSION = '1.14.13 · Event Finder'
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
@@ -1998,8 +1999,8 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             QTimer.singleShot(100, self.close)
             event.ignore()
             return
-        if not all((self.bos_panel.shutdown(), self.overlay_panel.shutdown(), self.comparator_panel.shutdown())):
-            self.status_bar.setText('Finishing comparison work before closing…')
+        if not all((self.bos_panel.shutdown(), self.overlay_panel.shutdown(), self.comparator_panel.shutdown(), self.event_finder.shutdown())):
+            self.status_bar.setText('Finishing active work before closing…')
             QTimer.singleShot(100, self.close)
             event.ignore()
             return
@@ -2064,6 +2065,10 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self.workflow_stack.addWidget(self.overlay_panel)
         self.bos_panel = BOSPanel(self)
         self.workflow_stack.addWidget(self.bos_panel)
+        self.event_finder = EventFinderPanel(self)
+        self.event_finder.openInViewer.connect(self._open_event_in_viewer)
+        self.workflow_stack.addWidget(self.event_finder)
+        self._pending_event_jump = None
         main_layout = QGridLayout()
         self.job_controls = self._create_job_bar()
         main_layout.addWidget(self.job_controls, 0, 0, 1, 3)
@@ -2105,6 +2110,11 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self.overlay_tool._layout.setSpacing(4)
         self.overlay_tool.setAccessibleName('Video Overlay')
         self.overlay_tool.clicked.connect(self._show_video_overlay)
+        self.event_tool = QToolButton(self.analysis_tools)
+        self.event_tool.setCheckable(True)
+        self.event_tool.setAccessibleName('Event Finder')
+        self.event_tool.clicked.connect(self._show_event_finder)
+        self.event_tool.hide()
         self.bos_tool = QToolButton(self.analysis_tools)
         self.bos_tool.setCheckable(True)
         self.bos_tool.setAccessibleName('Background-Oriented Schlieren (BOS)')
@@ -2122,6 +2132,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self.analysis_tools_bg.addButton(self.comparator_tool)
         self.analysis_tools_bg.addButton(self.overlay_tool)
         self.analysis_tools_bg.addButton(self.bos_tool)
+        self.analysis_tools_bg.addButton(self.event_tool)
         self.analysis_tools_bg.addButton(self.track_tool)
         self.analysis_tools_bg.addButton(self.two_pt_tool)
         self.analysis_tools_bg.addButton(self.three_pt_tool)
@@ -3035,9 +3046,15 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
     @Slot(object)
     def _on_workspace_loaded(self, contexts):
         self.vm.install_cine_workspace(contexts)
+        if self._pending_event_jump is not None:
+            path, index = self._pending_event_jump
+            self._pending_event_jump = None
+            if any(Path(ctx['cine_path']).resolve() == Path(path) for ctx in contexts):
+                self._open_event_in_viewer(path, index)
 
     @Slot(str)
     def _on_workspace_load_failed(self, error):
+        self._pending_event_jump = None
         self.status_bar.setText(f'Error loading Cine workspace: {error}')
 
     @Slot()
@@ -5722,6 +5739,30 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             current.pause()
         self.workflow_stack.setCurrentWidget(panel)
         return True
+
+    def _show_event_finder(self, checked=False, *, restore=False):
+        if not self._open_analysis_panel(self.event_finder):
+            return
+        if not restore:
+            paths = [ctx['cine_path'] for ctx in self.vm.workspace_contexts]
+            self.event_finder.set_sources(paths, self.cine_path or None, self.vm.active_frame)
+
+    def _open_event_in_viewer(self, path, index):
+        resolved = Path(path).resolve()
+        for pane, context in enumerate(self.vm.workspace_contexts):
+            if Path(context['cine_path']).resolve() == resolved:
+                if self.workflow_stack.currentWidget() is not self.tab_splitter or self.current_tool is not self.viewer_tool:
+                    self.viewer_tool.click()
+                if pane in self.hidden_cine_indices:
+                    self.restore_cine_pane(pane)
+                else:
+                    self.activate_cine_pane(pane)
+                self.frame_slider.setValue(index)
+                return
+        if self.load_cine_thread is None:
+            self._choose_image(path)
+            if self.load_cine_thread is not None:
+                self._pending_event_jump = (str(resolved), index)
 
     def _show_bos(self, checked=False, *, restore=False):
         if not self._open_analysis_panel(self.bos_panel):

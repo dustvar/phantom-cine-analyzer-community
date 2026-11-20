@@ -61,7 +61,7 @@ class WorkspaceJobMixin:
         c=self.comparator_panel
         states=deepcopy(c.saved_states)
         if c.session is not None:states[c.session.path]=deepcopy(c.settings())
-        workflows = {self.overlay_panel: 'overlay', c: 'comparator', self.bos_panel: 'bos'}
+        workflows = {self.overlay_panel: 'overlay', c: 'comparator', self.bos_panel: 'bos', self.event_finder: 'event_finder'}
         view=dict(tool=next((name for name in TOOL_BUTTONS if getattr(self,name) is self.current_tool),'viewer_tool'),
             workflow=workflows.get(self.workflow_stack.currentWidget(), 'analysis'),
             tab=self.main_tab.currentIndex(), hidden=sorted(self.hidden_cine_indices),clip_ranges=deepcopy(self.workspace_clip_ranges),
@@ -85,11 +85,11 @@ class WorkspaceJobMixin:
         return dict(contexts=[capture_context(ctx) for ctx in self.vm.workspace_contexts],active=self.vm.active_cine_index,
             track_type=self.vm.track_type,n_diff=self.vm.n_diff,view=view,
             comparator=dict(states=states,source=c.session.path if c.session is not None else '',position=c.slider.value()),
-            overlay=self.overlay_panel.settings(), bos=self.bos_panel.settings())
+            overlay=self.overlay_panel.settings(), bos=self.bos_panel.settings(), event_finder=self.event_finder.settings())
 
     def save_job_path(self,path):
         payload=self.capture_job()
-        if not payload['contexts'] and not any(payload['overlay']['paths']) and not payload['comparator']['source'] and not payload['bos']['path']:
+        if not payload['contexts'] and not any(payload['overlay']['paths']) and not payload['comparator']['source'] and not payload['bos']['path'] and not payload['event_finder'].get('path'):
             raise ValueError('Load footage before saving a job.')
         if Path(path).suffix.lower()!='.pcajob':path=str(path)+'.pcajob'
         save_job(path,payload);self.job_path=str(Path(path).resolve())
@@ -110,7 +110,7 @@ class WorkspaceJobMixin:
     def open_job_dialog(self):
         path,_=QFileDialog.getOpenFileName(self,'Open complete job',str(Path.home()/'Desktop'),'Phantom job (*.pcajob)')
         if not path:return
-        if self.vm.workspace_contexts or any(self.overlay_panel.settings()['paths']) or self.bos_panel.settings()['path']:
+        if self.vm.workspace_contexts or any(self.overlay_panel.settings()['paths']) or self.bos_panel.settings()['path'] or self.event_finder.settings().get('path'):
             answer=QMessageBox.question(self,'Open another job','Save the current job before opening another?',QMessageBox.StandardButton.Save|QMessageBox.StandardButton.Discard|QMessageBox.StandardButton.Cancel,QMessageBox.StandardButton.Save)
             if answer==QMessageBox.StandardButton.Cancel:return
             if answer==QMessageBox.StandardButton.Save and not self.save_job_dialog():return
@@ -119,6 +119,9 @@ class WorkspaceJobMixin:
     def request_open_job(self,path):
         # Finish short decoder jobs without sharing or closing their readers mid-use.
         self._stop_playback();self.overlay_panel.pause();self.comparator_panel.pause();self.bos_panel.pause()
+        if self.event_finder.busy():
+            QMessageBox.information(self, 'Open job', 'Finish or cancel the event search before opening another job.')
+            return
         if self._job_work_busy():
             QMessageBox.warning(self,'Open job','Finish or cancel tracking / Cine loading first.');return
         if (self.comparator_panel.export_job is not None or getattr(self.bos_panel, '_bos_export_worker', None) is not None
@@ -136,7 +139,7 @@ class WorkspaceJobMixin:
 
     def open_job_path(self,path,relink=None):
         if getattr(self,'_guide',None):self._cancel_guided_setup()
-        if self._job_work_busy() or self.overlay_panel.busy() or self.comparator_panel.busy() or self.bos_panel.busy():
+        if self._job_work_busy() or self.event_finder.busy() or self.overlay_panel.busy() or self.comparator_panel.busy() or self.bos_panel.busy():
             raise ValueError('Wait for the current operation before opening a job.')
         payload=resolve_media(read_job(path),path,relink)
         contexts=[]
@@ -191,7 +194,11 @@ class WorkspaceJobMixin:
             c._job_restore_position=payload['comparator'].get('position',0)
         self.overlay_panel.apply_settings(payload['overlay'])
         self.bos_panel.apply_settings(payload.get('bos', {}))
+        self.event_finder.apply_settings(payload.get('event_finder', {}))
         workflow=payload['view']['workflow']
+        if workflow == 'event_finder':
+            self.event_tool.setChecked(True)
+            self._show_event_finder(restore=True)
         if workflow == 'bos':
             self.bos_tool.setChecked(True)
             self._show_bos(restore=True)
@@ -209,8 +216,11 @@ class WorkspaceJobMixin:
         def numbers(values,length,low=-1e12,high=1e12):
             return isinstance(values,(list,tuple)) and len(values)==length and all(number(x,low,high) for x in values)
         v=p.get('view')
-        if not isinstance(v,dict) or v.get('tool') not in TOOL_BUTTONS or v.get('workflow') not in ('analysis','overlay','comparator','bos'):
+        if not isinstance(v,dict) or v.get('tool') not in TOOL_BUTTONS or v.get('workflow') not in ('analysis','overlay','comparator','bos','event_finder'):
             raise ValueError('Invalid saved workspace view.')
+        if 'event_finder' in p:
+            from event_finder_ui import validate_event_settings
+            p['event_finder'] = validate_event_settings(p['event_finder'])
         from bos_frames import validate_bos_settings
         if 'bos' in p:
             p['bos'] = validate_bos_settings(p['bos'])

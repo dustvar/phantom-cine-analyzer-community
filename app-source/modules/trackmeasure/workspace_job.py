@@ -123,9 +123,10 @@ def media_paths(payload):
         paths.append(context['source'])
         for copy in context['fields']['viewer_edit'].get('copies',[]):
             if copy.get('source_path'):paths.append(copy['source_path'])
-    bos_path = payload.get('bos', {}).get('path')
-    if bos_path:
-        paths.append(bos_path)
+    for name in ('bos', 'event_finder'):
+        source = payload.get(name, {}).get('path')
+        if source:
+            paths.append(source)
     overlay=payload.get('overlay',{})
     paths.extend(p for p in overlay.get('paths',[]) if p)
     comparator=payload.get('comparator',{})
@@ -206,8 +207,9 @@ def resolve_media(payload,job_path,relink=None):
         context['source']=mapping[context['source']]
         for copy in context['fields']['viewer_edit']['copies']:
             if copy.get('source_path'):copy['source_path']=mapping[copy['source_path']]
-    if result.get('bos', {}).get('path'):
-        result['bos']['path'] = mapping[result['bos']['path']]
+    for name in ('bos', 'event_finder'):
+        if result.get(name, {}).get('path'):
+            result[name]['path'] = mapping[result[name]['path']]
     if 'overlay' in result:result['overlay']['paths']=[mapping[p] if p else '' for p in result['overlay']['paths']]
     if 'comparator' in result:
         c=result['comparator'];c['states']={mapping[p]:s for p,s in c.get('states',{}).items()}
