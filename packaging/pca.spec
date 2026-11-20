@@ -57,10 +57,10 @@ collection = COLLECT(exe, analysis.binaries, analysis.datas, strip=False, upx=Fa
                      name='PhantomCineAnalyzer')
 app = BUNDLE(collection, name='Phantom Cine Analyzer Additional Features.app',
              icon=str(module/'images/icon.icns'),
-             bundle_identifier='local.phantom-cine-analyzer.playback', version='1.14.13',
+             bundle_identifier='local.phantom-cine-analyzer.playback', version='1.14.14',
              info_plist={
                  'CFBundleDisplayName':'Phantom Cine Analyzer Additional Features',
-                 'CFBundleShortVersionString':'1.14.13',
+                 'CFBundleShortVersionString':'1.14.14',
                  'LSMinimumSystemVersion':'13.0', 'NSHighResolutionCapable':True,
                  'NSPrincipalClass':'NSApplication',
                  'CFBundleDocumentTypes':[

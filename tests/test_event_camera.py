@@ -51,6 +51,7 @@ class _Camera:
         self.changed_during_read = False
         self.truncate = self.stall = False
         self.polls = 0
+        self.transferred = 0
         self.image_reply = None
         self.frames = np.arange(6*5*7, dtype=np.uint16).reshape(6,5,7)*257
         self.metadata = {
@@ -84,7 +85,9 @@ class _Camera:
         if m[3]=='8':
             block = (block >> 8).astype(np.uint8)
         pixels = block.tobytes()
-        self.data.buffer.extend(pixels[:len(pixels)//2] if self.truncate else pixels)
+        payload = pixels[:len(pixels)//2] if self.truncate else pixels
+        self.transferred += len(payload)
+        self.data.buffer.extend(payload)
         if self.changed_during_read:
             self.stamp += 1
         if self.image_reply is not None:
@@ -124,6 +127,66 @@ class CameraTests(unittest.TestCase):
         camera = _Camera('8')
         src = self.wire(camera)
         np.testing.assert_array_equal(src.preview(0), camera.frames[0] >> 8)
+
+    def test_full_and_fast_scan_transfer_exact_requested_frames(self):
+        for mode, step, frame_bytes in [('full', 1, 70), ('fast', 1, 35), ('fast', 2, 35)]:
+            with self.subTest(mode=mode,step=step):
+                camera = _Camera('8 P16')
+                src = self.wire(camera)
+                self.assertEqual(src.transfer_modes, {'fast','full'})
+                src.set_transfer_mode(mode)
+                if step == 2:
+                    # The random reference phase must never pull neighboring frames.
+                    src.read_roi(0,(0,0,1,1))
+                    src.read_roi(3,(0,0,1,1))
+                    self.assertEqual(camera.transferred,2*frame_bytes)
+                camera.transferred = 0
+                camera.commands.clear()
+                src.set_scan_stride(step,0,4)
+                for i in range(0,5,step):
+                    sample = src.read_roi(i,(1,2,3,2))
+                    native = camera.frames[i,2:4,1:4]
+                    expected = (native >> 8).astype(np.uint8) if mode == 'fast' else native
+                    self.assertEqual(sample.dtype,expected.dtype)
+                    np.testing.assert_array_equal(sample,expected)
+                fmt = '8' if mode == 'fast' else 'P16'
+                requests = [c for c in camera.commands if c.startswith('img ')]
+                if step == 1:
+                    self.assertEqual(requests,[f'img {{cine:1, start:-4, cnt:5, fmt:{fmt}}}'])
+                else:
+                    self.assertEqual(requests,[f'img {{cine:1, start:{n}, cnt:1, fmt:8}}' for n in (-4,-2,0)])
+                self.assertEqual(camera.transferred,len(range(0,5,step))*frame_bytes)
+                self.assertEqual(camera.commands.count('get c1.trigtime'),2)
+                self.assertTrue(all(s.closed for s in camera.opened))
+                patch.stopall()
+
+    def test_off_grid_last_frame_and_single_precision_camera(self):
+        for advertised,requested,expected in [('8','full','8'), ('P16','fast','P16')]:
+            with self.subTest(advertised=advertised):
+                camera = _Camera(advertised)
+                src = self.wire(camera)
+                self.assertEqual(src.transfer_modes, {'full' if expected=='P16' else 'fast'})
+                src.set_transfer_mode(requested)
+                src.set_scan_stride(3,0,5)
+                for index in (0,3,5):
+                    src.read_roi(index,(2,2,1,1))
+                self.assertEqual([c for c in camera.commands if c.startswith('img ')],
+                                 [f'img {{cine:1, start:{n}, cnt:1, fmt:{expected}}}' for n in (-4,-1,1)])
+                patch.stopall()
+
+    def test_cached_read_validation_never_attaches_and_sparse_overwrite_discards_batch(self):
+        camera = _Camera('8 P16')
+        src = self.wire(camera)
+        src.validate_recording()
+        self.assertTrue(all(s.port == 7115 and s.closed for s in camera.opened))
+        src.set_transfer_mode('fast')
+        src.set_scan_stride(2)
+        camera.changed_during_read = True
+        with self.assertRaisesRegex(ec.CameraReadError,'changed'):
+            src.read_roi(0,(1,0,2,2))
+        with self.assertRaisesRegex(ec.CameraReadError,'changed'):
+            src.validate_recording()
+        self.assertTrue(all(s.closed for s in camera.opened))
 
     def test_veo_1310s_acknowledgement_without_format(self):
         camera = _Camera()

@@ -1,5 +1,6 @@
 """Find and review short changes in a recorded Cine."""
 from pathlib import Path
+from time import monotonic
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal, QSignalBlocker
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QShortcut
@@ -8,8 +9,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame
                                QSpinBox, QSplitter, QStyle, QStyleOptionSlider, QTableView,
                                QVBoxLayout, QWidget)
 
-from bos_ui import RegionView
-from event_detection import Event
+from event_region_view import EventRegionView
+from event_detection import Event, sample_count
 from event_finder_ui_state import validate_event_settings
 from event_finder_ui_worker import RecordingWorker
 
@@ -21,6 +22,7 @@ class _Candidates(QAbstractTableModel):
         super().__init__(parent)
         self.events = ()
         self.first = 0
+        self.sampled = False
 
     def replace(self, events, first):
         self.beginResetModel()
@@ -35,7 +37,7 @@ class _Candidates(QAbstractTableModel):
 
     def headerData(self, section, orientation, role):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.headers[section]
+            return ('Sampled peak', 'First seen', 'Last seen')[section] if self.sampled else self.headers[section]
         return None
 
     def data(self, index, role=Qt.DisplayRole):
@@ -105,6 +107,7 @@ class EventFinderPanel(QWidget):
         self.roi = self.restore = None
         self.activity = ''
         self.scanned = self.cancelling = self.closing = False
+        self._rate_start = None
         self._active_file = ''
         self._restored_selection = False
         self._build()
@@ -136,7 +139,7 @@ class EventFinderPanel(QWidget):
         left = QWidget()
         video = QVBoxLayout(left)
         video.setContentsMargins(0, 0, 0, 0)
-        self.view = RegionView()
+        self.view = EventRegionView()
         self.view.setAccessibleName('Event Finder footage. Drag a rectangle around the area to inspect.')
         self.view.regionSelected.connect(self.set_roi)
         video.addWidget(self.view, 1)
@@ -172,12 +175,57 @@ class EventFinderPanel(QWidget):
         self.region_label = QLabel()
         self.region_label.setWordWrap(True)
         region = QHBoxLayout()
-        region.addWidget(QLabel('Analysis region'), 1)
+        self.shape = QComboBox()
+        self.shape.setAccessibleName('Analysis region shape')
+        self.shape.addItem('Rectangle', 'rectangle')
+        self.shape.addItem('4 × 4 point', 'point')
+        self.shape.currentIndexChanged.connect(self._shape_changed)
+        region.addWidget(QLabel('Region'))
+        region.addWidget(self.shape, 1)
         self.full = QPushButton('Whole frame')
         self.full.clicked.connect(self._whole_frame)
         region.addWidget(self.full)
         side.addLayout(region)
         side.addWidget(self.region_label)
+        scan_range = QHBoxLayout()
+        self.first = QSpinBox()
+        self.last = QSpinBox()
+        for control, name in ((self.first,'First'), (self.last,'Last')):
+            control.setKeyboardTracking(False)
+            control.setGroupSeparatorShown(True)
+            control.setAccessibleName(name+' native frame to scan')
+            control.setToolTip(name+' native frame to scan, inclusive')
+            scan_range.addWidget(QLabel(name))
+            scan_range.addWidget(control, 1)
+            control.valueChanged.connect(self._range_changed)
+        side.addLayout(scan_range)
+        interval = QHBoxLayout()
+        interval.addWidget(QLabel('Check every'))
+        self.step = QSpinBox()
+        self.step.setRange(1, 2_147_483_647)
+        self.step.setKeyboardTracking(False)
+        self.step.setAccessibleName('Check every N frames')
+        self.step.setValue(1)
+        self.step.valueChanged.connect(self._sensitivity_changed)
+        interval.addWidget(self.step)
+        self.step_unit = QLabel('frame')
+        interval.addWidget(self.step_unit, 1)
+        self.reset_range = QPushButton('Full range')
+        self.reset_range.setToolTip('Use the entire recorded Cine')
+        self.reset_range.clicked.connect(self._reset_range)
+        interval.addWidget(self.reset_range)
+        side.addLayout(interval)
+        self.coverage = QLabel()
+        self.coverage.setWordWrap(True)
+        side.addWidget(self.coverage)
+        self.precision = QComboBox()
+        self.precision.setAccessibleName('Camera transfer precision')
+        self.precision.currentIndexChanged.connect(self._sensitivity_changed)
+        self.precision_label = QLabel('Transfer')
+        precision_row = QHBoxLayout()
+        precision_row.addWidget(self.precision_label)
+        precision_row.addWidget(self.precision, 1)
+        side.addLayout(precision_row)
         options = QHBoxLayout()
         options.addWidget(QLabel('Sensitivity'))
         self.sensitivity = QComboBox()
@@ -192,7 +240,7 @@ class EventFinderPanel(QWidget):
         actions = QHBoxLayout()
         self.analyze = QPushButton('Analyze recording')
         self.analyze.setProperty('primaryAction', True)
-        self.analyze.setToolTip('Check every recorded frame within the selected region.')
+        self.analyze.setToolTip('Look for changes inside the selected region and frame range.')
         self.analyze.clicked.connect(self._analyze)
         self.cancel = QPushButton('Cancel')
         self.cancel.clicked.connect(self.cancel_scan)
@@ -307,7 +355,12 @@ class EventFinderPanel(QWidget):
         self.view.message = 'Opening recording…' if source is not None else 'Open a recorded Cine or choose a recording on the camera.'
         self.view.update()
         self.status.setText('')
-        for widget in (self.native, self.slider):
+        with QSignalBlocker(self.shape), QSignalBlocker(self.step), QSignalBlocker(self.precision):
+            self.shape.setCurrentIndex(0)
+            self.view.set_point_mode(False)
+            self.step.setValue(1)
+            self.precision.clear()
+        for widget in (self.native, self.slider, self.first, self.last):
             with QSignalBlocker(widget):
                 widget.setRange(0, 0)
         if source is None:
@@ -364,19 +417,40 @@ class EventFinderPanel(QWidget):
         if self.closing or ticket != self.ticket:
             return
         self.retry.hide()
+        new_source = info != self.info
+        if new_source and self.info is not None:
+            self.roi = self.view.roi = None
+            self._clear_hits()
         self.info, self.position, self.activity = info, index, ''
+        if new_source:
+            self._set_bounds()
+            with QSignalBlocker(self.precision):
+                self.precision.clear()
+                for mode, label in (('fast','Fast · 8-bit'), ('full','Full precision · 16-bit')):
+                    if mode in info.transfer_modes:
+                        self.precision.addItem(label, mode)
+                self.precision.setToolTip('Both modes use the same frames. 8-bit transfers less data; 16-bit preserves fainter intensity changes.')
+
         self.view.image = QImage(pixels.data, info.width, info.height, pixels.strides[0], QImage.Format_Grayscale8).copy()
         self.view.message = ''
         self.view.update()
         self._sync_transport()
         if self.restore:
             state, self.restore = self.restore, None
+            bounds = state['scan_range']
+            valid_bounds = bounds is None or bounds[1] < info.count
+            if valid_bounds:
+                self._set_bounds(bounds)
+            with QSignalBlocker(self.shape), QSignalBlocker(self.step):
+                self.step.setValue(state['step'])
+                self.shape.setCurrentIndex(self.shape.findData(state['shape']))
+            self.view.set_point_mode(state['shape']=='point')
             x, y, w, h = state.get('roi') or (0,0,0,0)
             if w and h and x+w <= info.width and y+h <= info.height:
                 self.set_roi([x,y,w,h])
                 saved = state.get('events')
-                if (saved is not None and tuple(state['file_signature'])==info.file_signature
-                        and all(hit[2]<info.count for hit in saved)):
+                if (saved is not None and tuple(state['file_signature'])==info.file_signature and valid_bounds
+                        and all(self.first.value() <= info.first+hit[0] <= info.first+hit[2] <= self.last.value() for hit in saved)):
                     self._show_results(tuple(Event(*hit) for hit in saved), state['total_events'], jump=False)
         self._controls()
 
@@ -393,6 +467,38 @@ class EventFinderPanel(QWidget):
         self.status.setText('')
         self._controls()
 
+    def _shape_changed(self):
+        point = self.shape.currentData() == 'point'
+        self.view.set_point_mode(point)
+        self.roi = self.view.roi = self.view.start = self.view.end = None
+        self.view.update()
+        self._sensitivity_changed()
+
+    def _set_bounds(self, bounds=None):
+        native = self.info.first
+        end = native+self.info.count-1
+        lo, hi = (native, end) if bounds is None else (native+bounds[0], native+bounds[1])
+        with QSignalBlocker(self.first), QSignalBlocker(self.last):
+            self.first.setRange(native, end)
+            self.last.setRange(native, end)
+            self.first.setValue(lo)
+            self.last.setValue(hi)
+
+    def _reset_range(self):
+        if self.info:
+            self._set_bounds()
+            self._sensitivity_changed()
+
+    def _range_changed(self):
+        if self.first.value() > self.last.value():
+            other = self.last if self.sender() is self.first else self.first
+            with QSignalBlocker(other):
+                other.setValue(self.sender().value())
+        self._sensitivity_changed()
+
+    def _bounds(self):
+        return self.first.value()-self.info.first, self.last.value()-self.info.first
+
     def _whole_frame(self):
         if self.info:
             self.set_roi((0, 0, self.info.width, self.info.height))
@@ -405,6 +511,7 @@ class EventFinderPanel(QWidget):
     def _clear_hits(self):
         self.scanned = False
         self.total_events = 0
+        self.hits.sampled = self.step.value() > 1
         self.hits.replace((), self.info.first if self.info else 0)
         self.slider.set_peaks(())
         self.evidence.clear()
@@ -414,16 +521,44 @@ class EventFinderPanel(QWidget):
         if not self.info or not self.roi or self.activity or self.view.image is None:
             return
         self._clear_hits()
-        self.progress.setRange(0, self.info.count)
+        first, last = self._bounds()
+        step = self.step.value()
+        samples = sample_count(first, last, step)
+        if samples < 3:
+            return
+        signal = 'mean' if self.shape.currentData() == 'point' else 'spatial'
+        mode = self.precision.currentData() or 'full'
+        self._rate_start = None
+        self.progress.setRange(0, samples)
         self.progress.setValue(0)
-        self.status.setText(f'Preparing reference · {self.info.count:,} recorded frames')
-        self._request(self.position, (self.roi,self.sensitivity.currentData()))
+        self.status.setText('Preparing scan…')
+        self._request(self.position, (self.roi,self.sensitivity.currentData(),first,last,step,signal,mode))
         self._controls()
 
     def _progress(self, ticket, done, total):
         if ticket == self.ticket and not self.cancelling and not self.closing:
             self.progress.setValue(done)
-            self.status.setText(f'Examined {done:,} of {total:,} frames')
+            if not done:
+                return
+            if done == total:
+                self.status.setText('Ranking candidates…')
+                return
+            now = monotonic()
+            if self._rate_start is None:
+                self._rate_start = now, done
+            started, initial = self._rate_start
+            status = f'Examined {done:,} of {total:,} frames'
+            if now-started >= 2 and done > initial:
+                speed = (done-initial)/(now-started)
+                seconds = round((total-done)/speed)
+                if seconds >= 3600:
+                    eta = f'{seconds//3600} h {(seconds//60)%60} min'
+                elif seconds >= 60:
+                    eta = f'{seconds//60} min {seconds%60} s'
+                else:
+                    eta = f'{seconds} s'
+                status += f' · {speed:,.1f} frames/s · ~{eta} left'
+            self.status.setText(status)
 
     def cancel_scan(self):
         if self.activity == 'scan':
@@ -441,6 +576,8 @@ class EventFinderPanel(QWidget):
     def _failed(self, ticket, message):
         if ticket == self.ticket and not self.closing:
             self.activity = ''
+            if not isinstance(self.current, str) or 'file changed' in message:
+                self._clear_hits()
             self.status.setText(message)
             self.view.image = None
             self.view.message = 'Could not read the recording.'
@@ -458,6 +595,7 @@ class EventFinderPanel(QWidget):
             self._controls()
 
     def _show_results(self, events, total, jump):
+        self.hits.sampled = self.step.value() > 1
         self.hits.replace(events, self.info.first)
         self.scanned = True
         self.slider.set_peaks(events)
@@ -475,7 +613,10 @@ class EventFinderPanel(QWidget):
         if index.isValid() and index.row()<len(self.hits.events):
             hit = self.hits.events[index.row()]
             count = hit.last-hit.first+1
-            self.evidence.setText(f'{count:,} frame{"s" if count != 1 else ""} · {hit.reason}')
+            if self.step.value() > 1:
+                self.evidence.setText(f'Sampled peak at frame {self.info.first+hit.peak:,} · {hit.reason}')
+            else:
+                self.evidence.setText(f'{count:,} frame{"s" if count != 1 else ""} · {hit.reason}')
             self.slider.selected = hit.peak
             self.slider.update()
             if self.position != hit.peak:
@@ -489,10 +630,36 @@ class EventFinderPanel(QWidget):
         scanning = self.activity == 'scan'
         ready = self.info is not None
         self.view.setEnabled(not scanning)
+        point = self.shape.currentData() == 'point'
+        fits_probe = not ready or min(self.info.width, self.info.height) >= 4
+        self.shape.model().item(self.shape.findData('point')).setEnabled(fits_probe)
+        instruction = ('Click to measure the mean brightness of 4 × 4 sensor pixels.' if point else
+                       'Draw a rectangle around the area where the event could occur.')
         self.region_label.setText(f'{self.roi[2]} × {self.roi[3]} px at ({self.roi[0]}, {self.roi[1]})'
-                                  if self.roi else 'Draw a rectangle around the area where the event could occur.')
+                                  if self.roi else instruction)
+        self.full.setVisible(not point)
+        show_precision = bool(ready and self.info.transfer_modes)
+        self.precision_label.setVisible(show_precision)
+        self.precision.setVisible(show_precision)
+        self.step_unit.setText('frame' if self.step.value()==1 else 'frames')
+        self.precision.setEnabled(ready and self.precision.count()>1 and not scanning)
+        for control in (self.shape, self.first, self.last, self.step, self.reset_range):
+            control.setEnabled(ready and not scanning)
+        samples = 0
+        note = ''
+        if ready:
+            first, last = self._bounds()
+            step = self.step.value()
+            samples = sample_count(first,last,step)
+            if samples < 3:
+                note = 'Choose at least three sampled frames. Widen the range or reduce the interval.'
+            elif step == 1:
+                note = f'Checks all {samples:,} frames in the range.'
+            else:
+                note = f'{samples:,} of {last-first+1:,} frames · changes shorter than {step:,} frames can be missed.'
+        self.coverage.setText(note)
         verified = ready and self.view.image is not None and not self.activity
-        self.analyze.setEnabled(bool(verified and self.roi))
+        self.analyze.setEnabled(bool(verified and self.roi and samples >= 3))
         self.cancel.setVisible(scanning)
         self.cancel.setEnabled(scanning and not self.cancelling)
         self.progress.setVisible(scanning)
@@ -515,7 +682,8 @@ class EventFinderPanel(QWidget):
         events = [(e.first,e.peak,e.last,e.score,e.reason) for e in hits] if self.scanned else None
         return dict(path=self.current,position=self.position,roi=self.roi,
                     sensitivity=self.sensitivity.currentData(),events=events, total_events=self.total_events,
-                    file_signature=self.info.file_signature if self.info else None)
+                    file_signature=self.info.file_signature if self.info else None,
+                    scan_range=self._bounds() if self.info else None, step=self.step.value(), shape=self.shape.currentData())
 
     def apply_settings(self, settings):
         state = validate_event_settings(settings)

@@ -9,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from event_cine_source import EventCineSource
-from event_detection import scan_events
+from event_detection import EventScanCache, scan_events
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class RecordingInfo:
     first: int
     fps: float | None
     file_signature: tuple | None
+    transfer_modes: frozenset = frozenset()
 
 
 class RecordingWorker(QThread):
@@ -56,6 +57,14 @@ class RecordingWorker(QThread):
             self.condition.notify()
 
     def run(self):
+        cache = EventScanCache()
+
+        def check_file(path, signature):
+            stat = Path(path).stat()
+            if (stat.st_size, stat.st_mtime_ns) != signature:
+                cache.clear()
+                raise ValueError('This Cine file changed. Reopen it before scanning.')
+
         reader = source = info = None
         try:
             while True:
@@ -80,7 +89,8 @@ class RecordingWorker(QThread):
                         else:
                             reader = requested.open()
                         info = RecordingInfo(reader.width, reader.height, reader.count,
-                                             reader.first_frame, reader.fps, signature)
+                                             reader.first_frame, reader.fps, signature,
+                                             frozenset(getattr(reader, 'transfer_modes', ())))
                         if info.count < 1:
                             raise ValueError('This recording has no available frames.')
                         source = requested
@@ -96,7 +106,21 @@ class RecordingWorker(QThread):
                         if not cancel.is_set():
                             self.previewReady.emit(ticket, info, index, image)
                     else:
-                        roi, sensitivity = scan
+                        roi, sensitivity, first, last, step, signal, mode = scan
+                        if not 0 <= first <= last < info.count:
+                            raise ValueError("The scan range is outside this recording.")
+                        if hasattr(reader, 'set_transfer_mode'):
+                            reader.set_transfer_mode(mode)
+                        if isinstance(requested, str):
+                            check_file(requested, info.file_signature)
+                        cache_key = (requested, info.file_signature, roi, mode)
+                        if cache.contains(cache_key, first, last, step, signal) and hasattr(reader, 'validate_recording'):
+                            reader.validate_recording()
+
+                        def begin_sequence():
+                            if hasattr(reader, 'set_scan_stride'):
+                                reader.set_scan_stride(step, first, last)
+
                         last_update = 0.
 
                         def report(done, total):
@@ -106,12 +130,16 @@ class RecordingWorker(QThread):
                                 self.progress.emit(ticket, done, total)
                                 last_update = now
 
-                        result = scan_events(lambda i: reader.read_roi(i, roi), 0, info.count-1,
+                        result = scan_events(lambda i: reader.read_roi(i, roi), first, last,
+                                             step=step, signal=signal, cache=cache, cache_key=cache_key,
+                                             begin_sequence=begin_sequence,
                                              sensitivity=sensitivity, progress=report,
                                              cancelled=cancel.is_set)
                         if cancel.is_set():
                             raise CancelledError()
-                        if not isinstance(requested, str):
+                        if isinstance(requested, str):
+                            check_file(requested, info.file_signature)
+                        else:
                             reader.close()
                             reader = source = None
                         self.scanReady.emit(ticket, result)
@@ -127,5 +155,6 @@ class RecordingWorker(QThread):
                     source = reader = None
                     self.failed.emit(ticket, str(exc) or type(exc).__name__)
         finally:
+            cache.clear()
             if reader is not None:
                 reader.close()

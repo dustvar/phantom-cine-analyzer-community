@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from event_detection import scan_events
+from event_detection import EventScanCache, sample_count, scan_events
 
 
 class EventDetectionTests(unittest.TestCase):
@@ -101,3 +101,97 @@ class EventDetectionTests(unittest.TestCase):
         self.assertEqual(scan.total_events, 1+(44_999//31))
         self.assertEqual(len(scan.events), 1000)
         self.assertEqual((scan.events[0].peak, scan.events[-1].peak), (0, 999*31))
+
+    def test_stride_uses_only_the_grid_and_both_endpoints(self):
+        first, last, step = -117, 1003, 9
+        grid = list(range(first, last+1, step)) + [last]
+        calls = []
+        reference_calls = []
+        def read(i):
+            calls.append(i)
+            return np.full((5, 6), 50 if i in (grid[-1], grid[-2], grid[6]) else 30, np.uint8)
+        scan = scan_events(read, first, last, step=step,
+                           begin_sequence=lambda: reference_calls.extend(calls))
+        self.assertTrue(set(reference_calls).issubset(grid))
+        self.assertEqual(calls[len(reference_calls):], grid)
+        self.assertEqual(scan.frame_count, sample_count(first, last, step))
+        self.assertEqual(sorted((e.first, e.last) for e in scan.events),
+                         [(grid[6], grid[6]), (grid[-2], last)])
+        for args, expected in [((0, 100, 5), 21), ((0, 0, 30), 1), ((-8, -6, 21), 2)]:
+            self.assertEqual(sample_count(*args), expected)
+        for invalid in (0, -3, 1.1, True):
+            with self.assertRaisesRegex(ValueError, 'step'):
+                scan_events(read, first, last, step=invalid)
+
+    def test_mean_measures_average_and_retains_signed_reason(self):
+        calls = []
+        def read(i):
+            calls.append(i)
+            region = np.full((4, 4), 100, np.uint16)
+            if i == 50:
+                # Spatial change with exactly unchanged mean.
+                region[0, 0] -= 50
+                region[-1, -1] += 50
+            if 70 <= i <= 72:
+                region[1, 2] += 64
+            if i == 100:
+                region[1, 2] -= 96
+            return region
+        scan = scan_events(read, 0, 150, signal='mean')
+        self.assertEqual(calls, list(range(151)))
+        self.assertEqual([(h.first, h.last, h.reason) for h in scan.events],
+                         [(100, 100, 'Mean darkened'), (70, 72, 'Mean brightened')])
+        calls.clear()
+        with self.assertRaises(CancelledError):
+            scan_events(read, 0, 150, signal='mean', cancelled=lambda: len(calls) >= 21)
+        self.assertEqual(calls, list(range(21)))
+
+    def test_cache_reranks_without_reading_and_isolates_measurements(self):
+        cache = EventScanCache()
+        self.addCleanup(cache.clear)
+        source_key = ('camera serial, slot, trigger', (7, 11, 4, 4), 'native')
+        def read(i):
+            region = np.full((4, 4), 120, np.uint8)
+            region[2, 2] += 27 if i == 76 else 0
+            return region
+        first = scan_events(read, 0, 200, step=2, cache=cache, cache_key=source_key)
+        self.assertTrue(cache.contains(source_key, 0, 200, 2))
+        reranked = scan_events(lambda i: self.fail('cache hit read footage'), 0, 200, step=2,
+                               sensitivity='high', cache=cache, cache_key=source_key,
+                               begin_sequence=lambda: self.fail('cache hit initialized camera transfer'))
+        fresh = scan_events(read, 0, 200, step=2, sensitivity='high')
+        self.assertEqual(reranked, fresh)
+        self.assertEqual(first.events[0].peak, 76)
+        for args in [(source_key, 0, 199, 2), (source_key, 0, 200, 3),
+                     (source_key, 0, 200, 2, 'mean'), ('other', 0, 200, 2)]:
+            self.assertFalse(cache.contains(*args))
+
+        with self.assertRaisesRegex(IOError, 'camera'):
+            def failed(i):
+                raise IOError('camera disconnected')
+            scan_events(failed, 0, 200, cache=cache, cache_key='other')
+        self.assertTrue(cache.contains(source_key, 0, 200, 2))
+        scan_events(read, 0, 200, cache=cache, cache_key='other')
+        self.assertFalse(cache.contains(source_key, 0, 200, 2))
+        self.assertTrue(cache.contains('other', 0, 200, 1))
+        cache.clear()
+        self.assertFalse(cache.contains('other', 0, 200, 1))
+
+    def test_cached_mean_supports_new_threshold_and_single_frame(self):
+        cache = EventScanCache()
+        self.addCleanup(cache.clear)
+        def read(i):
+            image = np.zeros((4, 4), np.uint8)
+            if i == 82:
+                # 5 / 16 = 0.3125 gray levels, between High and Balanced here.
+                image[1, 2] = 5
+            return image
+        def no_read(i):
+            self.fail('unexpected reread')
+        kwargs = dict(cache=cache, cache_key='signed mean', signal='mean')
+        self.assertEqual(scan_events(read, 0, 99, **kwargs).events, ())
+        high = scan_events(no_read, 0, 99, sensitivity='high', **kwargs)
+        self.assertEqual([h.peak for h in high.events], [82])
+        one = scan_events(read, 82, 82, **kwargs)
+        self.assertEqual(one.events, ())
+        self.assertEqual(scan_events(no_read, 82, 82, **kwargs), one)

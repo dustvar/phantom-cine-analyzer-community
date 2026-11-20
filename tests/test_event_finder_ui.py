@@ -154,6 +154,91 @@ class EventFinderUITests(unittest.TestCase):
             self.assertIsNone(p.roi)
             self.assertFalse(p.scanned)
 
+    def test_native_range_interval_mean_probe_and_job_round_trip(self):
+        p=self.panel
+        p.shape.setCurrentIndex(p.shape.findData('point'))
+        self.assertIsNone(p.roi)
+        self.assertFalse(p.full.isVisible())
+        r = p.view.image_rect()
+        QTest.mouseClick(p.view,Qt.LeftButton,pos=QPoint(round(r.left()+r.width()*48/96),
+                                                        round(r.top()+r.height()*36/72)))
+        self.assertEqual(p.roi[2:],(4,4))
+        p.first.setValue(-2)
+        p.last.setValue(12)
+        p.step.setValue(3)
+        self.assertIn('6 of 15',p.coverage.text())
+        p.analyze.click()
+        self.wait(lambda:p.scanned and not p.activity)
+        self.assertEqual(len(p.hits.events),1)
+        self.assertEqual(p.native.value(),4)
+        self.assertIn('Sampled peak',p.evidence.text())
+        state=p.settings()
+        self.assertEqual(state['scan_range'],(8,22))
+        self.assertEqual(state['shape'],'point')
+        self.assertEqual(state['step'],3)
+        p.apply_settings({})
+        p.apply_settings(state)
+        self.wait(lambda:p.scanned and not p.activity)
+        self.assertEqual(p.settings(),state)
+        self.assertTrue(p.view.point_mode)
+        p.first.setValue(11)
+        self.assertFalse(p.analyze.isEnabled())
+        p.first.setValue(12)
+        self.assertFalse(p.analyze.isEnabled())
+        self.assertIn('at least three',p.coverage.text())
+        p.reset_range.click()
+        self.assertEqual((p.first.value(),p.last.value()),(-10,41))
+        self.assertTrue(p.analyze.isEnabled())
+        p.shape.setCurrentIndex(0)
+        self.assertIsNone(p.roi)
+        self.assertFalse(p.analyze.isEnabled())
+
+    def test_camera_precision_stride_and_sensitivity_cache(self):
+        from event_cine_source import EventCineSource
+        p=self.panel
+        path=self.path
+        calls=[]
+        class Reader(EventCineSource):
+            transfer_modes=frozenset(('fast','full'))
+            def set_transfer_mode(self,value):
+                calls.append(('mode',value))
+            def set_scan_stride(self,step,first,last):
+                calls.append(('sequence',step,first,last))
+            def validate_recording(self):
+                calls.append(('validate',))
+            def read_roi(self,index,roi):
+                calls.append(('read',index))
+                return super().read_roi(index,roi)
+        class Camera:
+            label='Test Cine 1'
+            def open(self):
+                return Reader(path)
+        p._add_source(Camera())
+        self.wait(lambda:p.info is not None and not p.activity)
+        self.assertTrue(p.precision.isVisible())
+        self.assertEqual(p.precision.currentData(),'fast')
+        p.set_roi((31,20,42,40))
+        p.first.setValue(-2)
+        p.last.setValue(12)
+        p.step.setValue(3)
+        p.analyze.click()
+        self.wait(lambda:p.scanned and not p.activity)
+        self.assertIn(('mode','fast'),calls)
+        self.assertIn(('sequence',3,8,22),calls)
+        self.assertEqual({c[1] for c in calls if c[0]=='read'},{8,11,14,17,20,22})
+        calls.clear()
+        p.sensitivity.setCurrentIndex(2)
+        p.analyze.click()
+        self.wait(lambda:p.scanned and not p.activity)
+        self.assertIn(('validate',),calls)
+        self.assertFalse(any(c[0]=='read' for c in calls))
+        calls.clear()
+        p.precision.setCurrentIndex(p.precision.findData('full'))
+        p.analyze.click()
+        self.wait(lambda:p.scanned and not p.activity)
+        self.assertIn(('mode','full'),calls)
+        self.assertTrue(any(c[0]=='read' for c in calls))
+
     def test_failed_preview_clears_old_frame_and_retry_restores_actions(self):
         p = self.panel
         p.full.click()

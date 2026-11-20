@@ -16,11 +16,24 @@ def validate_event_settings(state):
     position = state.get('position', 0)
     if type(position) is not int or position < 0:
         raise ValueError('Invalid Event Finder frame.')
+    bounds = state.get('scan_range')
+    if bounds is not None and (not isinstance(bounds, (tuple,list)) or len(bounds) != 2
+                               or any(type(n) is not int for n in bounds)
+                               or not 0 <= bounds[0] <= bounds[1]):
+        raise ValueError('Invalid Event Finder scan range.')
+    step = state.get('step', 1)
+    if type(step) is not int or not 1 <= step <= 2_147_483_647:
+        raise ValueError('Invalid Event Finder frame interval.')
+    shape = state.get('shape', 'rectangle')
+    if shape not in ('rectangle','point'):
+        raise ValueError('Invalid Event Finder region shape.')
     roi = state.get('roi')
     if roi is not None and (not isinstance(roi, (list, tuple)) or len(roi) != 4
                             or any(type(n) is not int for n in roi) or min(roi) < 0
                             or min(roi[2:]) < 1):
         raise ValueError('Invalid Event Finder region.')
+    if shape == 'point' and roi is not None and tuple(roi[2:]) != (4,4):
+        raise ValueError('A point must cover four by four sensor pixels.')
     signature = state.get('file_signature')
     if signature is not None and (not isinstance(signature, (list, tuple)) or len(signature) != 2
                                   or any(type(n) is not int for n in signature)):
@@ -38,4 +51,4 @@ def validate_event_settings(state):
     if type(total) is not int or total < len(hits or ()):
         raise ValueError('Invalid Event Finder candidate count.')
     return dict(total_events=total, path=path, position=position, sensitivity=sensitivity, roi=roi,
-                file_signature=signature, events=hits)
+                file_signature=signature, events=hits, scan_range=bounds, step=step, shape=shape)

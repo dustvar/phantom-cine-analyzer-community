@@ -41,16 +41,19 @@ class _Readback(StreamRequestHandler):
                         raise AssertionError('Image connection and control connection do not belong together')
                     reply = 'Ok!'
                 else:
-                    f = re.fullmatch(r'img \{cine:2, start:(-?\d+), cnt:(\d+), fmt:P16\}', command)
+                    f = re.fullmatch(r'img \{cine:2, start:(-?\d+), cnt:(\d+), fmt:(P16|8)\}', command)
                     if not f or transfer is None:
                         raise AssertionError('Unexpected request: '+command)
-                    native, count = map(int, f.groups())
+                    native, count = int(f[1]), int(f[2])
                     first = native+275
                     if not 0 <= first < first+count <= len(cine.images):
                         raise AssertionError('Bad native frame bounds')
-                    payload = cine.images[first:first+count].tobytes()
+                    block = cine.images[first:first+count]
+                    if f[3] == '8':
+                        block = (block >> 8).astype(np.uint8)
+                    payload = block.tobytes()
                     cine.ranges.append((native,count))
-                    reply = 'Ok! { cine: 2, \\\r\n res: 32x24, fmt: 272 }'
+                    reply = 'Ok! { cine: 2, \\\r\n res: 32x24 }'
                 self.wfile.write(reply.encode('ascii')+b'\r\n')
                 if payload is not None:
                     transfer.sendall(payload[:29])
@@ -103,6 +106,13 @@ class LoopbackEventFinderTests(unittest.TestCase):
                         self.assertTrue(any(cnt>=200 for _,cnt in control.ranges))
                         self.assertTrue(set(range(-275,325)).issubset(
                             {i for first,n in control.ranges for i in range(first,first+n)}))
+                        control.ranges.clear()
+                        src.set_transfer_mode('fast')
+                        src.set_scan_stride(4,249,277)
+                        for index in range(249,278,4):
+                            np.testing.assert_array_equal(src.read_roi(index,(17,11,3,3)),
+                                                         images[index,11:14,17:20] >> 8)
+                        self.assertEqual(control.ranges,[(i-275,1) for i in range(249,278,4)])
                         control.frac += 1
                         previous = len(control.ranges)
                         with self.assertRaisesRegex(event_camera.CameraReadError,'changed'):

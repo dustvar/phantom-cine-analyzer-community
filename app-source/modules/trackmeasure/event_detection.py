@@ -1,13 +1,14 @@
-"""Find short-lived intensity changes in a completed recording at source cadence.
+"""Find short-lived intensity changes in selected frames of a completed recording.
 
 All indices use the frame numbers supplied by the caller. The input callback
-reads a fixed, linear grayscale ROI. Stored measurements are three scalars
-per frame; the scan never keeps the recording's image sequence in memory.
+reads a fixed, linear grayscale ROI. Stored measurements are one to three scalars
+per analyzed frame; the scan never keeps the recording's image sequence in memory.
 """
 from concurrent.futures import CancelledError
 from dataclasses import dataclass
 import heapq
 from tempfile import SpooledTemporaryFile
+from threading import Lock
 
 import cv2
 import numpy as np
@@ -59,8 +60,14 @@ def _read(read_roi, frame, shape=None):
     return roi
 
 
-def _reference(read_roi, first, count, cancelled):
-    initial = _read(read_roi, first)
+def _mean_intensity(image):
+    if image.dtype in (np.uint8, np.uint16, np.int16, np.float32, np.float64):
+        return cv2.mean(image)[0]
+    return np.mean(image, dtype=np.float64)
+
+
+def _reference(read_roi, frame_at, count, cancelled):
+    initial = _read(read_roi, frame_at(0))
     # Keep the reference stack compact even for a full-sensor ROI. For a large
     # source retain at least three observations so a lone event can be rejected.
     limit = max(3, min(9, (64 << 20)//initial.nbytes))
@@ -68,7 +75,7 @@ def _reference(read_roi, first, count, cancelled):
     anchors = np.empty((len(offsets), *initial.shape), initial.dtype)
     for i, offset in enumerate(offsets):
         _check_cancel(cancelled)
-        anchors[i] = initial if offset == 0 else _read(read_roi, first+int(offset), initial.shape)
+        anchors[i] = initial if offset == 0 else _read(read_roi, frame_at(int(offset)), initial.shape)
     # Median on each pixel preserves sharp stationary details; performing it in
     # strips also bounds NumPy's temporary sorting workspace on large regions.
     template = np.empty(initial.shape, np.float32)
@@ -102,12 +109,68 @@ class _Measurements:
         return brightness, spread, peak
 
 
-def _rank(records, sampled, first, count, quantum, pixels, threshold, cancelled):
+def sample_count(first, last, step=1):
+    """Count the regular sample grid plus the last source frame when off-grid."""
+    if type(first) is not int or type(last) is not int or last < first:
+        raise ValueError('Choose an inclusive range of whole frame numbers.')
+    if type(step) is not int or step < 1:
+        raise ValueError('Choose a positive whole frame step.')
+    return 1 + (last-first+step-1)//step
+
+
+@dataclass
+class _Evidence:
+    records: object
+    sampled: np.ndarray
+    first: int
+    last: int
+    step: int
+    quantum: float
+    pixels: int
+
+
+class EventScanCache:
+    """Own at most one completed feature spool per panel, up to 64 MiB on disk."""
+
+    def __init__(self):
+        self._lock = Lock()
+        self._key = None
+        self._evidence = None
+
+    def contains(self, key, first, last, step=1, signal='spatial'):
+        with self._lock:
+            return self._key == (key, first, last, step, signal)
+
+    def _rerank(self, key, threshold, cancelled):
+        with self._lock:
+            if self._key == key:
+                return _rank(self._evidence, threshold, cancelled)
+        return None
+
+    def _put(self, key, evidence):
+        with self._lock:
+            if self._evidence is not None:
+                self._evidence.records.close()
+            self._key = key
+            self._evidence = evidence
+
+    def clear(self):
+        self._put(None, None)
+
+
+def _rank(evidence, threshold, cancelled):
+    records, sampled = evidence.records, evidence.sampled
+    first, last, step = evidence.first, evidence.last, evidence.step
+    count = sample_count(first, last, step)
+    def source_frame(offset):
+        return min(first+step*offset, last)
     center = np.median(sampled, axis=0)
     mad = np.median(np.abs(sampled-center), axis=0)
     # Flat integer footage can have zero measured variance. Fractions of a
     # source intensity count provide finite, ROI-size-aware floors.
-    floors = quantum*np.array([.20/np.sqrt(pixels), .20/np.sqrt(pixels), .20])
+    features = sampled.shape[1]
+    whole_roi_floor = .20/np.sqrt(evidence.pixels)
+    floors = evidence.quantum*np.array([whole_roi_floor, whole_roi_floor, .20][:features])
     scale = np.maximum(1.4826*mad, floors)
     strongest = []
     total = 0
@@ -128,8 +191,8 @@ def _rank(records, sampled, first, count, quantum, pixels, threshold, cancelled)
     records.seek(0)
     for offset in range(0, count, _BUFFER_FRAMES):
         _check_cancel(cancelled)
-        data = records.read(_BUFFER_FRAMES * _FEATURE_COUNT * np.dtype(np.float64).itemsize)
-        z = (np.frombuffer(data, np.float64).reshape(-1, _FEATURE_COUNT)-center)/scale
+        data = records.read(_BUFFER_FRAMES * features * np.dtype(np.float64).itemsize)
+        z = (np.frombuffer(data, np.float64).reshape(-1, features)-center)/scale
         signed = z[:, 0].copy()
         z[:, 0] = np.abs(signed)
         channels = np.argmax(z, axis=1)
@@ -138,59 +201,89 @@ def _rank(records, sampled, first, count, quantum, pixels, threshold, cancelled)
         active = scores >= threshold*.72
         boundaries = np.flatnonzero(np.diff(active.astype(np.int8)))+1
         for lo, hi in zip(np.r_[0, boundaries], np.r_[boundaries, len(active)]):
-            frame = first+offset+int(lo)
+            index = offset+int(lo)
             if not active[lo]:
                 if start is not None:
-                    finish(frame-1)
+                    finish(source_frame(index-1))
                     start = None
                 continue
             i = int(lo+np.argmax(scores[lo:hi]))
             if start is None:
-                start = frame
+                start = source_frame(index)
                 best_score = -1.
             if scores[i] > best_score:
                 best_score = float(scores[i])
-                best_frame = first+offset+i
-                reason = ('Region brightened' if signed[i] > 0 else 'Region darkened',
+                best_frame = source_frame(offset+i)
+                brightness_reason = 'Region brightened' if signed[i] > 0 else 'Region darkened'
+                if features == 1:
+                    brightness_reason = 'Mean brightened' if signed[i] > 0 else 'Mean darkened'
+                reason = (brightness_reason,
                           'Widespread pixel change', 'Localized pixel change')[channels[i]]
     if start is not None:
-        finish(first+count-1)
+        finish(last)
     return EventScan(tuple(entry[2] for entry in sorted(strongest, reverse=True)), count, total)
 
 
-def scan_events(read_roi, first, last, *, sensitivity='balanced', progress=None, cancelled=None):
-    """Scan every frame; progress(done,total) counts the sequential pass.
+def scan_events(read_roi, first, last, *, sensitivity='balanced', step=1, signal='spatial',
+                progress=None, cancelled=None, begin_sequence=None, cache=None, cache_key=None):
+    """Analyze selected native frame numbers, always including both endpoints.
 
-    A per-pixel median reference and robust temporal calibration suppress
-    static texture and ordinary sensor variation. Scores express departures
-    from the recording's usual range. Up to 1,000 strongest excursions are
-    returned with inclusive endpoints and the first frame of their highest score.
+    Results bound observed samples. A larger step can miss short changes. A
+    caller-supplied cache key identifies immutable source content, ROI and read
+    precision. Range, step and signal are appended automatically. Sensitivity
+    only affects ranking, so a cache hit requires no image reads.
     """
-    if type(first) is not int or type(last) is not int or last < first:
-        raise ValueError('Choose an inclusive range of whole frame numbers.')
+    count = sample_count(first, last, step)
     if sensitivity not in _THRESHOLDS:
         raise ValueError('Choose high, balanced or low sensitivity.')
-    count = last-first+1
+    if signal not in ('spatial', 'mean'):
+        raise ValueError('Choose spatial changes or mean brightness.')
+    if cache is not None and cache_key is None:
+        raise ValueError('Identify the recording and region when caching measurements.')
+    threshold = _THRESHOLDS[sensitivity]
+    key = (cache_key, first, last, step, signal)
     if progress:
         progress(0, count)
     _check_cancel(cancelled)
-    if count == 1:
-        _read(read_roi, first)
-        if progress:
-            progress(1, 1)
-        return EventScan((), 1, 0)
-    reference, quantum = _reference(read_roi, first, count, cancelled)
-    measurements = _Measurements(reference)
+    if cache is not None:
+        result = cache._rerank(key, threshold, cancelled)
+        if result is not None:
+            if progress:
+                progress(count, count)
+            return result
+
+    def frame_at(offset):
+        return min(first+step*offset, last)
+
+    if signal == 'spatial' and count > 1:
+        reference, quantum = _reference(read_roi, frame_at, count, cancelled)
+        measure = _Measurements(reference).measure
+        shape = reference.shape
+        features = _FEATURE_COUNT
+    else:
+        # The mean itself has a robust temporal reference during ranking;
+        # random reference image downloads would add no information here.
+        shape = None
+        features = 1
+        measure = _mean_intensity
+    if begin_sequence is not None:
+        begin_sequence()
     calibration = _sample_indices(count, 4096)
-    sampled = np.empty((len(calibration), _FEATURE_COUNT), np.float64)
+    sampled = np.empty((len(calibration), features), np.float64)
     sample_pos = 0
-    batch = np.empty((_BUFFER_FRAMES, _FEATURE_COUNT), np.float64)
-    with SpooledTemporaryFile(max_size=1 << 20) as records:
+    batch = np.empty((_BUFFER_FRAMES, features), np.float64)
+    records = SpooledTemporaryFile(max_size=1 << 20)
+    try:
         for offset in range(count):
             _check_cancel(cancelled)
-            image = _read(read_roi, first+offset, reference.shape)
+            frame = frame_at(offset)
+            image = _read(read_roi, frame, shape)
+            if shape is None:
+                shape = image.shape
+                quantum = (max(float(np.max(np.abs(image))), 1e-12)*np.finfo(np.float32).eps
+                           if image.dtype.kind == 'f' else 1.)
             row = offset % _BUFFER_FRAMES
-            batch[row] = measurements.measure(image)
+            batch[row] = measure(image)
             if sample_pos < len(calibration) and offset == calibration[sample_pos]:
                 sampled[sample_pos] = batch[row]
                 sample_pos += 1
@@ -198,5 +291,12 @@ def scan_events(read_roi, first, last, *, sensitivity='balanced', progress=None,
                 records.write(batch[:row+1].tobytes())
             if progress and ((offset+1) % 16 == 0 or offset+1 == count):
                 progress(offset+1, count)
-        return _rank(records, sampled, first, count, quantum, reference.size,
-                     _THRESHOLDS[sensitivity], cancelled)
+        evidence = _Evidence(records, sampled, first, last, step, quantum, int(np.prod(shape)))
+        result = _rank(evidence, threshold, cancelled)
+        if cache is not None and count*features*8 <= (64 << 20):
+            cache._put(key, evidence)
+            records = None  # The panel now owns this completed spool.
+        return result
+    finally:
+        if records is not None:
+            records.close()

@@ -7,10 +7,14 @@ pre-trigger numbers.
 ## Search a recording
 
 1. Select an open Cine, open a saved `.cine`, or choose a camera recording.
-2. Draw a rectangle around the part of the image where the event could occur.
-   Include the full path of the event, and keep unrelated motion outside the rectangle.
-3. Start the analysis. Every frame in the selected recording is tested, including
-   the first and last. A four-frame transient at 1 MHz gets four observations.
+2. Draw a rectangle around the path of the event, or choose the **4 × 4 point**
+   and click a known location. The rectangle checks for local changes as well as
+   overall brightness. The point measures average brightness in a 4 × 4 image area. A feature that stays outside the point will not change its reading.
+3. Set the first and last frames to search and choose the sampling interval.
+   **Every 1 frame** checks every frame. An interval of 4 observes at least
+   one sample of a change visible for four consecutive frames inside the range.
+   The sampled frame can be faint. An interval of 10 can skip that event entirely.
+   Both endpoints of the selected range are always checked.
 4. Select a candidate to inspect its strongest frame, then step through the
    neighboring frames to establish onset and disappearance. The strongest
    change can occur on a different frame from the largest visible bubble.
@@ -42,6 +46,25 @@ scanned independently after disconnecting the camera. The VEO 1310S was tested o
 10GBASE-T link to a Mac. PCA listed a completed RAM recording at its XIP and
 read actual frames using the standard PH16 TCP image connection.
 [PH16 camera protocol, §§2–3, 4.7, 5.9–5.10](https://github.com/DiamondLightSource/ADPhantom/blob/f0dab1241fc236189cc2d124cc97d43985a4eea6/documentation/v16proto-2.3.pdf)
+
+## Faster camera scans
+
+The standard camera image command sends a complete image for each requested
+frame. PCA computes the measurement only on the chosen rectangle or point.
+Selecting every tenth frame requests those frames directly from the camera.
+Selecting a shorter frame range also reduces the amount transferred. Most
+uncompressed monochrome Cines on disk support reading the rectangle directly.
+
+**Fast (8-bit)** halves image bytes compared with a 16-bit transfer on cameras
+that support both formats. Every frame remains available at a sampling interval
+of 1. Use full precision for faint changes that may disappear at 8-bit precision.
+The estimate during a scan uses the speed observed on the current connection.
+
+For sampled searches, first, peak and last refer to observed frames. Step through
+the surrounding images or scan a shorter range with interval 1 to refine the
+timing. Changing only sensitivity can reuse the last completed measurements
+in the open session. Camera recordings are rechecked before cached measurements
+are used.
 
 ## Interpreting results
 

@@ -10,8 +10,8 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
-- **Event Finder (1.14.13).** Draw a rectangle in a saved Cine or a completed
-  Phantom RAM recording and scan every frame for short-lived changes. Jump
+- **Event Finder (1.14.14).** Search a rectangle or a 4 × 4 brightness probe in a saved Cine or completed
+  Phantom RAM recording. Check every frame or request every Nth frame over a chosen range. Jump
   between ranked candidate intervals and inspect the original frames. See the
   [Event Finder guide](docs/EVENT_FINDER.md) for the USB-C Ethernet workflow.
 
@@ -176,7 +176,7 @@ Development requires access to the pyphantom helper packages listed in
 `environment.yml`. The native build uses the versions in
 `packaging/runtime-requirements.txt`.
 
-The native Mac app is at 1.14.13. The Windows x64 packaging notes describe the
+The native Mac app is at 1.14.14. The Windows x64 packaging notes describe the
 previously prepared portable build (1.14.3). See [startup and Windows portability](docs/STARTUP_AND_WINDOWS.md) for
 runtime requirements, per-user settings, packaging and validation limits.
 
