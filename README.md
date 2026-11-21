@@ -19,10 +19,12 @@ keys, or private build credentials are included in this repository.
   The curve affects the monitor only. Cycle the purple guides or inspect live and recorded
   frames with the mouse wheel, trackpad pinch and drag. The yellow navigator shows the
   visible area inside the full frame.
-- **Camera Control.** The standalone C980 (PH23) supports discovery, status and live Ethernet
-  preview. Its acquisition controls are read-only. On the tested VEO 1310S (PH16), capture
-  settings, arm, trigger and CSR are also available. The Ethernet dialog shows negotiated
-  link speed, addresses and subnet information for the wired adapter.
+- **Camera Control (1.15.1 beta).** The standalone Phantom C980 and VEO 1310S support live
+  preview and state-dependent capture controls. The C980 rate menu includes its standard
+  sensor windows. Exposure changes were verified on an armed C980 and restored after testing.
+  The connected camera heading shows model, sensor type, installed RAM and serial number
+  when reported. Ethernet shows the active link speed and the adapter's supported speed.
+  Expand its details for Cine RAM, removable storage and addresses.
   Open the frame-rate menu and choose an output resolution under **Standard** or **Binned**
   for the desired fps. For example, at 100 fps a VEO 1310S with 2×2 binning can use the
   full sensor at 1280 × 960 standard or 640 × 480 binned. The exposure menu puts the

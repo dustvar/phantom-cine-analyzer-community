@@ -1,4 +1,4 @@
-"""Exercise the operator controls on a stateful, fragmented PH16 wire simulation."""
+"""Exercise the operator controls on a stateful, fragmented Phantom wire simulation."""
 from concurrent.futures import CancelledError
 import re
 import unittest
@@ -46,6 +46,8 @@ class _Veo:
                 return f'trigtime : {{ secs : 203, frac : {self.stamp} }}'
             if key == 'c1.state':
                 return 'state : {' + self.state[1] + '}'
+            if key not in self.fields:
+                return 'ERR: unknown field'
             return f'{key} : {self.fields[key]}'
         if cmd == 'cstats':
             return ' '.join(f'c{i} : {{ {flags} }}' for i,flags in enumerate(self.state+['INV']))
@@ -107,7 +109,7 @@ class CameraControlTests(unittest.TestCase):
         self.assertTrue(self.session.status().can_apply)
         self.assertEqual(self.veo.writes,[])
 
-    def test_ph23_monitor_reads_frames_and_blocks_all_acquisition_commands(self):
+    def test_unrecognized_ph23_model_monitors_without_acquisition_commands(self):
         self.veo.fields['info.pver'] = '23'
         status = self.session.status()
         self.assertEqual(status.protocol, '23')
@@ -123,6 +125,51 @@ class CameraControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     action()
         self.assertEqual(self.veo.writes, [])
+
+    def select_c980(self):
+        self.veo.fields.update({
+            'info.pver': '23', 'info.model': '"Phantom C980"',
+            'info.features': '"attach aexp bref cf"', 'auto.bref_progress': '0',
+            'defc.res': '3840 x 1680', 'defc.rate': '768', 'defc.exp': '585937',
+            'info.cfa': '0', 'info.memsz': '28000', 'info.cinemem': '27000',
+            'cf': '{state : 0, size : 0}',
+        })
+
+    def test_c980_settings_use_camera_readback_and_preserve_armed_cine(self):
+        self.select_c980()
+        self.veo.state = ['RDY DEF PRE', 'WTR DEF ACT ABL']
+        state = self.session.status()
+        self.assertTrue(state.can_apply and state.can_trigger and state.can_csr)
+        self.assertFalse(state.can_arm or state.capping_shutter)
+        self.assertEqual(self.veo.writes, [])
+        self.assertEqual(state.identity.sensor_label, 'Monochrome')
+        self.assertEqual(state.identity.installed_mb, 28000)
+        self.assertIn('No media', state.identity.media_label)
+        choices = state.rate_options()
+        self.assertIn(cc.RateOption(1000, 3840, 2160, 1), choices)
+        self.assertIn(cc.RateOption(1510, 3840, 1680, 1), choices)
+        self.assertIn(cc.RateOption(50820, 1920, 24, 1), choices)
+        self.assertTrue(all(row.binning == 1 and row.width >= 1920 for row in choices))
+        with self.assertRaisesRegex(ValueError, 'up to'):
+            self.session.apply(fps=2000)
+        state = self.session.apply(fps=1000, exposure_us=50.123, post_frames=63)
+        self.assertEqual((state.fps, state.exposure_us, state.post_frames), (1000, 50.12, 63))
+        self.assertTrue(state.can_trigger)
+        self.assertEqual(self.veo.writes, ['set defc {rate:1000, exp:50123, ptframes:63}'])
+
+    def test_c980_trigger_requires_armed_slot_and_recording_blocks_edits(self):
+        self.select_c980()
+        with self.assertRaises(ValueError):
+            self.session.trigger(1)
+        self.assertTrue(self.session.arm().can_trigger)
+        self.assertFalse(self.session.trigger(1).can_trigger)
+        self.assertEqual(self.veo.writes, ['rec', 'trig'])
+        self.veo.state = ['RDY DEF PRE', 'TRG DEF ACT']
+        with self.assertRaises(ValueError):
+            self.session.apply(exposure_us=40)
+        self.veo.state = ['RDY DEF PRE', 'WTR ACT ABL']   # Partition with its own settings.
+        self.assertFalse(self.session.status().can_apply)
+        self.assertEqual(self.veo.writes, ['rec', 'trig'])
 
     def test_monitor_can_request_shadow_bits_or_the_fast_eight_bit_format(self):
         dark = np.arange(21, dtype='<u2').reshape(3, 7) * 16

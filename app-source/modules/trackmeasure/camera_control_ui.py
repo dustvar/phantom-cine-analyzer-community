@@ -103,13 +103,20 @@ class CameraControlPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         top = QHBoxLayout()
-        title = QLabel('Camera Control')
-        font = title.font()
+        self.camera_title = QLabel('Camera Control')
+        self.camera_title.setTextFormat(Qt.PlainText)
+        font = self.camera_title.font()
         font.setBold(True)
         font.setPointSizeF(max(14., font.pointSizeF() + 3))
-        title.setFont(font)
-        top.addWidget(title)
-        top.addStretch()
+        self.camera_title.setFont(font)
+        self.camera_specs = _label()
+        self.camera_specs.setObjectName('camera_identity_summary')
+        self.camera_specs.hide()
+        heading = QVBoxLayout()
+        heading.setSpacing(1)
+        heading.addWidget(self.camera_title)
+        heading.addWidget(self.camera_specs)
+        top.addLayout(heading, 1)
         self.cameras = QComboBox()
         self.cameras.setAccessibleName('Camera connection')
         self.cameras.setMinimumContentsLength(17)
@@ -320,6 +327,10 @@ class CameraControlPanel(QWidget):
         self.preview_info.clear()
         self.notice.clear()
         self.view.clear('Connect a camera to see the live image.')
+        self.camera_title.setText('Camera Control')
+        self.camera_specs.clear()
+        self.camera_specs.hide()
+        self.ethernet.set_camera('')
         self._controls()
 
     def _discover(self):
@@ -375,7 +386,8 @@ class CameraControlPanel(QWidget):
             self._connect_clicked()
 
     def _source_changed(self):
-        self.address.setVisible(self.cameras.count() > 0 and self.cameras.currentData() is None)
+        self.address.setVisible(self.snapshot is None and self.cameras.count() > 0
+                                and self.cameras.currentData() is None)
 
     def _connect_clicked(self):
         if self.session:
@@ -407,6 +419,9 @@ class CameraControlPanel(QWidget):
         ready = self.snapshot is not None and self.session is not None
         editing = ready and self.snapshot.can_apply and self.pending in ('', 'apply')
         settled = not (self.pending or self.queued or self.typing or self.drag_start is not None)
+        self.cameras.setVisible(not ready)
+        self.refresh.setVisible(not ready)
+        self._source_changed()
         self.cameras.setEnabled(self.active and not self.session and not self.discovery)
         self.address.setEnabled(self.cameras.isEnabled())
         self.refresh.setEnabled(self.active and not self.session and not self.workers and not self.discovery)
@@ -428,8 +443,14 @@ class CameraControlPanel(QWidget):
         self.csr_button.setText(f'CSR · {self.snapshot.csr_remaining:,} frames left'
                                 if ready and self.snapshot.csr_remaining else 'Black reference (CSR)…')
         self.draft_note.setVisible(ready)
-        if ready and self.snapshot.protocol != '16':
-            self.draft_note.setText(f'PH{self.snapshot.protocol} · Monitor only. Capture controls are unavailable.')
+        if ready and not self.snapshot.supports_acquisition:
+            self.draft_note.setText('Live preview only for this camera model and firmware.')
+        elif ready and self.snapshot.direct_recording:
+            self.draft_note.setText('Capture settings are locked during direct-to-media recording.')
+        elif ready and self.snapshot.csr_remaining:
+            self.draft_note.setText('Capture settings unlock when the black reference finishes.')
+        elif ready and not self.snapshot.can_apply:
+            self.draft_note.setText('Capture settings are locked in the current recording state.')
         elif self.typing:
             self.draft_note.setText('Press Enter or Tab to set the value.')
         elif self.drag_start is not None:
@@ -488,7 +509,10 @@ class CameraControlPanel(QWidget):
             self.frames, self.preview_clock = 0, monotonic()
             self.next_status = monotonic() + 1.
             self.preview_info.setText('Starting live preview…')
-            self.notice.setText(f'{result.model} · S/N {result.serial} · {self.session.host}')
+            self.notice.clear()
+            index = self.cameras.currentIndex()
+            if index >= 0 and self.cameras.itemData(index) is not None:
+                self.cameras.setItemText(index, f'{result.model} · S/N {result.serial}')
             for key, val in [('host', self.session.host), ('serial', result.serial), ('model', result.model)]:
                 self.settings.setValue('last/'+key, val)
             self.settings.sync()
@@ -507,7 +531,15 @@ class CameraControlPanel(QWidget):
         self._schedule()
 
     def _readback(self, s, reset):
+        previous = self.snapshot
         self.snapshot = s
+        if previous is None or (previous.model, previous.serial, previous.identity) != (s.model, s.serial, s.identity):
+            self.camera_title.setText(s.model)
+            details = s.identity.summary
+            self.camera_specs.setText(' · '.join(value for value in (details, f'S/N {s.serial}') if value))
+            self.camera_specs.setToolTip(s.identity.details)
+            self.camera_specs.show()
+            self.ethernet.set_camera(self.session.host, s.model, s.serial, details, s.identity.details)
         if reset:
             self.commit_timer.stop()
             self.queued.clear()

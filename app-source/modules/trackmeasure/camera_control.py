@@ -1,4 +1,4 @@
-"""Operator-driven Phantom RAM acquisition, using PH16 sections 4.6–4.8 and 5.2–5.10."""
+"""Operator-driven Phantom RAM acquisition using the Cine state and control commands."""
 from concurrent.futures import CancelledError
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,9 +9,14 @@ from time import monotonic
 
 import numpy as np
 
-from camera_capture_modes import RateOption, published_modes, rate_options
+from camera_capture_modes import RateOption, is_c980, published_modes, rate_options
+from camera_identity import CameraIdentity, read_camera_identity
 from event_camera import (READABLE_PROTOCOLS, CameraReadError, CameraCommandError, _Channel,
                           _stored, _tokens, _trigger, validate_address)
+
+
+def _supports_acquisition(protocol, model):
+    return protocol == '16' or (protocol == '23' and is_c980(model))
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,7 @@ class ControlStatus:
     capping_shutter: bool = False
     csr_remaining: int | None = 0
     protocol: str = '16'
+    identity: CameraIdentity = CameraIdentity()
 
     def rate_options(self):
         return rate_options(self)
@@ -74,20 +80,27 @@ class ControlStatus:
         return next((flags for _, flags in self.slots if 'ACT' in flags), frozenset())
 
     @property
+    def supports_acquisition(self):
+        return _supports_acquisition(self.protocol, self.model)
+
+    @property
     def can_apply(self):
         flags = self._active_flags
-        return (self.protocol == '16' and not self.direct_recording and not self.csr_remaining and 'TRG' not in flags
+        return (self.supports_acquisition and not self.direct_recording and self.csr_remaining == 0
+                and 'TRG' not in flags and (self.protocol == '16' or 'DEF' in flags)
                 and bool({'PRE', 'WTR'} & flags))
 
     @property
     def can_arm(self):
-        return (self.protocol == '16' and not self.direct_recording and not self.csr_remaining and 'PRE' in self._active_flags
+        return (self.supports_acquisition and not self.direct_recording and self.csr_remaining == 0
+                and 'PRE' in self._active_flags
                 and any(n and 'RDY' in flags for n, flags in self.slots))
 
     @property
     def can_trigger(self):
         flags = self._active_flags
-        return (self.protocol == '16' and not self.direct_recording and not self.csr_remaining and self.active_slot is not None and
+        return (self.supports_acquisition and not self.direct_recording and self.csr_remaining == 0
+                and self.active_slot is not None and
                 {'WTR', 'ABL'} <= flags and not {'TRG', 'STR', 'PRE'} & flags)
 
 
@@ -165,6 +178,7 @@ class CameraControl:
                 self.serial = serial
                 self.model = channel.get('info.model')
                 self.features = _tokens(channel.get('info.features'))
+                self.identity = read_camera_identity(channel)
                 formats = _tokens(channel.get('info.imgformats'))
                 self.supports_p16 = bool({'P16', '272'} & formats)
                 self.format = '8' if '8' in formats else ('P16' if {'P16','272'} & formats else None)
@@ -207,7 +221,8 @@ class CameraControl:
         remaining = self._limit(channel, 'auto.bref_progress') if csr else 0
         slots = _cine_states(channel.request('cstats'))
         replaceable = ()
-        if (self.protocol == '16' and not direct and not remaining and {'PRE','ACT'} <= slots[0][1] and
+        if (_supports_acquisition(self.protocol, self.model) and not direct and remaining == 0
+                and {'PRE','ACT'} <= slots[0][1] and
                 not any(n and 'RDY' in flags for n, flags in slots)):
             replaceable = tuple(StoredCine(n, self.serial, _trigger(channel, n))
                                 for n, flags in slots if n and 'STR' in flags)
@@ -216,7 +231,8 @@ class CameraControl:
                              None if self.min_exp_ns is None else self.min_exp_ns / 1000,
                              None if self.dead_ns is None else self.dead_ns / 1000, manual, internal, direct,
                              binning, self.published_rates, csr, 'SHTR' in self.features,
-                             None if remaining is None else int(remaining), self.protocol)
+                             None if remaining is None else int(remaining), self.protocol,
+                             identity=self.identity.with_current_media(channel, self.features))
 
     def status(self):
         with self._connection() as channel:
@@ -243,8 +259,8 @@ class CameraControl:
             return pixels if full_precision or fmt == '8' else (pixels >> 8).astype(np.uint8)
 
     def _command(self, channel, wire):
-        if self.protocol != '16':
-            raise ValueError(f'PH{self.protocol} is in monitor-only mode.')
+        if not _supports_acquisition(self.protocol, self.model):
+            raise ValueError(f'{self.model} (PH{self.protocol}) supports monitoring only in PCA.')
         try:
             response = channel.request(wire)
         except CameraCommandError:

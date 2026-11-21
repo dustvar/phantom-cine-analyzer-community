@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QStyle, QS
 
 from camera_capture_modes import RateOption, published_modes
 from camera_control import ControlStatus, StoredCine
+from camera_identity import CameraIdentity
 from camera_control_ui import CameraControlPanel
 from event_camera_discovery import DiscoveredCamera
 
@@ -201,6 +202,34 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertIn('offline', p.notice.text())
         self.assertFalse(p.trigger_button.isEnabled())
         self.assertIsNone(p.view.image)
+
+    def test_c980_identity_survives_setting_changes_and_clears_on_disconnect(self):
+        identity = CameraIdentity(cfa=0, installed_mb=8192, recording_mb=7400, media_label='No media inserted')
+        self.settings = replace(armed(), model='Phantom C980', protocol='23', identity=identity,
+                                slots=((0, frozenset({'PRE', 'DEF'})),
+                                       (1, frozenset({'ACT', 'DEF', 'WTR', 'ABL'}))))
+        self.start()
+        p = self.panel
+        self.assertEqual(p.camera_title.text(), 'Phantom C980')
+        self.assertIn('Monochrome', p.camera_specs.text())
+        self.assertIn('8,192 MB', p.camera_specs.text())
+        self.assertIn('7,400 MB', p.camera_specs.toolTip())
+        self.assertEqual(p.ethernet.host, '192.0.2.33')
+        self.assertEqual(p.ethernet.memory_details, identity.details)
+        self.assertEqual(p.cameras.currentText(), 'Phantom C980 · S/N 123')
+        self.assertTrue(p.cameras.isHidden())
+        self.assertTrue(all(b.isEnabled() for b in (p.fps, p.exposure, p.position, p.trigger_button)))
+        self.assertFalse(self.writes())
+        p.exposure.setValue(32.0)
+        self.wait(lambda: p.snapshot.exposure_us == 32.0)
+        self.assertEqual(p.camera_title.text(), 'Phantom C980')
+        self.assertEqual(self.writes(), [{'exposure_us': 32.0}])
+        p.connect_button.click()
+        self.wait(lambda: not p.workers)
+        self.assertEqual(p.camera_title.text(), 'Camera Control')
+        self.assertTrue(p.camera_specs.isHidden())
+        self.assertFalse(p.cameras.isHidden())
+        self.assertFalse(p.ethernet.host)
 
     def test_typing_waits_for_enter_or_focus_change_even_across_a_status_poll(self):
         self.start()

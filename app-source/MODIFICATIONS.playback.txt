@@ -527,3 +527,10 @@ Camera Control 1.14.21
   support zoom, pan, purple framing guides and a yellow overview of the visible area.
 - Added standalone C980 PH23 discovery, status and read-only live preview alongside
   existing VEO PH16 control. The Ethernet panel reports adapter, speed and subnets.
+
+1.15.1 Beta — C980 capture and Ethernet
+- Enabled capture settings for the standalone Phantom C980 and added its standard
+  frame-rate and resolution presets. Capture controls follow the live camera state.
+- Camera Control identifies the connected model, sensor, RAM and serial number.
+  Ethernet identifies the active adapter and distinguishes link speed from adapter capability.
+  Its details include camera and adapter addresses, recording memory and storage media.

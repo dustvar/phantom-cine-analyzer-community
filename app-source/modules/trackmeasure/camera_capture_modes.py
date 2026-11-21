@@ -1,7 +1,8 @@
-"""Capture presets from the Vision Research VEO 1310 datasheet, rev. 8 (August 2025).
+"""Capture presets from the manufacturer’s VEO 1310 and standalone C980 tables.
 
 https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/datasheets/web/ds_web-veo-1310.pdf
-The chart lists representative sensor windows in standard and 2 × 2 binned modes.
+https://www.phantomhighspeed.com/products/cameras/c-series/phantom-c980
+The charts list representative sensor windows. Binning is model-specific.
 The camera remains authoritative about the settings that it actually accepts.
 """
 from dataclasses import dataclass
@@ -35,11 +36,27 @@ _VEO_1310 = (
 _VEO_1310_MODEL = re.compile(r'(?:Phantom\s+)?VEO[\s-]*1310[LS]?(?:[ -]*E225)?', re.IGNORECASE)
 
 
+# Standard C980 windows confirmed in the 4K camera's resolution chart. Some
+# combined C540/C980 charts also list 1280 × 24, below the C980's 1920 px minimum.
+_C980 = (
+    (3840, 2160, 1180), (3840, 1680, 1510), (3840, 1080, 2330),
+    (3840, 804, 3100), (2560, 1680, 1510), (2560, 24, 50820),
+    (1920, 1080, 2330), (1920, 360, 6670), (1920, 228, 10130),
+    (1920, 24, 50820),
+)
+
+
+def is_c980(model):
+    return re.fullmatch(r'(?:Phantom\s+)?C980', model.strip(), flags=re.I) is not None
+
+
 def published_modes(model, has_binning, max_fps):
     """Return only known geometry/rate pairs for the identified camera family."""
+    ceiling = max_fps or float('inf')
+    if is_c980(model):
+        return tuple(RateOption(min(ceiling, fps), w, h, 1) for w, h, fps in _C980)
     if not _VEO_1310_MODEL.fullmatch(model.strip()):
         return ()
-    ceiling = max_fps or float('inf')
     if 'E225' in model.upper():
         ceiling = min(ceiling, 225000)
     result = []
