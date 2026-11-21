@@ -545,3 +545,4 @@ Camera Control 1.14.21
 - Prevented overlapping tools in compact BOS Record Studio. Report export now explains
   which measurements it needs. Tracking graphs and reports use the selected time unit
   for trigger-relative timestamps, including frames before the trigger.
+- Show installed camera RAM and Cine recording memory in GB in Camera Control and Ethernet.

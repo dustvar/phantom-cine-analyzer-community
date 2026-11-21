@@ -214,8 +214,8 @@ class CameraControlPanelTests(unittest.TestCase):
         p = self.panel
         self.assertEqual(p.camera_title.text(), 'Phantom C980')
         self.assertIn('Monochrome', p.camera_specs.text())
-        self.assertIn('8,192 MB', p.camera_specs.text())
-        self.assertIn('7,400 MB', p.camera_specs.toolTip())
+        self.assertIn('8 GB', p.camera_specs.text())
+        self.assertIn('7.23 GB', p.camera_specs.toolTip())
         self.assertEqual(p.ethernet.host, '192.0.2.33')
         self.assertEqual(p.ethernet.memory_details, identity.details)
         self.assertEqual(p.cameras.currentText(), 'Phantom C980 · S/N 123')

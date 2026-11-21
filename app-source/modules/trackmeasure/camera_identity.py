@@ -1,7 +1,7 @@
 """Phantom camera configuration and attached storage from read-only protocol fields.
 
 PH16 §§4.2, 4.14–15 define info.memsz/info.cinemem in MB and media sizes
-in kB. The display preserves the units for each capacity.
+in kB. Camera RAM uses 1,024 reported MB per displayed GB.
 """
 from dataclasses import dataclass, replace
 import re
@@ -57,6 +57,15 @@ def _media_status(channel, key):
     return 'Status not reported'
 
 
+def _ram_gb(megabytes):
+    if megabytes is None:
+        return 'Not reported'
+    if 0 < megabytes < 0.01 * 1024:
+        return '<0.01 GB'
+    value = f'{megabytes / 1024:,.2f}'.rstrip('0').rstrip('.')
+    return f'{value} GB'
+
+
 @dataclass(frozen=True)
 class CameraIdentity:
     cfa: int | None = None
@@ -74,11 +83,11 @@ class CameraIdentity:
 
     @property
     def installed_memory_label(self):
-        return f'{self.installed_mb:,} MB' if self.installed_mb else 'Not reported'
+        return _ram_gb(self.installed_mb or None)
 
     @property
     def recording_memory_label(self):
-        return f'{self.recording_mb:,} MB' if self.recording_mb is not None else 'Not reported'
+        return _ram_gb(self.recording_mb)
 
     @property
     def summary(self):

@@ -16,12 +16,19 @@ class CameraIdentityTests(unittest.TestCase):
             return self.fields[key]
         self.channel.get.side_effect = get
 
+    def test_fractional_ram_is_consistent_in_summary_and_network_details(self):
+        identity = CameraIdentity(installed_mb=28416, recording_mb=27212)
+        self.assertEqual(identity.summary, '27.75 GB RAM')
+        self.assertIn('Installed RAM: 27.75 GB', identity.details)
+        self.assertIn('Cine recording RAM: 26.57 GB', identity.details)
+        self.assertEqual(CameraIdentity(recording_mb=1).recording_memory_label, '<0.01 GB')
+
     def test_installed_and_cine_ram_have_distinct_labels_and_camera_units(self):
         self.fields.update({'info.cfa': '0', 'info.memsz': '8192', 'info.cinemem': '8032'})
         identity = read_camera_identity(self.channel)
-        self.assertEqual(identity.summary, 'Monochrome · 8,192 MB RAM')
-        self.assertIn('Installed RAM: 8,192 MB', identity.details)
-        self.assertIn('Cine recording RAM: 8,032 MB', identity.details)
+        self.assertEqual(identity.summary, 'Monochrome · 8 GB RAM')
+        self.assertIn('Installed RAM: 8 GB', identity.details)
+        self.assertIn('Cine recording RAM: 7.84 GB', identity.details)
         self.assertIn('Storage media: Not reported', identity.details)
 
     def test_missing_or_unknown_fields_do_not_guess_the_sensor_or_memory(self):
@@ -32,7 +39,7 @@ class CameraIdentityTests(unittest.TestCase):
         self.assertIn('Unknown CFA', unknown.sensor_label)
         self.assertEqual(unknown.summary, '')
         self.fields.update({'info.cfa': '0x3', 'info.cinemem': '0'})
-        self.assertEqual(read_camera_identity(self.channel).summary, 'Color · 0 MB Cine RAM')
+        self.assertEqual(read_camera_identity(self.channel).summary, 'Color · 0 GB Cine RAM')
 
     def test_reinserted_card_reports_only_current_media_capacity(self):
         identity = CameraIdentity(cfa=0, installed_mb=2048)
