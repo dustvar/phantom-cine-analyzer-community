@@ -509,3 +509,6 @@ Camera Control 1.14.17
 
 Camera Control 1.14.18
 - Capture setup shows frame-rate and exposure choices alongside trigger timing and available recording time.
+
+Camera Control 1.14.19
+- The frame rate and exposure preset menus open on the first click on macOS.

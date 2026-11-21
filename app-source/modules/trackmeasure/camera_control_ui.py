@@ -169,9 +169,15 @@ class CameraControlPanel(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.fps, self.rate_presets, rate_field = preset_field(
-            'Capture frame rate', ' fps', self._rate_menu)
+            'Capture frame rate', ' fps')
         self.exposure, self.exposure_presets, exposure_field = preset_field(
-            'Exposure time', ' µs', self._exposure_menu)
+            'Exposure time', ' µs')
+        self._preset_states = {}
+        self._tracking_menus = set()
+        for menu in (self.rate_presets.menu(), self.exposure_presets.menu()):
+            menu.aboutToShow.connect(lambda m=menu: self._tracking_menus.add(m))
+            menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(
+                0, self, lambda: self._menu_closed(m)))
         form.addRow('Frame rate', rate_field)
         form.addRow('Exposure', exposure_field)
         self.geometry_note = _label()
@@ -286,6 +292,9 @@ class CameraControlPanel(QWidget):
             self.session = None
         self.timer.stop()
         self.snapshot = None
+        for menu in tuple(self._tracking_menus):
+            menu.close()
+        self._update_preset_menus()
         self.pending = ''
         self.read_pending = False
         self.preview_on = False
@@ -494,6 +503,7 @@ class CameraControlPanel(QWidget):
             if 'post_frames' not in self.edits and self.draft_mode is None and self.post.value() != s.post_frames:
                 self.post.setValue(s.post_frames)
         self.geometry_note.setText(geometry_label(self._mode()))
+        self._update_preset_menus()
         self._update_position()
         states = dict(s.slots)
         active = states.get(s.active_slot, ())
@@ -554,6 +564,24 @@ class CameraControlPanel(QWidget):
     def _mode(self):
         s = self.snapshot
         return self.draft_mode or (s.width, s.height, s.binning)
+
+    def _menu_closed(self, menu):
+        if not menu.isVisible():
+            self._tracking_menus.discard(menu)
+            self._update_preset_menus()
+
+    def _update_preset_menus(self):
+        # Cocoa opens the native menu on mouse-down. Its actions must already exist.
+        rate_menu, exposure_menu = self.rate_presets.menu(), self.exposure_presets.menu()
+        s = self.snapshot
+        rate = self.fps.value()
+        rate_state = (s.rate_options(), rate, self._mode()) if s else ()
+        exposure_state = (s.longest_exposure_us(rate), self.exposure.minimum(), self.exposure.maximum()) if s else ()
+        for menu, state, populate in ((rate_menu, rate_state, self._rate_menu),
+                                      (exposure_menu, exposure_state, self._exposure_menu)):
+            if menu not in self._tracking_menus and self._preset_states.get(menu) != state:
+                populate(menu)
+                self._preset_states[menu] = state
 
     def _rate_menu(self, menu):
         menu.clear()
@@ -618,6 +646,7 @@ class CameraControlPanel(QWidget):
             return
         self._edited('fps')
         self._update_exposure_limit()
+        self._update_preset_menus()
         if self.snapshot.manual_exposure:
             self._edited('exposure_us')
         self._update_position()

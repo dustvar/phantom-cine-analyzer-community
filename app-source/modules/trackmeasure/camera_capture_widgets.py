@@ -36,7 +36,7 @@ class CaptureNumber(QDoubleSpinBox):
         return text
 
 
-def preset_field(name, suffix, populate):
+def preset_field(name, suffix):
     editor = CaptureNumber()
     editor.setAccessibleName(name)
     editor.setSuffix(suffix)
@@ -54,9 +54,7 @@ def preset_field(name, suffix, populate):
     presets.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
     presets.setPopupMode(QToolButton.InstantPopup)
     presets.setStyleSheet('QToolButton::menu-indicator { width: 0px; }')
-    menu = QMenu(presets)
-    menu.aboutToShow.connect(lambda: populate(menu))
-    presets.setMenu(menu)
+    presets.setMenu(QMenu(presets))
 
     field = QWidget()
     layout = QHBoxLayout(field)

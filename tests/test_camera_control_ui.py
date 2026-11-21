@@ -197,7 +197,6 @@ class CameraControlPanelTests(unittest.TestCase):
         p = self.panel
         self.assertTrue(p.rate_presets.isVisible())
         menu = p.rate_presets.menu()
-        p._rate_menu(menu)
         fast_action = next(action for action in menu.actions() if '4,000 fps' in action.text())
         self.assertIn('40 × 30', fast_action.text())
         self.assertIn('2×2 binning', fast_action.text())
@@ -213,7 +212,6 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertIn('1,000 fps', p.draft_note.text())
         self.assertFalse(p.post.isVisible())
         exp_menu = p.exposure_presets.menu()
-        p._exposure_menu(exp_menu)
         self.assertEqual(exp_menu.actions()[0].text(), 'Longest · 249.26 µs')
         p.exposure.setValue(310)
         self.assertEqual(p.exposure.value(), 249.26)
@@ -229,6 +227,40 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertEqual(p.breakdown.text(), '900 before · 2,700 after')
         self.assertTrue(p.post.isVisible())
         self.assertFalse(p.draft_note.isVisible())
+
+    def test_menus_are_populated_before_first_press_and_stable_while_open(self):
+        self.settings = replace(armed(), exposure_dead_us=.74)
+        self.start()
+        p = self.panel
+        for btn in (p.rate_presets, p.exposure_presets):
+            menu = btn.menu()
+            first = menu.actions()[0]  # actions must exist before Cocoa handles mouse-down
+            observations = []
+            def inspect_popup():
+                popup = QApplication.activePopupWidget()
+                observations.append(popup is menu and menu.isVisible() and menu.actions()[0] is first)
+                if popup:
+                    QTest.keyClick(popup, Qt.Key_Escape)
+            QTimer.singleShot(15, inspect_popup)
+            QTest.mouseClick(btn, Qt.LeftButton)
+            self.wait(lambda: observations)
+            self.assertEqual(observations, [True])
+            self.wait(lambda: menu not in p._tracking_menus)
+
+        menu = p.exposure_presets.menu()
+        existing = menu.actions()[0]
+        self.assertEqual(existing.text(), 'Longest · 999.26 µs')
+        p._readback(self.settings, reset=False)
+        self.assertIs(menu.actions()[0], existing)
+        menu.popup(p.exposure_presets.mapToGlobal(p.exposure_presets.rect().bottomLeft()))
+        self.wait(menu.isVisible)
+        p.fps.setValue(2000)
+        self.assertIs(menu.actions()[0], existing)
+        menu.close()
+        self.wait(lambda: menu.actions()[0].text() == 'Longest · 499.26 µs')
+        self.settings = replace(self.settings, fps=500.)
+        p._readback(self.settings, reset=True)
+        self.assertEqual(menu.actions()[0].text(), 'Longest · 1,999.26 µs')
 
     def test_custom_rate_beyond_window_is_blocked_and_revert_restores_capacity(self):
         self.settings = replace(armed(), published_rates=(RateOption(1200,80,60,1),))

@@ -10,7 +10,7 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
-- **Camera Control (1.14.18).** Open **Tools → Camera Control** to monitor a connected Phantom
+- **Camera Control (1.14.19).** Open **Tools → Camera Control** to monitor a connected Phantom
   over Ethernet. **Auto brightness**, **Standard**, and **Linear** change how the live image
   appears on screen. Capture settings are applied separately.
   Open the frame-rate menu to see fps and sensor resolution together. VEO 1310 presets
