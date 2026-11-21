@@ -32,10 +32,12 @@ _VEO_1310 = (
 )
 
 
+_VEO_1310_MODEL = re.compile(r'(?:Phantom\s+)?VEO[\s-]*1310[LS]?(?:[ -]*E225)?', re.IGNORECASE)
+
+
 def published_modes(model, has_binning, max_fps):
     """Return only known geometry/rate pairs for the identified camera family."""
-    if not re.fullmatch(r'(?:Phantom\s+)?VEO[\s-]*1310[LS]?(?:[ -]*E225)?',
-                        model.strip(), re.IGNORECASE):
+    if not _VEO_1310_MODEL.fullmatch(model.strip()):
         return ()
     ceiling = max_fps or float('inf')
     if 'E225' in model.upper():
@@ -49,40 +51,46 @@ def published_modes(model, has_binning, max_fps):
 
 
 def rate_options(status):
-    mode = (status.width, status.height, status.binning)
+    """Offer the largest known output in each readout mode at each preset rate."""
+    current_mode = status.width, status.height, status.binning
     modes = list(status.published_rates)
-    # A VEO 1310S capture at 800 × 600 verified 20,000 fps. This is a
-    # demonstrated operating point, separate from the published maxima.
-    if modes and (status.max_fps is None or status.max_fps >= 20000):
+    minimum = status.min_fps or 0
+    maximum = status.max_fps or float('inf')
+    # This VEO 1310S operating point is measured, separate from the published maxima.
+    if _VEO_1310_MODEL.fullmatch(status.model.strip()) and minimum <= 20000 <= maximum:
         modes.append(RateOption(20000, 800, 600, 1))
 
-    # Within the same sensor readout mode, any rate achievable in a larger
-    # window is also available in a smaller one. This supplies useful speeds
-    # for unlisted crops without estimating their exact maximum.
-    known = [row.fps for row in modes if row.binning == status.binning
-             and row.width >= status.width and row.height >= status.height]
-    # A connected camera has also demonstrated its current window/rate. When
-    # the window is unlisted, offer slower standard speeds in that same window.
-    current_limit = max([status.fps, *known])
-    common = (50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000,
-              100000, 200000, 400000)
-    options = {row for row in modes if row.fps >= (status.min_fps or 0)}
-    options.add(RateOption(status.fps, *mode))
+    # For an unlisted crop, its current rate and the rates of larger windows
+    # in the same readout mode establish which presets can retain that crop.
+    current_limit = status.fps
+    for row in modes:
+        if row.binning == status.binning and row.width >= status.width and row.height >= status.height:
+            current_limit = max(current_limit, row.fps)
     aspect = status.width / status.height
 
     def preference(row):
-        pixels = row.width * row.height
-        return pixels * row.binning**2, pixels, -abs(row.width / row.height - aspect)
+        return row.width * row.height, -abs(row.width / row.height - aspect), row.width
 
-    for rate in common:
-        if rate < (status.min_fps or 0):
+    # Keep distinct windows from the chart when they share a maximum rate.
+    options = {row for row in modes if minimum <= row.fps <= maximum}
+    options.add(RateOption(status.fps, *current_mode))
+    common = (50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000,
+              100000, 200000, 400000)
+    rates = set(common) | {row.fps for row in options}
+    candidates = {}
+    for row in sorted([*modes, RateOption(current_limit, *current_mode)],
+                      key=preference, reverse=True):
+        candidates.setdefault(row.binning, []).append(row)
+
+    for fps in rates:
+        if not minimum <= fps <= maximum:
             continue
-        if rate <= current_limit:
-            options.add(RateOption(rate, *mode))
-        else:
-            # For faster targets, preserve sensor area first, then output
-            # detail. Break ties with the current window's aspect ratio.
-            best = max((row for row in modes if row.fps >= rate), key=preference, default=None)
+        for windows in candidates.values():
+            best = next((row for row in windows if row.fps >= fps), None)
             if best is not None:
-                options.add(RateOption(rate, *best.mode))
-    return tuple(sorted(options, key=lambda o: (o.fps, -o.width*o.height, o.binning)))
+                options.add(RateOption(fps, *best.mode))
+        if fps in common and fps <= current_limit:
+            options.add(RateOption(fps, *current_mode))
+
+    return tuple(sorted(options, key=lambda o: (o.fps, o.binning, -o.width * o.height,
+                                                abs(o.width / o.height - aspect), -o.width)))

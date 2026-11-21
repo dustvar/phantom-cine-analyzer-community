@@ -257,6 +257,43 @@ class CameraControlTests(unittest.TestCase):
         self.assertLessEqual(max(o.fps for o in state.rate_options()),225000)
         self.assertEqual({o.binning for o in state.rate_options()},{1})
 
+    def test_same_rate_offers_full_field_in_both_readouts_and_keeps_current_crop(self):
+        self.select_1310()
+        self.veo.fields['defc.rate'] = '1234.5'
+        options = self.session.status().rate_options()
+        at_rate = lambda fps: [option.mode for option in options if option.fps == fps]
+        full, crop, binned = (1280, 960, 1), (800, 600, 1), (640, 480, 2)
+        self.assertEqual(at_rate(100), [full, crop, binned])
+        self.assertEqual(at_rate(1234.5), [full, crop, binned])
+        self.assertEqual(at_rate(40300), [(1280, 240, 1), binned])
+        self.assertEqual(at_rate(400000), [(320, 24, 2)])
+        self.assertEqual(len(set(options)), len(options))
+        self.assertFalse(self.veo.writes)
+
+        s = self.session.apply(fps=100, mode=binned)
+        self.assertEqual((s.fps, s.width, s.height, s.binning), (100, *binned))
+        self.assertIn(cc.RateOption(100, *full), s.rate_options())
+        s = self.session.apply(fps=100, mode=full)
+        self.assertEqual((s.fps, s.width, s.height, s.binning), (100, *full))
+        self.assertIn('set defc {bin:1, res:1280x960}', self.veo.writes)
+
+    def test_rate_table_honors_live_limits_and_needs_known_binning_modes(self):
+        self.select_1310()
+        self.veo.fields.update({'info.features':'"attach"', 'info.minfrate':'500',
+                                'info.maxrate':'35000'})
+        options = self.session.status().rate_options()
+        self.assertEqual({o.binning for o in options}, {1})
+        self.assertTrue(all(500 <= o.fps <= 35000 for o in options))
+        self.assertIn(cc.RateOption(500, 1280, 960, 1), options)
+
+        self.session.close()
+        self.veo.fields.update({'info.model':'"Other model"', 'info.features':'"attach bin2"',
+                                'defc.rate':'1234.5'})
+        options = self.session.status().rate_options()
+        self.assertEqual({o.mode for o in options}, {(800, 600, 1)})
+        self.assertEqual([o.fps for o in options], [500, 1000, 1234.5])
+        self.assertFalse(self.veo.writes)
+
     def test_round_rates_keep_current_view_or_choose_the_largest_supported_field(self):
         self.select_1310()
         self.veo.fields['defc.rate'] = '200'

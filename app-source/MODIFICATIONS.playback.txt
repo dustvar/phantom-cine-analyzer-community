@@ -515,3 +515,6 @@ Camera Control 1.14.19
 
 Camera Control 1.14.20
 - Capture presets update the connected camera immediately. Exact values update on Enter or leaving the field, and trigger position updates when you release the slider.
+
+Camera Control 1.14.21
+- The frame-rate dropdown compares standard and binned output resolutions at each listed speed. Select a resolution to apply that sensor mode and frame rate together.

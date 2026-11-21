@@ -13,7 +13,7 @@ from PySide6.QtCore import QPoint, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QStyle, QStyleOptionSlider
 
-from camera_capture_modes import RateOption
+from camera_capture_modes import RateOption, published_modes
 from camera_control import ControlStatus, StoredCine
 from camera_control_ui import CameraControlPanel
 from event_camera_discovery import DiscoveredCamera
@@ -147,6 +147,36 @@ class CameraControlPanelTests(unittest.TestCase):
         action = next(a for a in button.menu().actions() if a.text().startswith(menu_text))
         self.assertTrue(button.isEnabled() and action.isEnabled())
         action.trigger()
+
+    def open_rates(self):
+        button = self.panel.rate_presets
+        QTest.mouseClick(button, Qt.LeftButton)
+        self.wait(button.popup.isVisible)
+        return button.popup.table
+
+    def rate_cell(self, table, fps, mode):
+        column = 1 if mode[2] == 1 else 2
+        for row in range(table.rowCount()):
+            item = table.item(row, column)
+            option = item.data(Qt.UserRole) if item else None
+            if option and (option.fps, option.mode) == (fps, mode):
+                return item
+        self.fail(f'Rate picker has no cell for {fps:g} fps, {mode}')
+
+    def click_rate_cell(self, table, item):
+        table.scrollToItem(item)
+        self.app.processEvents()
+        rect = table.visualItemRect(item)
+        self.assertTrue(table.viewport().rect().contains(rect.center()))
+        QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=rect.center())
+        self.wait(lambda: not self.panel.rate_presets.popup.isVisible())
+
+    def start_veo(self, binning=True):
+        modes = published_modes('Phantom VEO 1310S', binning, 1_000_000)
+        self.settings = replace(armed(), model='Phantom VEO 1310S', fps=100.,
+                                width=1280, height=960, exposure_dead_us=.74,
+                                min_fps=50, max_fps=1_000_000, published_rates=modes)
+        self.start()
 
     def test_activation_is_read_only_and_unplug_pauses_monitor(self):
         self.assertFalse(self.calls)
@@ -288,11 +318,10 @@ class CameraControlPanelTests(unittest.TestCase):
         p = self.panel
         self.apply_gate = threading.Event()
         self.assertTrue(p.rate_presets.isVisible())
-        menu = p.rate_presets.menu()
-        fast_action = next(action for action in menu.actions() if '4,000 fps' in action.text())
-        self.assertIn('40 × 30', fast_action.text())
-        self.assertIn('2×2 binning', fast_action.text())
-        fast_action.trigger()
+        table = self.open_rates()
+        fast_cell = self.rate_cell(table, fast.fps, fast.mode)
+        self.assertIn('40 × 30', fast_cell.text())
+        self.click_rate_cell(table, fast_cell)
         self.assertEqual(p.fps.value(), 4000)
         self.assertEqual(p.exposure.value(), 249.26)
         self.assertEqual(p.exposure.maximum(), 249.26)
@@ -322,20 +351,22 @@ class CameraControlPanelTests(unittest.TestCase):
         self.settings = replace(armed(), exposure_dead_us=.74)
         self.start()
         p = self.panel
-        for btn in (p.rate_presets, p.exposure_presets):
-            menu = btn.menu()
-            first = menu.actions()[0]  # actions must exist before Cocoa handles mouse-down
-            observations = []
-            def inspect_popup():
-                popup = QApplication.activePopupWidget()
-                observations.append(popup is menu and menu.isVisible() and menu.actions()[0] is first)
-                if popup:
-                    QTest.keyClick(popup, Qt.Key_Escape)
-            QTimer.singleShot(15, inspect_popup)
-            QTest.mouseClick(btn, Qt.LeftButton)
-            self.wait(lambda: observations)
-            self.assertEqual(observations, [True])
-            self.wait(lambda: menu not in p._tracking_menus)
+        btn = p.exposure_presets
+        menu = btn.menu()
+        first = menu.actions()[0]  # actions must exist before Cocoa handles mouse-down
+        observations = []
+
+        def inspect_popup():
+            popup = QApplication.activePopupWidget()
+            observations.append(popup is menu and menu.isVisible() and menu.actions()[0] is first)
+            if popup:
+                QTest.keyClick(popup, Qt.Key_Escape)
+
+        QTimer.singleShot(15, inspect_popup)
+        QTest.mouseClick(btn, Qt.LeftButton)
+        self.wait(lambda: observations)
+        self.assertEqual(observations, [True])
+        self.wait(lambda: not menu.isVisible())
 
         menu = p.exposure_presets.menu()
         existing = menu.actions()[0]
@@ -352,6 +383,87 @@ class CameraControlPanelTests(unittest.TestCase):
         self.settings = replace(self.settings, fps=500.)
         p._readback(self.settings, reset=True)
         self.assertEqual(menu.actions()[0].text(), 'Longest · 1,999.26 µs')
+
+    def test_rate_picker_pairs_full_sensor_outputs_and_switches_modes_at_the_same_fps(self):
+        self.start_veo()
+        p = self.panel
+        table = self.open_rates()
+        headers = [table.horizontalHeaderItem(col).text().casefold() for col in range(3)]
+        self.assertIn('fps', headers[0])
+        self.assertIn('standard', headers[1])
+        self.assertIn('binned', headers[2])
+        normal = self.rate_cell(table, 100, (1280, 960, 1))
+        binned = self.rate_cell(table, 100, (640, 480, 2))
+        self.assertEqual(normal.row(), binned.row())
+        self.assertIn('640 × 480', binned.text())
+        self.assertIs(table.currentItem(), normal)
+        self.assertIn('100 fps', normal.data(Qt.AccessibleTextRole))
+        self.assertIn('standard', normal.data(Qt.AccessibleTextRole).casefold())
+        self.assertIn('binned', binned.data(Qt.AccessibleTextRole).casefold())
+        QTest.keyClick(table, Qt.Key_Right)
+        self.assertIs(table.currentItem(), binned)
+        self.assertEqual(self.writes(), [])
+        QTest.keyClick(table, Qt.Key_Return)
+        self.wait(lambda: p.snapshot.binning == 2)
+        self.assertEqual(p.snapshot.fps, 100)
+        self.assertEqual(self.writes(), [dict(fps=100., mode=(640, 480, 2))])
+
+        table = self.open_rates()
+        self.assertIs(table.currentItem(), self.rate_cell(table, 100, (640, 480, 2)))
+        self.click_rate_cell(table, self.rate_cell(table, 100, (1280, 960, 1)))
+        self.wait(lambda: p.snapshot.binning == 1)
+        self.assertEqual(self.writes(), [dict(fps=100., mode=(640, 480, 2)), dict(fps=100., mode=(1280, 960, 1))])
+        self.assertFalse(any(cmd in ('arm', 'csr', 'trigger') for cmd, _ in self.calls))
+
+    def test_rate_picker_navigation_cancel_and_exact_entry(self):
+        self.start_veo()
+        p = self.panel
+        table = self.open_rates()
+        option = self.rate_cell(table, 100, (640, 480, 2))
+        position = option.row()
+        QTest.keyClick(table, Qt.Key_Right)
+        p.next_status = 0
+        self.settings = replace(self.settings, exposure_us=200.)
+        self.wait(lambda: p.snapshot.exposure_us == 200)
+        self.assertIs(table.item(position, 2), option)
+        QTest.keyClick(table, Qt.Key_Escape)
+        self.wait(lambda: not p.rate_presets.popup.isVisible())
+        self.assertFalse(self.writes())
+        self.open_rates()
+        QTest.mouseClick(p.rate_presets.popup.custom_button, Qt.LeftButton)
+        self.wait(lambda: not p.rate_presets.popup.isVisible())
+        self.assertEqual(self.writes(), [])
+        QTest.keyClicks(p.fps, '137')
+        QTest.keyClick(p.fps, Qt.Key_Return)
+        self.wait(lambda: p.snapshot.fps == 137.)
+        self.assertEqual(self.writes(), [dict(fps=137.)])
+
+    def test_rate_picker_disables_unavailable_binning(self):
+        self.start_veo(binning=False)
+        table = self.open_rates()
+        left = self.rate_cell(table, 100, (1280, 960, 1))
+        right = table.item(left.row(), 2)
+        self.assertFalse(right and right.flags() & Qt.ItemIsEnabled)
+        side = table.model().index(left.row(), 2)
+        self.assertFalse(table.model().flags(side) & Qt.ItemIsEnabled)
+        table.scrollTo(side)
+        self.app.processEvents()
+        QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=table.visualRect(side).center())
+        self.assertTrue(self.panel.rate_presets.popup.isVisible())
+        QTest.keyClick(table, Qt.Key_Escape)
+        self.assertFalse(self.writes())
+
+    def test_rate_picker_rechecks_support_on_click_after_live_limits_change(self):
+        self.start_veo()
+        table = self.open_rates()
+        cell = self.rate_cell(table, 100, (640, 480, 2))
+        self.settings = replace(self.settings, published_rates=published_modes('Phantom VEO 1310S', False, 1_000_000))
+        self.panel.next_status = 0
+        self.wait(lambda: self.panel.snapshot.published_rates == self.settings.published_rates)
+        self.assertTrue(self.panel.rate_presets.popup.isVisible())
+        self.click_rate_cell(table, cell)
+        QTest.qWait(40)
+        self.assertEqual(self.writes(), [])
 
     def test_custom_rate_beyond_window_is_blocked_and_explained(self):
         self.settings = replace(armed(), published_rates=(RateOption(1200,80,60,1),))

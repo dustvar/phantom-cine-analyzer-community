@@ -176,15 +176,16 @@ class CameraControlPanel(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.fps, self.rate_presets, rate_field = preset_field(
-            'Capture frame rate', ' fps')
+            'Capture frame rate', ' fps', rate_table=True)
         self.exposure, self.exposure_presets, exposure_field = preset_field(
             'Exposure time', ' µs')
-        self._preset_states = {}
-        self._tracking_menus = set()
-        for menu in (self.rate_presets.menu(), self.exposure_presets.menu()):
-            menu.aboutToShow.connect(lambda m=menu: self._tracking_menus.add(m))
-            menu.aboutToHide.connect(lambda m=menu: QTimer.singleShot(
-                0, self, lambda: self._menu_closed(m)))
+        self.rate_presets.chosen.connect(self._select_rate)
+        self.rate_presets.setToolTip('Choose a frame rate and output resolution in standard or binned mode.')
+        self._exposure_state = None
+        self._exposure_menu_open = False
+        exposure_menu = self.exposure_presets.menu()
+        exposure_menu.aboutToShow.connect(self._exposure_menu_showing)
+        exposure_menu.aboutToHide.connect(lambda: QTimer.singleShot(0, self, self._exposure_menu_closed))
         form.addRow('Frame rate', rate_field)
         form.addRow('Exposure', exposure_field)
         self.geometry_note = _label()
@@ -295,8 +296,8 @@ class CameraControlPanel(QWidget):
             self.session = None
         self.timer.stop()
         self.snapshot = None
-        for menu in tuple(self._tracking_menus):
-            menu.close()
+        self.rate_presets.popup.close()
+        self.exposure_presets.menu().close()
         self._update_preset_menus()
         self.pending = ''
         self.read_pending = False
@@ -412,6 +413,8 @@ class CameraControlPanel(QWidget):
         self.preview_button.setText('Pause preview' if self.preview_on else 'Resume preview')
         self.fps.setEnabled(editing and self.snapshot.internal_clock)
         self.rate_presets.setEnabled(self.fps.isEnabled())
+        if not self.fps.isEnabled() and self.rate_presets.popup.isVisible():
+            self.rate_presets.popup.close()
         self.exposure.setEnabled(editing and self.snapshot.manual_exposure)
         self.exposure_presets.setEnabled(self.exposure.isEnabled())
         self.position.setEnabled(editing)
@@ -581,40 +584,31 @@ class CameraControlPanel(QWidget):
     def _mode(self):
         return self.queued.get('mode', self.sending.get('mode', self._camera_mode()))
 
-    def _menu_closed(self, menu):
-        if not menu.isVisible():
-            self._tracking_menus.discard(menu)
+    def _exposure_menu_showing(self):
+        self._exposure_menu_open = True
+
+    def _exposure_menu_closed(self):
+        if not self.exposure_presets.menu().isVisible():
+            self._exposure_menu_open = False
             self._update_preset_menus()
 
     def _update_preset_menus(self):
-        # Cocoa opens the native menu on mouse-down. Its actions must already exist.
-        rate_menu, exposure_menu = self.rate_presets.menu(), self.exposure_presets.menu()
         s = self.snapshot
+        options = s.rate_options() if s else ()
+        current = (s.fps, self._camera_mode()) if s else None
+        self.rate_presets.set_choices(options, current)
+        # The native exposure menu needs its actions before Cocoa handles the first press.
         rate = self.fps.value()
-        rate_state = (s.rate_options(), rate, self._mode()) if s else ()
-        exposure_state = (s.longest_exposure_us(rate), self.exposure.minimum(), self.exposure.maximum()) if s else ()
-        for menu, state, populate in ((rate_menu, rate_state, self._rate_menu),
-                                      (exposure_menu, exposure_state, self._exposure_menu)):
-            if menu not in self._tracking_menus and self._preset_states.get(menu) != state:
-                populate(menu)
-                self._preset_states[menu] = state
-
-    def _rate_menu(self, menu):
-        menu.clear()
-        if self.snapshot is None:
-            return
-        for option in self.snapshot.rate_options():
-            text = f'{number(option.fps)} fps   ·   {geometry_label(option.mode)}'
-            action = menu.addAction(text)
-            action.setCheckable(True)
-            action.setChecked(option.fps == self.fps.value() and option.mode == self._mode())
-            action.triggered.connect(lambda checked=False, item=option: self._select_rate(item))
-        if menu.isEmpty():
-            menu.addAction('Camera rate presets unavailable').setEnabled(False)
-        add_custom(menu, self.fps)
+        state = (s.longest_exposure_us(rate), self.exposure.minimum(), self.exposure.maximum()) if s else ()
+        if not self._exposure_menu_open and self._exposure_state != state:
+            self._exposure_menu(self.exposure_presets.menu())
+            self._exposure_state = state
 
     def _select_rate(self, option):
-        if not self.rate_presets.isEnabled():
+        if not self.rate_presets.isEnabled() or self.snapshot is None:
+            return
+        if option not in self.snapshot.rate_options():
+            self.notice.setText('The available capture modes changed. Reopen the frame-rate table and choose a resolution.')
             return
         self._set_rate(option.fps, option.mode)
 
@@ -791,8 +785,12 @@ class CameraControlPanel(QWidget):
         current = {'fps': round(s.fps, self.fps.decimals()), 'exposure_us': round(s.exposure_us, self.exposure.decimals()),
                    'mode': self._camera_mode(), 'post_frames': s.post_frames}
         changes = {k: v for k, v in self.queued.items() if current.get(k) != v}
+        if 'mode' in self.queued and ('mode' in changes or 'fps' in changes):
+            # A table cell is one choice, even if either value currently matches.
+            # The worker rechecks camera settings after any queued monitor read.
+            changes.update(mode=self.queued['mode'], fps=self.queued['fps'])
         self.queued.clear()
-        if 'mode' not in changes and 'before_percent' in changes:
+        if changes.get('mode', self._camera_mode()) == self._camera_mode() and 'before_percent' in changes:
             after = round(s.capacity * (1 - changes.pop('before_percent') / 100))
             if after != s.post_frames:
                 changes['post_frames'] = after

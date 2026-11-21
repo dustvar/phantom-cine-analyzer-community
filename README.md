@@ -10,13 +10,14 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
-- **Camera Control (1.14.20).** Open **Tools → Camera Control** to monitor a connected Phantom
+- **Camera Control (1.14.21).** Open **Tools → Camera Control** to monitor a connected Phantom
   over Ethernet. **Auto brightness**, **Standard**, and **Linear** change how the live image
   appears on screen.
-  Open the frame-rate menu to see fps and sensor resolution together. VEO 1310 presets
-  identify the 2× binned options. The exposure menu puts the longest exposure for the
-  selected rate first. Choosing a preset updates the camera immediately. For an exact
-  value, type it and press Enter or leave the field.
+  Open the frame-rate menu and choose an output resolution under **Standard** or **Binned**
+  for the desired fps. For example, at 100 fps a VEO 1310S with 2×2 binning can use the
+  full sensor at 1280 × 960 standard or 640 × 480 binned. The exposure menu puts the
+  longest exposure for the selected rate first. Choosing a preset updates the camera
+  immediately. For an exact value, type it and press Enter or leave the field.
   The trigger slider shows time before the trigger in green and time after it in red,
   along with the total recording time. Drag the slider and release it to set the trigger
   position. PCA shows the values and frame capacity accepted by the camera.
