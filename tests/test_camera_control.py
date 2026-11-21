@@ -56,7 +56,17 @@ class _Veo:
             pixels = self.frame.tobytes()
             self.data.buffer.extend(pixels[:8] if self.truncated else pixels)
             return self.image_reply
+        if cmd == 'bref':
+            self.fields['auto.bref_progress'] = '8'
+            return 'Ok!'
         if cmd.startswith('set defc '):
+            geometry = re.search(r'res:(\d+x\d+)', cmd)
+            if geometry:
+                self.fields['defc.res'] = geometry[1]
+                self.fields['defc.frcount'] = '273'
+            binned = re.search(r'bin:(\d+)', cmd)
+            if binned:
+                self.fields['defc.bin'] = binned[1]
             for field, value in re.findall(r'(rate|exp|ptframes):([0-9.e+-]+)', cmd):
                 # Model exposure quantization in readback.
                 self.fields['defc.'+field] = str(int(value)//4*4) if field=='exp' else value
@@ -73,7 +83,7 @@ class _Veo:
 
     @property
     def writes(self):
-        return [c for c in self.commands if c.startswith(('trig','rec','set ','del ','rel '))]
+        return [c for c in self.commands if c.startswith(('trig','rec','set ','del ','rel ','bref'))]
 
 
 class CameraControlTests(unittest.TestCase):
@@ -96,6 +106,19 @@ class CameraControlTests(unittest.TestCase):
         self.assertTrue(all(s.closed for s in self.veo.opened))
         self.assertTrue(self.session.status().can_apply)
         self.assertEqual(self.veo.writes,[])
+
+    def test_monitor_can_request_shadow_bits_or_the_fast_eight_bit_format(self):
+        dark = np.arange(21, dtype='<u2').reshape(3, 7) * 16
+        self.veo.frame = dark
+        self.veo.image_reply = 'Ok! {cine:1, res:7x3, fmt:272}'
+        np.testing.assert_array_equal(self.session.preview(full_precision=True), dark)
+        self.veo.frame = np.full((3, 7), 102, dtype=np.uint8)
+        self.veo.image_reply = 'Ok! {cine:1, res:7x3, fmt:8}'
+        np.testing.assert_array_equal(self.session.preview(), self.veo.frame)
+        self.assertEqual([c for c in self.veo.commands if c.startswith('img ')],
+                         ['img {cine:-1, start:0, cnt:1, fmt:P16}',
+                          'img {cine:-1, start:0, cnt:1, fmt:8}'])
+        self.assertFalse(self.veo.writes)
 
     def test_p16_fallback_and_truncated_or_oversized_image_discards_channel(self):
         self.veo.fields['info.imgformats']='"272"'
@@ -204,3 +227,84 @@ class CameraControlTests(unittest.TestCase):
         with self.assertRaises(CancelledError):
             self.session.arm()
         self.assertFalse(self.veo.writes)
+
+    def select_1310(self):
+        self.veo.fields.update({'info.model':'"Phantom VEO 1310S"',
+                                'info.features':'"attach aexp bin2 bref shtr"',
+                                'auto.bref_progress':'0','defc.bin':'1'})
+
+    def test_rate_options_respect_geometry_binning_and_camera_limits(self):
+        self.select_1310()
+        s = self.session.status()
+        self.assertEqual(s.binning, 1)
+        options = {(r.fps,r.mode) for r in s.rate_options()}
+        self.assertIn((40300,(640,480,2)), options)
+        self.assertIn((30030,(640,480,1)), options)
+        self.assertIn((200,(800,600,1)), options)
+        self.assertEqual(s.max_rate_for((1280,960,1)), 10860)
+        self.assertEqual(s.max_rate_for((800,600,1)), None)
+        self.assertEqual(s.longest_exposure_us(200), 4999.260)
+        self.assertEqual(s.longest_exposure_us(20000), 49.260)
+        self.assertIsNone(s.longest_exposure_us(1000000))
+        with self.assertRaisesRegex(ValueError,'up to'):
+            self.session.apply(mode=(1280,960,1),fps=12000)
+        with self.assertRaisesRegex(ValueError,'listed'):
+            self.session.apply(mode=(1280,960,2),fps=5000)
+        self.assertFalse(self.veo.writes)
+        self.session.close()
+        self.veo.fields.update({'info.model':'"Phantom VEO 1310-E225"','info.features':'"attach"'})
+        state = self.session.status()
+        self.assertLessEqual(max(o.fps for o in state.rate_options()),225000)
+        self.assertEqual({o.binning for o in state.rate_options()},{1})
+
+    def test_round_rates_keep_current_view_or_choose_the_largest_supported_field(self):
+        self.select_1310()
+        self.veo.fields['defc.rate'] = '200'
+        s = self.session.status()
+        options = {(o.fps, o.mode) for o in s.rate_options()}
+        self.assertIn((20000, (800, 600, 1)), options)
+        self.assertIn((50000, (640, 240, 2)), options)
+        self.assertIn((100000, (320, 240, 2)), options)
+        self.assertIsNone(s.max_rate_for((800, 600, 1)))
+        self.session.apply(mode=(640, 240, 2), fps=50000, exposure_us=15)
+        restored = self.session.apply(mode=(800, 600, 1), fps=20000)
+        self.assertEqual((restored.width, restored.height, restored.binning), (800, 600, 1))
+        self.assertEqual(self.session.apply(fps=20001).fps, 20001)
+
+    def test_apply_binned_mode_keeps_trigger_proportion_using_actual_new_capacity(self):
+        self.select_1310()
+        s = self.session.apply(fps=40300, exposure_us=20, mode=(640,480,2))
+        self.assertEqual((s.width,s.height,s.binning,s.fps,s.post_frames), (640,480,2,40300,205))
+        self.assertEqual(self.veo.writes, ['set defc {bin:2, res:640x480, rate:40300, exp:20000}',
+                                           'set defc {ptframes:205}'])
+        s = self.session.apply(mode=(1280,960,1),fps=5000,before_percent=100)
+        self.assertEqual((s.width,s.height,s.binning,s.post_frames), (1280,960,1,0))
+
+    def test_fast_rate_cannot_silently_keep_an_impossible_exposure(self):
+        self.select_1310()
+        with self.assertRaisesRegex(ValueError,'shorter exposure'):
+            self.session.apply(fps=40300,mode=(640,480,2))
+        with self.assertRaisesRegex(ValueError,'frame period'):
+            self.session.apply(fps=200,exposure_us=100007)
+        self.assertFalse(self.veo.writes)
+
+    def test_csr_is_explicit_and_blocks_duplicates_and_trigger_during_calibration(self):
+        self.assertFalse(self.session.status().can_csr)
+        with self.assertRaisesRegex(ValueError, 'Black reference'):
+            self.session.csr()
+        self.session.close()
+        self.select_1310()
+        self.veo.state = ['RDY DEF PRE', 'WTR ABL ACT']
+        start = self.session.status()
+        self.assertTrue(start.can_csr and start.capping_shutter)
+        self.assertFalse(self.veo.writes)
+        s = self.session.csr()
+        self.assertEqual(s.csr_remaining,8)
+        self.assertFalse(s.can_csr or s.can_apply or s.can_trigger)
+        with self.assertRaises(ValueError): self.session.csr()
+        self.assertEqual(self.veo.writes, ['bref'])
+        self.veo.fields['auto.bref_progress'] = '0'
+        self.assertTrue(self.session.status().can_csr)
+        self.veo.state[1] = 'ACT TRG'
+        with self.assertRaises(ValueError): self.session.csr()
+        self.assertEqual(self.veo.writes, ['bref'])

@@ -10,12 +10,17 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
-- **Camera Control (1.14.17).** Open **Tools → Camera Control** to see the live sensor image
-  and the connected camera’s current capture settings. Enter frame rate in fps and exposure in
-  microseconds. Drag the trigger toward **Start** for more frames after the event or toward **End**
-  for more before it. **Apply settings** reads back the values accepted by the camera.
-  **Arm** starts buffering in RAM. **Trigger** captures the event on an armed camera.
-  Use **Event Finder → Camera recordings…** to review the completed Cine. Camera Control
+- **Camera Control (1.14.18).** Open **Tools → Camera Control** to monitor a connected Phantom
+  over Ethernet. **Auto brightness**, **Standard**, and **Linear** change how the live image
+  appears on screen. Capture settings are applied separately.
+  Open the frame-rate menu to see fps and sensor resolution together. VEO 1310 presets
+  identify the 2× binned options. The exposure menu puts the longest exposure for the
+  selected rate first. Both fields accept exact values.
+  The trigger slider shows time before the trigger in green and time after it in red,
+  along with the total recording time. A proposed change in image size shows an estimate.
+  **Apply settings** reads back the camera’s accepted values and exact frame capacity. **Black reference (CSR)** is available on supported cameras.
+  **Arm** starts buffering in RAM and **Trigger** captures the event. Use
+  **Event Finder → Camera recordings…** to review a completed Cine. Camera Control
   uses the documented Phantom PH16 Ethernet protocol and needs no separate SDK installation.
 
 - **Event Finder (1.14.16).** Search a rectangle or a 4 × 4 brightness probe in a saved Cine or completed

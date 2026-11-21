@@ -506,3 +506,6 @@ Event Finder 1.14.16
 
 Camera Control 1.14.17
 - Camera Control shows the live camera image and capture status. Operators can set frame rate, exposure, and trigger position, arm the camera, and send a software trigger.
+
+Camera Control 1.14.18
+- Capture setup shows frame-rate and exposure choices alongside trigger timing and available recording time.

@@ -9,6 +9,7 @@ from time import monotonic
 
 import numpy as np
 
+from camera_capture_modes import RateOption, published_modes, rate_options
 from event_camera import CameraReadError, CameraCommandError, _Channel, _stored, _tokens, _trigger, validate_address
 
 
@@ -34,10 +35,33 @@ class ControlStatus:
     min_fps: float | None = None
     max_fps: float | None = None
     min_exposure_us: float | None = None
-    exposure_dead_us: float = 0.0
+    exposure_dead_us: float | None = None
     manual_exposure: bool = True
     internal_clock: bool = True
     direct_recording: bool = False
+    binning: int = 1
+    published_rates: tuple = ()
+    supports_csr: bool = False
+    capping_shutter: bool = False
+    csr_remaining: int | None = 0
+
+    def rate_options(self):
+        return rate_options(self)
+
+    def max_rate_for(self, mode):
+        return next((row.fps for row in self.published_rates if row.mode == mode), None)
+
+    def longest_exposure_us(self, fps):
+        if self.exposure_dead_us is None or not math.isfinite(fps) or fps <= 0:
+            return None
+        ns = math.floor(1e9 / fps) - round(self.exposure_dead_us * 1000)
+        if ns < max(1, round((self.min_exposure_us or 0) * 1000)):
+            return None
+        return ns / 1000.
+
+    @property
+    def can_csr(self):
+        return self.supports_csr and self.csr_remaining == 0 and self.can_apply
 
     @property
     def active_slot(self):
@@ -50,17 +74,18 @@ class ControlStatus:
     @property
     def can_apply(self):
         flags = self._active_flags
-        return not self.direct_recording and 'TRG' not in flags and bool({'PRE', 'WTR'} & flags)
+        return (not self.direct_recording and not self.csr_remaining and 'TRG' not in flags
+                and bool({'PRE', 'WTR'} & flags))
 
     @property
     def can_arm(self):
-        return (not self.direct_recording and 'PRE' in self._active_flags
+        return (not self.direct_recording and not self.csr_remaining and 'PRE' in self._active_flags
                 and any(n and 'RDY' in flags for n, flags in self.slots))
 
     @property
     def can_trigger(self):
         flags = self._active_flags
-        return (not self.direct_recording and self.active_slot is not None and
+        return (not self.direct_recording and not self.csr_remaining and self.active_slot is not None and
                 {'WTR', 'ABL'} <= flags and not {'TRG', 'STR', 'PRE'} & flags)
 
 
@@ -138,11 +163,13 @@ class CameraControl:
                 self.model = channel.get('info.model')
                 self.features = _tokens(channel.get('info.features'))
                 formats = _tokens(channel.get('info.imgformats'))
+                self.supports_p16 = bool({'P16', '272'} & formats)
                 self.format = '8' if '8' in formats else ('P16' if {'P16','272'} & formats else None)
                 self.min_fps = self._limit(channel, 'info.minfrate')
                 self.max_fps = self._limit(channel, 'info.maxrate')
                 self.min_exp_ns = self._limit(channel, 'info.minexp')
-                self.dead_ns = self._limit(channel, 'info.expdead') or 0
+                self.dead_ns = self._limit(channel, 'info.expdead')
+                self.published_rates = published_modes(self.model, 'BIN2' in self.features, self.max_fps)
             yield self.channel
         except (CameraReadError, CancelledError, OSError):
             self.close()
@@ -172,39 +199,45 @@ class CameraControl:
         internal = int(channel.get('cam.syncimg')) == 0
         direct = 'MAG' in self.features and (
             int(channel.get('mag.runstop')) != 0 or int(channel.get('mag.state')) == 5)
+        binning = int(channel.get('defc.bin')) if 'BIN2' in self.features else 1
+        csr = 'BREF' in self.features
+        remaining = self._limit(channel, 'auto.bref_progress') if csr else 0
         slots = _cine_states(channel.request('cstats'))
         replaceable = ()
-        if (not direct and {'PRE','ACT'} <= slots[0][1] and
+        if (not direct and not remaining and {'PRE','ACT'} <= slots[0][1] and
                 not any(n and 'RDY' in flags for n, flags in slots)):
             replaceable = tuple(StoredCine(n, self.serial, _trigger(channel, n))
                                 for n, flags in slots if n and 'STR' in flags)
         return ControlStatus(self.model, self.serial, fps, exposure, post, capacity,
                              width, height, slots, replaceable, self.min_fps, self.max_fps,
                              None if self.min_exp_ns is None else self.min_exp_ns / 1000,
-                             self.dead_ns / 1000, manual, internal, direct)
+                             None if self.dead_ns is None else self.dead_ns / 1000, manual, internal, direct,
+                             binning, self.published_rates, csr, 'SHTR' in self.features,
+                             None if remaining is None else int(remaining))
 
     def status(self):
         with self._connection() as channel:
             return self._status(channel)
 
-    def preview(self):
+    def preview(self, *, full_precision=False):
         with self._connection() as channel:
             if 'ATTACH' not in self.features or self.format is None:
                 raise CameraReadError('This camera does not offer a supported live image format over Ethernet.')
             channel.attach()
-            reply = channel.request(f'img {{cine:-1, start:0, cnt:1, fmt:{self.format}}}')
+            requested = 'P16' if full_precision and self.supports_p16 else self.format
+            reply = channel.request(f'img {{cine:-1, start:0, cnt:1, fmt:{requested}}}')
             values = dict(re.findall(r'(\w+)\s*:\s*([^,}]+)', reply))
             # A hardware trigger can change cine/resolution at any instant.
             # PH16 returns the actual dimensions in this image's atomic header.
             cine = values.get('cine', '').strip()
-            fmt = values.get('fmt', self.format).strip().upper()
+            fmt = values.get('fmt', requested).strip().upper()
             if (not reply.upper().startswith('OK!') or not re.fullmatch(r'-1|\d+', cine)
-                    or not (fmt == self.format or self.format == 'P16' and fmt == '272')):
+                    or not (fmt == requested or requested == 'P16' and fmt == '272')):
                 raise CameraReadError('Unexpected metadata for the live sensor image.')
             width, height = _resolution(values.get('res', ''))
             pixels = np.empty((height, width), dtype='u1' if fmt == '8' else '<u2')
             channel._read_pixels(pixels)
-            return pixels if fmt == '8' else (pixels >> 8).astype(np.uint8)
+            return pixels if full_precision or fmt == '8' else (pixels >> 8).astype(np.uint8)
 
     @staticmethod
     def _command(channel, wire):
@@ -217,30 +250,61 @@ class CameraControl:
         if response.strip().upper() != 'OK!':
             raise CameraReadError('Unexpected camera acknowledgement. Check the camera state before retrying.')
 
-    def apply(self, fps=None, exposure_us=None, post_frames=None):
+    def apply(self, fps=None, exposure_us=None, post_frames=None, mode=None, before_percent=None):
         with self._connection() as channel:
             s = self._status(channel)
             if not s.can_apply:
-                raise ValueError('Wait for RAM acquisition to finish before applying capture settings.')
+                raise ValueError('Wait for recording or black reference to finish before applying settings.')
             fields = []
             rate = s.fps if fps is None else _positive(fps, 'Frame rate')
+            current_mode = s.width, s.height, s.binning
+            target = current_mode if mode is None else mode
+            resizing = target != current_mode
+            limit = s.max_rate_for(target)
+            if (resizing or rate != s.fps) and not s.internal_clock:
+                raise ValueError('The camera is using an external frame sync source.')
+            if resizing:
+                if (not isinstance(target, tuple) or any(type(x) is not int for x in target)
+                        or not any(option.mode == target for option in s.rate_options())):
+                    raise ValueError('Choose a sensor window listed for this camera.')
+                width, height, binning = target
+                if binning != s.binning:
+                    fields.append(f'bin:{binning}')
+                fields.append(f'res:{width}x{height}')
+            if (resizing or rate != s.fps) and limit is not None and rate > limit:
+                raise ValueError(f'This window supports up to {limit:g} fps. Choose a faster mode.')
             if rate != s.fps:
-                if not s.internal_clock:
-                    raise ValueError('The camera is using an external frame sync source.')
                 if (s.min_fps is not None and rate < s.min_fps or
                         s.max_fps is not None and rate > s.max_fps):
                     raise ValueError('Frame rate is outside the range reported by this camera.')
                 fields.append(f'rate:{rate:.12g}')
-            if exposure_us is not None and _positive(exposure_us, 'Exposure') != s.exposure_us:
+            available_ns = 1e9 / rate - (self.dead_ns or 0)
+            if ((rate != s.fps or resizing) and exposure_us is None and s.manual_exposure
+                    and round(s.exposure_us * 1000) > available_ns):
+                raise ValueError('Choose a shorter exposure for this capture rate.')
+            if exposure_us is not None and (exposure_us != s.exposure_us or rate != s.fps):
                 if not s.manual_exposure:
                     raise ValueError('Manual exposure is unavailable in the current camera exposure mode.')
-                exposure = float(exposure_us)
+                exposure = _positive(exposure_us, 'Exposure')
                 if exposure > 1e6/rate:
                     raise ValueError('Exposure is longer than the requested frame period.')
                 exp_ns = round(exposure*1000)
-                if not (max(1, self.min_exp_ns or 1) <= exp_ns <= 1e9/rate-self.dead_ns):
+                if not (max(1, self.min_exp_ns or 1) <= exp_ns <= available_ns):
                     raise ValueError('Exposure is outside the available window at the requested frame rate.')
                 fields.append(f'exp:{exp_ns}')
+            if before_percent is not None:
+                if (isinstance(before_percent, bool) or not isinstance(before_percent, (float, Integral))
+                        or not math.isfinite(before_percent) or not 0 <= before_percent <= 100):
+                    raise ValueError('Trigger position must be between 0 and 100 percent.')
+                if post_frames is not None:
+                    raise ValueError('Choose either an exact post-trigger count or a trigger percentage.')
+            if resizing:
+                if post_frames is not None:
+                    raise ValueError('Choose a trigger percentage while changing the sensor window.')
+                if before_percent is None:
+                    before_percent = 100 * (1 - min(s.capacity, s.post_frames) / max(1, s.capacity))
+            elif before_percent is not None:
+                post_frames = round(s.capacity * (1 - before_percent / 100))
             if post_frames is not None:
                 if not isinstance(post_frames, Integral) or isinstance(post_frames, bool):
                     raise ValueError('Post-trigger frames must be a whole number.')
@@ -251,6 +315,26 @@ class CameraControl:
             if not fields:
                 return s
             self._command(channel, 'set defc {' + ', '.join(fields) + '}')
+            after = self._status(channel)
+            if resizing:
+                if (after.width, after.height, after.binning) != target:
+                    raise ValueError('The camera chose a different sensor window. Review the readback.')
+                # Kernel allocation (padding, depth and partition) is firmware-specific.
+                # Only the new, reported capacity can give an exact post-trigger count.
+                post = round(after.capacity * (1 - before_percent / 100))
+                if post != after.post_frames:
+                    if not after.can_apply or s.active_slot != after.active_slot:
+                        raise ValueError('The window changed. Review trigger position after recording finishes.')
+                    self._command(channel, f'set defc {{ptframes:{post}}}')
+                    after = self._status(channel)
+            return after
+
+    def csr(self):
+        with self._connection() as channel:
+            s = self._status(channel)
+            if not s.can_csr:
+                raise ValueError('Black reference is unavailable for this camera or recording state.')
+            self._command(channel, 'bref')
             return self._status(channel)
 
     def arm(self, replace=None):

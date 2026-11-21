@@ -13,6 +13,7 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from camera_capture_modes import RateOption
 from camera_control import ControlStatus, StoredCine
 from camera_control_ui import CameraControlPanel
 from event_camera_discovery import DiscoveredCamera
@@ -40,7 +41,7 @@ class FakeSession:
             raise RuntimeError('Camera offline')
         return self.camera.settings
 
-    def preview(self):
+    def preview(self, *, full_precision=False):
         self.camera.calls.append(('preview', None))
         if self.camera.preview_gate:
             self.camera.preview_gate.wait(2)
@@ -55,7 +56,13 @@ class FakeSession:
         self.camera.calls.append(('apply', kwargs))
         if self.camera.apply_error:
             raise ValueError('Exposure outside sensor limits')
-        self.camera.settings = replace(self.status(), **kwargs)
+        fields = dict(kwargs)
+        mode = fields.pop('mode', None)
+        if mode is not None:
+            before = fields.pop('before_percent', 75)
+            fields.update(width=mode[0], height=mode[1], binning=mode[2],
+                          capacity=3600, post_frames=round(3600 * (1 - before / 100)))
+        self.camera.settings = replace(self.status(), **fields)
         return self.status()
 
     def arm(self, replace=None):
@@ -69,6 +76,10 @@ class FakeSession:
         if self.camera.trigger_gate:
             self.camera.trigger_gate.wait(2)
         self.camera.settings = armed() if self.camera.auto_rearm else stored()
+        return self.status()
+
+    def csr(self):
+        self.camera.calls.append(('csr',None))
         return self.status()
 
     def close(self):
@@ -175,6 +186,84 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertEqual(p.exposure.value(),49.256)
         self.assertFalse(p.apply_button.isEnabled())
         self.assertEqual(sum(c=='apply' for c,_ in self.calls),1)
+
+    def test_matching_presets_exposure_limit_and_duration_at_laptop_size(self):
+        self.panel.resize(850, 540)
+        current = RateOption(1000, 80, 60, 1)
+        fast = RateOption(4000, 40, 30, 2)
+        self.settings = replace(armed(), published_rates=(current, fast),
+                                exposure_dead_us=.74, exposure_us=900, min_exposure_us=.689)
+        self.start()
+        p = self.panel
+        self.assertTrue(p.rate_presets.isVisible())
+        menu = p.rate_presets.menu()
+        p._rate_menu(menu)
+        fast_action = next(action for action in menu.actions() if '4,000 fps' in action.text())
+        self.assertIn('40 × 30', fast_action.text())
+        self.assertIn('2×2 binning', fast_action.text())
+        fast_action.trigger()
+        self.assertEqual(p.fps.value(), 4000)
+        self.assertEqual(p.exposure.value(), 249.26)
+        self.assertEqual(p.exposure.maximum(), 249.26)
+        self.assertIn('Estimated record time', p.record_time.text())
+        self.assertIn('1 s', p.record_time.text())
+        self.assertEqual(p.before.text(), 'Before · 750 ms')
+        self.assertEqual(p.after.text(), 'After · 250 ms')
+        self.assertTrue(p.draft_note.isVisible())
+        self.assertIn('1,000 fps', p.draft_note.text())
+        self.assertFalse(p.post.isVisible())
+        exp_menu = p.exposure_presets.menu()
+        p._exposure_menu(exp_menu)
+        self.assertEqual(exp_menu.actions()[0].text(), 'Longest · 249.26 µs')
+        p.exposure.setValue(310)
+        self.assertEqual(p.exposure.value(), 249.26)
+        p.exposure.setValue(10)
+        exp_menu.actions()[0].trigger()
+        p.position.setValue(25)
+        self.assertEqual(p.after.text(), 'After · 750 ms')
+        p.apply_button.click()
+        self.wait(lambda: p.snapshot.width == 40)
+        self.assertEqual([obj for c,obj in self.calls if c == 'apply'],
+                         [dict(mode=(40,30,2), fps=4000., exposure_us=249.26, before_percent=25)])
+        self.assertEqual(p.record_time.text(), 'Record time · 900 ms')
+        self.assertEqual(p.breakdown.text(), '900 before · 2,700 after')
+        self.assertTrue(p.post.isVisible())
+        self.assertFalse(p.draft_note.isVisible())
+
+    def test_custom_rate_beyond_window_is_blocked_and_revert_restores_capacity(self):
+        self.settings = replace(armed(), published_rates=(RateOption(1200,80,60,1),))
+        self.start()
+        p = self.panel
+        p.fps.setValue(2400.)
+        self.assertIn('1,200 fps', p.draft_note.text())
+        self.assertFalse(p.apply_button.isEnabled())
+        p.revert_button.click()
+        self.assertEqual(p.fps.value(), 1000)
+        self.assertEqual(p.position.value(),75)
+        self.assertEqual(p.record_time.text(),'Record time · 1 s')
+
+    def test_csr_requires_confirmation_and_committed_settings(self):
+        self.settings = replace(armed(), supports_csr=True, capping_shutter=False)
+        self.start()
+        p = self.panel
+        self.assertTrue(p.csr_button.isVisible())
+        self.assertTrue(p.csr_button.isEnabled())
+        p.exposure.setValue(20)
+        self.assertFalse(p.csr_button.isEnabled())
+        p.revert_button.click()
+        def answer(run):
+            box = QApplication.activeModalWidget()
+            self.assertIn('Cover the lens', box.informativeText())
+            if run:
+                next(b for b in box.buttons() if b.text() == 'Run CSR').click()
+            else:
+                box.reject()
+        QTimer.singleShot(15, lambda: answer(False))
+        p.csr_button.click()
+        self.assertNotIn(('csr', None), self.calls)
+        QTimer.singleShot(15, lambda: answer(True))
+        p.csr_button.click()
+        self.wait(lambda: ('csr',None) in self.calls and not p.pending)
 
     def test_trigger_and_confirmed_replacement(self):
         self.start()

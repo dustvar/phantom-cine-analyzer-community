@@ -10,6 +10,9 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFormLay
 
 from app_runtime import user_data_dir
 from camera_control_ui_worker import CameraWorker
+from camera_monitor import MonitorLevels
+from camera_capture_widgets import (TRIGGER_STYLE, add_custom, duration, geometry_label,
+                                    number, preset_field)
 from event_camera import validate_address
 from event_camera_picker import _Discover
 
@@ -17,7 +20,9 @@ from event_camera_picker import _Discover
 class _Preview(QWidget):
     def __init__(self):
         super().__init__()
-        self.image = None
+        self.image = self.pixels = None
+        self.levels = MonitorLevels()
+        self.mode = 'auto'
         self.message = 'Connect a camera to see the live image.'
         self.setAccessibleName('Live camera image')
         self.setMinimumSize(160, 110)
@@ -27,10 +32,19 @@ class _Preview(QWidget):
         return QSize(640, 420)
 
     def clear(self, message):
-        self.image, self.message = None, message
+        self.image = self.pixels = None
+        self.levels.reset()
+        self.message = message
         self.update()
 
-    def set_frame(self, array):
+    def set_mode(self, mode):
+        self.mode = mode
+        if self.pixels is not None:
+            self.set_frame(self.pixels)
+
+    def set_frame(self, pixels):
+        self.pixels = pixels
+        array = self.levels.render(pixels, self.mode)
         height, width = array.shape
         self.image = QImage(array.data, width, height, int(array.strides[0]),
                             QImage.Format_Grayscale8).copy()
@@ -64,16 +78,6 @@ def _group(title):
     return group, QVBoxLayout(group)
 
 
-def _number(name, suffix, decimals, maximum):
-    box = QDoubleSpinBox()
-    box.setAccessibleName(name)
-    box.setSuffix(suffix)
-    box.setDecimals(decimals)
-    box.setRange(10 ** -decimals, maximum)
-    box.setGroupSeparatorShown(True)
-    return box
-
-
 class CameraControlPanel(QWidget):
     def __init__(self, parent=None, camera_in_use=None):
         super().__init__(parent)
@@ -85,6 +89,7 @@ class CameraControlPanel(QWidget):
         self.read_pending = False
         self.pending = ''
         self.edits = set()
+        self.draft_mode = None
         self.next_status = self.next_frame = 0.
         self.frames = 0
         self.preview_clock = 0.
@@ -139,6 +144,13 @@ class CameraControlPanel(QWidget):
         self.preview_button = QPushButton('Pause preview')
         self.preview_button.setToolTip('Pause the monitor while the camera continues operating.')
         live_row.addWidget(self.preview_info, 1)
+        self.monitor_mode = QComboBox()
+        self.monitor_mode.setAccessibleName('Monitor brightness')
+        for label, mode in [('Auto brightness', 'auto'), ('Standard', 'standard'), ('Linear', 'linear')]:
+            self.monitor_mode.addItem(label, mode)
+        self.monitor_mode.setToolTip('Monitor brightness affects only this preview. Linear shows the camera signal directly.')
+        self.monitor_mode.currentIndexChanged.connect(lambda: self.view.set_mode(self.monitor_mode.currentData()))
+        live_row.addWidget(self.monitor_mode)
         live_row.addWidget(self.preview_button)
         left.addLayout(live_row)
 
@@ -146,35 +158,47 @@ class CameraControlPanel(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(244)
-        scroll.setMaximumWidth(300)
+        scroll.setMinimumWidth(274)
+        scroll.setMaximumWidth(322)
         sidebar = QWidget()
         rail = QVBoxLayout(sidebar)
         rail.setContentsMargins(0, 0, 4, 0)
         capture, controls = _group('Capture settings')
+        controls.setSpacing(4)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        self.fps = _number('Capture frame rate', ' fps', 3, 1e9)
-        self.exposure = _number('Exposure time', ' µs', 3, 1e9)
-        form.addRow('Frame rate', self.fps)
-        form.addRow('Exposure', self.exposure)
+        self.fps, self.rate_presets, rate_field = preset_field(
+            'Capture frame rate', ' fps', self._rate_menu)
+        self.exposure, self.exposure_presets, exposure_field = preset_field(
+            'Exposure time', ' µs', self._exposure_menu)
+        form.addRow('Frame rate', rate_field)
+        form.addRow('Exposure', exposure_field)
+        self.geometry_note = _label()
+        self.geometry_note.setToolTip('Output width × height. A smaller sensor window crops the view. Binning combines pixels.')
+        form.addRow('Image size', self.geometry_note)
         controls.addLayout(form)
         controls.addWidget(QLabel('Trigger position'))
         self.position = QSlider(Qt.Horizontal)
         self.position.setAccessibleName('Trigger position, percent before trigger')
         self.position.setRange(0, 100)
-        self.position.setToolTip('Left puts the trigger at the start. Right puts it at the end.')
+        self.position.setStyleSheet(TRIGGER_STYLE)
+        self.position.setToolTip('Green shows time before the trigger. Red shows time after it.')
         controls.addWidget(self.position)
         ends = QHBoxLayout()
-        ends.addWidget(QLabel('Start'))
+        self.before = _label('Before')
+        ends.addWidget(self.before)
         ends.addStretch()
-        ends.addWidget(QLabel('End'))
+        self.after = _label('After')
+        ends.addWidget(self.after)
         controls.addLayout(ends)
+        self.record_time = _label()
+        self.record_time.setAccessibleName('Total recording time')
+        controls.addWidget(self.record_time)
         self.post = QSpinBox()
         self.post.setAccessibleName('Frames after trigger')
         self.post.setGroupSeparatorShown(True)
-        after_row = QFormLayout()
+        after_row = self.frames_after_row = QFormLayout()
         after_row.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         after_row.setRowWrapPolicy(QFormLayout.WrapLongRows)
         after_row.addRow('Frames after', self.post)
@@ -188,6 +212,12 @@ class CameraControlPanel(QWidget):
         edit_actions.addWidget(self.apply_button, 1)
         edit_actions.addWidget(self.revert_button)
         controls.addLayout(edit_actions)
+        self.draft_note = _label()
+        self.draft_note.setAccessibleName('Pending capture settings')
+        controls.addWidget(self.draft_note)
+        self.csr_button = QPushButton('Black reference (CSR)…')
+        self.csr_button.setToolTip('Calibrate the sensor’s black level at the current settings.')
+        controls.addWidget(self.csr_button)
         rail.addWidget(capture)
         record, actions = _group('Recording')
         self.state = _label('Disconnected')
@@ -197,8 +227,10 @@ class CameraControlPanel(QWidget):
         self.trigger_button.setProperty('primaryAction', True)
         self.trigger_button.setToolTip('Send a software trigger to the armed camera.')
         actions.addWidget(self.state)
-        actions.addWidget(self.arm_button)
-        actions.addWidget(self.trigger_button)
+        record_buttons = QHBoxLayout()
+        record_buttons.addWidget(self.arm_button, 1)
+        record_buttons.addWidget(self.trigger_button, 1)
+        actions.addLayout(record_buttons)
         rail.addWidget(record)
         rail.addStretch()
         scroll.setWidget(sidebar)
@@ -211,11 +243,12 @@ class CameraControlPanel(QWidget):
         self.connect_button.clicked.connect(self._connect_clicked)
         self.address.returnPressed.connect(self._connect_clicked)
         self.preview_button.clicked.connect(self._toggle_preview)
-        self.fps.valueChanged.connect(lambda: self._edited('fps'))
+        self.fps.valueChanged.connect(self._rate_changed)
         self.exposure.valueChanged.connect(lambda: self._edited('exposure_us'))
         self.position.valueChanged.connect(self._slider_changed)
         self.post.valueChanged.connect(self._post_changed)
         self.apply_button.clicked.connect(self._apply)
+        self.csr_button.clicked.connect(self._csr)
         self.revert_button.clicked.connect(self._revert)
         self.arm_button.clicked.connect(self._arm)
         self.trigger_button.clicked.connect(self._trigger)
@@ -259,6 +292,11 @@ class CameraControlPanel(QWidget):
         self.edits.clear()
         self.state.setText('Disconnected')
         self.breakdown.clear()
+        self.draft_mode = None
+        self.geometry_note.clear()
+        self.record_time.clear()
+        self.before.setText('Before')
+        self.after.setText('After')
         self.preview_info.clear()
         self.notice.clear()
         self.view.clear('Connect a camera to see the live image.')
@@ -357,13 +395,26 @@ class CameraControlPanel(QWidget):
         self.preview_button.setEnabled(ready)
         self.preview_button.setText('Pause preview' if self.preview_on else 'Resume preview')
         self.fps.setEnabled(editing and self.snapshot.internal_clock)
+        self.rate_presets.setEnabled(self.fps.isEnabled())
         self.exposure.setEnabled(editing and self.snapshot.manual_exposure)
+        self.exposure_presets.setEnabled(self.exposure.isEnabled())
         self.position.setEnabled(editing)
-        self.post.setEnabled(editing)
-        self.apply_button.setEnabled(bool(editing and self.edits))
+        self.post.setEnabled(editing and self.draft_mode is None)
+        self.csr_button.setVisible(bool(ready and self.snapshot.supports_csr))
+        self.csr_button.setEnabled(bool(ready and self.snapshot.can_csr and not self.pending and not self.edits))
+        self.csr_button.setText(f'CSR · {self.snapshot.csr_remaining:,} frames left'
+                                if ready and self.snapshot.csr_remaining else 'Black reference (CSR)…')
+        issue = self._draft_issue() if ready else ''
+        self.draft_note.setVisible(bool(ready and self.edits))
+        if ready and self.edits:
+            live = f'On camera · {number(self.snapshot.fps)} fps · {number(self.snapshot.exposure_us)} µs'
+            self.draft_note.setText(issue or f'Pending changes. {live}')
+        self.apply_button.setEnabled(bool(editing and self.edits and not issue))
         self.revert_button.setEnabled(bool(ready and self.edits and not self.pending))
-        self.arm_button.setText('Replace Cine and arm…' if ready and not self.snapshot.can_arm
-                                and self.snapshot.replaceable else 'Arm')
+        replace = self.snapshot.replaceable[0] if ready and self.snapshot.replaceable and not self.snapshot.can_arm else None
+        self.arm_button.setText(f'Replace Cine {replace.slot}…' if replace else 'Arm')
+        self.arm_button.setToolTip('Replace the stored Cine and start buffering a new recording.' if replace else
+                                   'Start buffering the next recording in camera RAM.')
         self.arm_button.setEnabled(bool(ready and not self.pending and not self.edits and
                                   (self.snapshot.can_arm or self.snapshot.replaceable)))
         self.trigger_button.setEnabled(bool(ready and not self.pending and not self.edits
@@ -385,7 +436,10 @@ class CameraControlPanel(QWidget):
                 now = monotonic()
                 if now - self.preview_clock >= 1.:
                     rate = self.frames / (now - self.preview_clock)
-                    self.preview_info.setText(f'Live · {rate:.1f} preview fps  ·  {result.shape[1]} × {result.shape[0]}')
+                    info = f'Live · {rate:.1f} preview fps  ·  {result.shape[1]} × {result.shape[0]}'
+                    if self.view.levels.signal:
+                        info += '  ·  ' + self.view.levels.signal
+                    self.preview_info.setText(info)
                     self.frames, self.preview_clock = 0, now
             self._schedule()
             return
@@ -412,9 +466,10 @@ class CameraControlPanel(QWidget):
             self.next_status = monotonic() + 1.
         elif error:
             self.notice.setText(error)
-        elif command in ('apply', 'arm', 'trigger'):
+        elif command in ('apply', 'arm', 'trigger', 'csr'):
             self.notice.setText({'apply':'Capture settings read back from the camera.',
-                                 'arm':'Arm command accepted.', 'trigger':'Trigger command accepted.'}[command])
+                                 'arm':'Arm command accepted.', 'trigger':'Trigger command accepted.',
+                                 'csr':'Black reference command accepted.'}[command])
         self._controls()
         self._schedule()
 
@@ -422,18 +477,23 @@ class CameraControlPanel(QWidget):
         self.snapshot = s
         if reset:
             self.edits.clear()
-        limits = ((self.fps, 'fps', s.fps), (self.exposure, 'exposure_us', s.exposure_us),
-                  (self.post, 'post_frames', s.post_frames))
-        for widget, name, value in limits:
-            with QSignalBlocker(widget):
-                if name == 'post_frames':
-                    widget.setMaximum(s.capacity)
-                elif name == 'fps':
-                    widget.setRange(min(s.fps, s.min_fps or .001), max(s.fps, s.max_fps or 1e9))
-                elif name == 'exposure_us':
-                    widget.setMinimum(min(s.exposure_us, s.min_exposure_us or .001))
-                if name not in self.edits and widget.value() != value:
-                    widget.setValue(value)
+            self.draft_mode = None
+        if self.draft_mode == (s.width, s.height, s.binning):
+            self.draft_mode = None
+            self.edits.discard('mode')
+        with QSignalBlocker(self.fps):
+            self.fps.setRange(min(s.fps, s.min_fps or .001), max(s.fps, s.max_fps or 1e9))
+            if 'fps' not in self.edits and self.fps.value() != round(s.fps, 3):
+                self.fps.setValue(s.fps)
+        self._update_exposure_limit()
+        with QSignalBlocker(self.exposure):
+            if 'exposure_us' not in self.edits and self.exposure.value() != round(s.exposure_us, 3):
+                self.exposure.setValue(s.exposure_us)
+        with QSignalBlocker(self.post):
+            self.post.setMaximum(s.capacity)
+            if 'post_frames' not in self.edits and self.draft_mode is None and self.post.value() != s.post_frames:
+                self.post.setValue(s.post_frames)
+        self.geometry_note.setText(geometry_label(self._mode()))
         self._update_position()
         states = dict(s.slots)
         active = states.get(s.active_slot, ())
@@ -447,7 +507,8 @@ class CameraControlPanel(QWidget):
         if s.direct_recording:
             state = 'Direct-to-media recording mode'
         self.state.setText(state)
-        self.fps.setToolTip('Capture frame rate' if s.internal_clock else 'Frame rate is set by external sync.')
+        self.fps.setToolTip('Type a capture rate or use the arrow to choose a resolution and rate.'
+                            if s.internal_clock else 'Frame rate is set by external sync.')
         self.exposure.setToolTip('Sensor exposure time' if s.manual_exposure else 'Exposure is set by the camera’s current mode.')
 
     def _schedule(self):
@@ -490,18 +551,127 @@ class CameraControlPanel(QWidget):
         self._controls()
         self._schedule()
 
-    def _update_position(self):
+    def _mode(self):
+        s = self.snapshot
+        return self.draft_mode or (s.width, s.height, s.binning)
+
+    def _rate_menu(self, menu):
+        menu.clear()
         if self.snapshot is None:
             return
-        count = self.snapshot.capacity
-        after = self.post.value()
-        with QSignalBlocker(self.position):
-            self.position.setValue(round(100 * (count - after) / max(1, count)))
-        self.breakdown.setText(f'{count - after:,} before · {after:,} after')
+        for option in self.snapshot.rate_options():
+            text = f'{number(option.fps)} fps   ·   {geometry_label(option.mode)}'
+            action = menu.addAction(text)
+            action.setCheckable(True)
+            action.setChecked(option.fps == self.fps.value() and option.mode == self._mode())
+            action.triggered.connect(lambda checked=False, item=option: self._select_rate(item))
+        if menu.isEmpty():
+            menu.addAction('Camera rate presets unavailable').setEnabled(False)
+        add_custom(menu, self.fps)
+
+    def _select_rate(self, option):
+        if not self.rate_presets.isEnabled():
+            return
+        s = self.snapshot
+        old_mode = self.draft_mode
+        self.draft_mode = option.mode if option.mode != (s.width, s.height, s.binning) else None
+        if self.draft_mode:
+            self.edits.add('mode')
+        else:
+            self.edits.discard('mode')
+            if old_mode and 'before_percent' in self.edits:
+                self.post.setValue(round(s.capacity * (100 - self.position.value()) / 100))
+                self.edits.discard('before_percent')
+        self.geometry_note.setText(geometry_label(self._mode()))
+        with QSignalBlocker(self.fps):
+            self.fps.setValue(option.fps)
+        self._rate_changed()
+
+    def _exposure_menu(self, menu):
+        menu.clear()
+        if self.snapshot is None:
+            return
+        longest = self.snapshot.longest_exposure_us(self.fps.value())
+        if longest is not None and longest >= self.exposure.minimum():
+            menu.addAction(f'Longest · {number(longest)} µs',
+                           lambda: self.exposure.setValue(longest))
+            menu.addSeparator()
+        for value in (10000, 5000, 2000, 1000, 500, 250, 100, 50, 20, 10, 5, 2, 1):
+            if self.exposure.minimum() <= value <= self.exposure.maximum() and (longest is None or value < longest):
+                menu.addAction(f'{number(value)} µs',
+                               lambda checked=False, us=value: self.exposure.setValue(us))
+        add_custom(menu, self.exposure)
+
+    def _update_exposure_limit(self):
+        s = self.snapshot
+        limit = s.longest_exposure_us(self.fps.value())
+        minimum = min(s.exposure_us, s.min_exposure_us or .001)
+        maximum = max(minimum, limit) if limit is not None else max(s.exposure_us, 1e6 / self.fps.value())
+        # Always represent the applied reading, including an externally controlled exposure.
+        if 'fps' not in self.edits and self.fps.value() == round(s.fps, 3):
+            maximum = max(maximum, s.exposure_us)
+        with QSignalBlocker(self.exposure):
+            self.exposure.setRange(minimum, maximum)
+
+    def _rate_changed(self):
+        if self.snapshot is None:
+            return
+        self._edited('fps')
+        self._update_exposure_limit()
+        if self.snapshot.manual_exposure:
+            self._edited('exposure_us')
+        self._update_position()
+        self._controls()
+
+    def _draft_issue(self):
+        if not self.edits:
+            return ''
+        s = self.snapshot
+        if 'fps' in self.edits or self.draft_mode:
+            maximum = s.max_rate_for(self._mode())
+            if maximum is not None and self.fps.value() > maximum:
+                return f'This image size supports up to {number(maximum)} fps. Choose a preset to change size.'
+        if 'exposure_us' in self.edits or 'fps' in self.edits:
+            limit = s.longest_exposure_us(self.fps.value())
+            if s.manual_exposure and limit is not None and self.exposure.value() > limit:
+                return f'Choose an exposure of {number(limit)} µs or shorter.'
+        return ''
+
+    def _update_position(self):
+        s = self.snapshot
+        if s is None:
+            return
+        rate = self.fps.value()
+        self.frames_after_row.setRowVisible(self.post, self.draft_mode is None)
+        if self.draft_mode is None:
+            count = s.capacity
+            after = self.post.value()
+            with QSignalBlocker(self.position):
+                self.position.setValue(round(100 * (count - after) / max(1, count)))
+            title = 'Record time'
+        else:
+            width, height, _ = self.draft_mode
+            count = round(s.capacity * s.width * s.height / (width * height))
+            after = round(count * (100 - self.position.value()) / 100)
+            title = 'Estimated record time'
+        before = count - after
+        self.breakdown.setText(f'{before:,} before · {after:,} after')
+        self.before.setText(f'Before · {duration(before / rate)}')
+        self.after.setText(f'After · {duration(after / rate)}')
+        self.record_time.setText(f'{title} · {duration(count / rate)}')
+        self.record_time.setToolTip('Estimated from the current RAM capacity and the new image size. '
+                                    'Apply settings to read the exact capacity.' if self.draft_mode else
+                                    f'{count:,} frames at {number(rate)} fps.')
 
     def _slider_changed(self, percent):
-        if self.snapshot:
+        if self.snapshot is None:
+            return
+        if self.draft_mode is None:
             self.post.setValue(round(self.snapshot.capacity * (100 - percent) / 100))
+        else:
+            self.edits.add('before_percent')
+            self._update_position()
+            self._controls()
 
     def _post_changed(self):
         self._update_position()
@@ -536,7 +706,30 @@ class CameraControlPanel(QWidget):
         if self.apply_button.isEnabled():
             values = {'fps':self.fps.value(), 'exposure_us':self.exposure.value(),
                       'post_frames':self.post.value()}
-            self._send('apply', {key: values[key] for key in self.edits})
+            changes = {key: values[key] for key in values if key in self.edits}
+            if self.draft_mode is not None:
+                changes['mode'] = self.draft_mode
+                if 'before_percent' in self.edits or 'post_frames' in self.edits:
+                    changes.pop('post_frames', None)
+                    changes['before_percent'] = self.position.value()
+            self._send('apply', changes)
+
+    def _csr(self):
+        if not self.csr_button.isEnabled():
+            return
+        s = self.snapshot
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle('Capture black reference')
+        confirm.setText(f'Run a current session reference (CSR) on {s.model}?')
+        instruction = ('The camera will briefly close its shutter.' if s.capping_shutter else
+                       'Cover the lens before starting and keep it covered until the reference finishes.')
+        confirm.setInformativeText(f'{instruction} This interrupts pre-trigger buffering.')
+        confirm.addButton(QMessageBox.Cancel)
+        confirm.setDefaultButton(QMessageBox.Cancel)
+        run = confirm.addButton('Run CSR', QMessageBox.AcceptRole)
+        confirm.exec()
+        if confirm.clickedButton() is run and self.csr_button.isEnabled() and self.snapshot.serial == s.serial:
+            self._send('csr')
 
     def _arm(self):
         if not self.arm_button.isEnabled():

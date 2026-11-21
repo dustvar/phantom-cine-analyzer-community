@@ -6,6 +6,7 @@ from time import monotonic
 from PySide6.QtCore import QThread, Signal
 
 from camera_control import CameraControl
+from camera_monitor import needs_shadow_precision
 
 
 class CameraWorker(QThread):
@@ -28,6 +29,7 @@ class CameraWorker(QThread):
 
     def run(self):
         session = None
+        shadow_detail = False
         try:
             for host in self.hosts:
                 if self.isInterruptionRequested():
@@ -54,6 +56,8 @@ class CameraWorker(QThread):
                 try:
                     if command == 'apply':
                         result = session.apply(**argument)
+                    elif command == 'csr':
+                        result = session.csr()
                     elif command == 'arm':
                         result = session.arm(replace=argument) if argument is not None else session.arm()
                     elif command == 'trigger':
@@ -62,7 +66,8 @@ class CameraWorker(QThread):
                             raise ValueError('Trigger expired while waiting for the camera. No trigger was sent.')
                         result = session.trigger(slot, deadline=deadline)
                     elif command == 'preview':
-                        result = session.preview()
+                        result = session.preview(full_precision=shadow_detail)
+                        shadow_detail = needs_shadow_precision(result, shadow_detail)
                     elif command == 'stop_preview':
                         result = session.stop_preview()
                     elif command == 'status':
@@ -73,7 +78,7 @@ class CameraWorker(QThread):
                     if self.isInterruptionRequested():
                         return
                     message = str(exc) or 'The camera could not complete this action.'
-                    if command in ('apply', 'arm', 'trigger'):
+                    if command in ('apply', 'arm', 'trigger', 'csr'):
                         # A command may have reached the camera before a lost reply.
                         # Never resend it. Get current state before re-enabling controls.
                         try:

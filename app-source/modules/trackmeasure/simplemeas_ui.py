@@ -49,7 +49,7 @@ import pandas as pd
 
 # constants
 MINIGRAPH_SIZE = 160
-VERSION = '1.14.17 · Camera Control'
+VERSION = '1.14.18 · Camera Control'
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
