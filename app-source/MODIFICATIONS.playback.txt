@@ -503,3 +503,6 @@ Event Finder 1.14.15
 
 Event Finder 1.14.16
 - Camera recordings searches the wired connection for Phantom cameras and lets you choose a camera to see its completed recordings. You can still enter a camera address manually.
+
+Camera Control 1.14.17
+- Camera Control shows the live camera image and capture status. Operators can set frame rate, exposure, and trigger position, arm the camera, and send a software trigger.

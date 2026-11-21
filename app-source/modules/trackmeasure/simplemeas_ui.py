@@ -20,6 +20,7 @@ from pathlib import Path
 from video_export_ui import ExportDialog, ExportJob
 from viewer_editor_mixin import ViewerEditorMixin
 from camera_comparator_ui import CameraComparatorPanel
+from camera_control_ui import CameraControlPanel
 from video_overlay_ui import VideoOverlayPanel
 from bos_ui import BOSPanel
 from event_finder_ui import EventFinderPanel
@@ -48,7 +49,7 @@ import pandas as pd
 
 # constants
 MINIGRAPH_SIZE = 160
-VERSION = '1.14.16 · Event Finder'
+VERSION = '1.14.17 · Camera Control'
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
@@ -1999,7 +2000,8 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             QTimer.singleShot(100, self.close)
             event.ignore()
             return
-        if not all((self.bos_panel.shutdown(), self.overlay_panel.shutdown(), self.comparator_panel.shutdown(), self.event_finder.shutdown())):
+        if not all((self.bos_panel.shutdown(), self.overlay_panel.shutdown(), self.comparator_panel.shutdown(),
+                    self.event_finder.shutdown(), self.camera_control.shutdown())):
             self.status_bar.setText('Finishing active work before closing…')
             QTimer.singleShot(100, self.close)
             event.ignore()
@@ -2068,6 +2070,10 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self.event_finder = EventFinderPanel(self)
         self.event_finder.openInViewer.connect(self._open_event_in_viewer)
         self.workflow_stack.addWidget(self.event_finder)
+        self.camera_control = CameraControlPanel(self, camera_in_use=self._camera_scan_in_progress)
+        self.workflow_stack.addWidget(self.camera_control)
+        self.workflow_stack.currentChanged.connect(
+            lambda index: self.camera_control.set_active(self.workflow_stack.widget(index) is self.camera_control))
         self._pending_event_jump = None
         main_layout = QGridLayout()
         self.job_controls = self._create_job_bar()
@@ -2110,6 +2116,11 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self.overlay_tool._layout.setSpacing(4)
         self.overlay_tool.setAccessibleName('Video Overlay')
         self.overlay_tool.clicked.connect(self._show_video_overlay)
+        self.camera_control_tool = QToolButton(self.analysis_tools)
+        self.camera_control_tool.setCheckable(True)
+        self.camera_control_tool.setAccessibleName('Camera Control')
+        self.camera_control_tool.clicked.connect(self._show_camera_control)
+        self.camera_control_tool.hide()
         self.event_tool = QToolButton(self.analysis_tools)
         self.event_tool.setCheckable(True)
         self.event_tool.setAccessibleName('Event Finder')
@@ -5739,6 +5750,15 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             current.pause()
         self.workflow_stack.setCurrentWidget(panel)
         return True
+
+    def _camera_scan_in_progress(self, hosts, serial):
+        # A camera has one Ethernet image channel shared by live view and RAM reads.
+        source = self.event_finder.current
+        return (self.event_finder.busy() and source is not None and not isinstance(source, str)
+                and (source.serial == serial or source.host in hosts))
+
+    def _show_camera_control(self):
+        self._open_analysis_panel(self.camera_control)
 
     def _show_event_finder(self, checked=False, *, restore=False):
         if not self._open_analysis_panel(self.event_finder):

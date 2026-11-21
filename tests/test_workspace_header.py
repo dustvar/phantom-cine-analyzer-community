@@ -63,6 +63,21 @@ class WorkspaceHeaderTests(unittest.TestCase):
         self.assertIs(w.workflow_stack.currentWidget(),w.tab_splitter)
         self.assertTrue(w.details_buttons[1].isVisible());self.assertTrue(w.details_buttons[2].isHidden())
 
+    def test_camera_control_uses_its_own_header_and_stops_on_return(self):
+        w = self.w
+        choose = w.findChild(QPushButton, 'cine_upload_button')
+        with patch.object(w.camera_control, 'set_active') as set_active:
+            w.mode_actions[w.camera_control_tool].trigger()
+            self.assertIs(w.workflow_stack.currentWidget(), w.camera_control)
+            set_active.assert_called_with(True)
+            self.assertTrue(w.mode_actions[w.camera_control_tool].isChecked())
+            self.assertTrue(choose.isHidden())
+            self.assertTrue(w.scale_tool.isHidden())
+            w.mode_actions[w.viewer_tool].trigger()
+            self.assertIs(w.workflow_stack.currentWidget(), w.tab_splitter)
+            set_active.assert_called_with(False)
+            self.assertFalse(choose.isHidden())
+
     def test_calibration_remains_accessible_and_has_live_tool_state(self):
         w=self.w;w.scale_tool.click();QTest.qWait(20)
         self.assertIs(w.current_tool,w.scale_tool)

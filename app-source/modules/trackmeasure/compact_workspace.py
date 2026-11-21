@@ -175,12 +175,12 @@ class CompactWorkspaceMixin:
         self._sync_compact_control_metrics()
         analysis=self.workflow_stack.currentWidget() is self.tab_splitter
         tracking=analysis and self.current_tool is self.track_tool
-        event_open = self.workflow_stack.currentWidget() is self.event_finder
+        has_own_source = self.workflow_stack.currentWidget() in (self.event_finder, self.camera_control)
         for index in range(self._viewer_source_row.count()):
             widget = self._viewer_source_row.itemAt(index).widget()
             if widget is not None and widget is not self.theme_button:
-                widget.setVisible(not event_open)
-        self.scale_tool.setVisible(not event_open)
+                widget.setVisible(not has_own_source)
+        self.scale_tool.setVisible(not has_own_source)
         self.details_rail.setVisible(analysis)
         self.details_buttons[2].setVisible(tracking)
         self.details_buttons[2].setToolTip('Tracked objects, measured points and object settings')
@@ -215,6 +215,7 @@ class CompactWorkspaceMixin:
         self.mode_menu = QMenu(self.mode_button); self.mode_button.setMenu(self.mode_menu)
         self.mode_actions = {}
         names = [('Viewer', self.viewer_tool, 'viewer-eye.svg'), ('Video Overlay', self.overlay_tool, 'viewer-eye.svg'),
+                 ('Camera Control', self.camera_control_tool, 'icons8-camera-transparent.gif'),
                  ('Event Finder', self.event_tool, 'target-32.png'),
                  ('Background-Oriented Schlieren (BOS)', self.bos_tool, 'bos.svg'),
                  ('Track', self.track_tool, 'target-32.png'), ('Distance', self.two_pt_tool, 'line-32.png'),
@@ -344,7 +345,9 @@ class CompactWorkspaceMixin:
     def _sync_mode_menu(self):
         panel = self.workflow_stack.currentWidget()
         active = self.current_tool
-        if panel is self.event_finder:
+        if panel is self.camera_control:
+            active = self.camera_control_tool
+        elif panel is self.event_finder:
             active = self.event_tool
         elif panel is self.bos_panel:
             active = self.bos_tool

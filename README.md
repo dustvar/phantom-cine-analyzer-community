@@ -10,6 +10,14 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
+- **Camera Control (1.14.17).** Open **Tools → Camera Control** to see the live sensor image
+  and the connected camera’s current capture settings. Enter frame rate in fps and exposure in
+  microseconds. Drag the trigger toward **Start** for more frames after the event or toward **End**
+  for more before it. **Apply settings** reads back the values accepted by the camera.
+  **Arm** starts buffering in RAM. **Trigger** captures the event on an armed camera.
+  Use **Event Finder → Camera recordings…** to review the completed Cine. Camera Control
+  uses the documented Phantom PH16 Ethernet protocol and needs no separate SDK installation.
+
 - **Event Finder (1.14.16).** Search a rectangle or a 4 × 4 brightness probe in a saved Cine or completed
   Phantom RAM recording. Choose an available camera from the list or enter its IP address.
   Compatible cameras on a directly connected Mac can transfer packed 12-bit frames
