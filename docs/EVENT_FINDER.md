@@ -22,21 +22,23 @@ pre-trigger numbers.
 
 ## Read a completed camera recording on the Mac
 
-Connect the camera to the Mac through its Ethernet adapter. On a VEO with a
-10 Gb link, use the XIP on the camera label (normally 172.16.x.y). On the
-standard Gigabit link, use the regular IP (normally 100.100.x.y). Give the
-Mac's wired interface a different address in the corresponding subnet. The
-factory network mask is 255.255.0.0. See the VEO manual for models with
-custom network settings.
+Connect the camera through the Mac’s Ethernet adapter, then open **Tools → Event Finder → Camera recordings…**.
+PCA searches the connected Ethernet interfaces using Phantom’s discovery protocol.
+With one camera, its completed RAM recordings appear automatically. With several cameras,
+select the camera you want, then select a RAM Cine and click **Open recording**.
+[Phantom camera protocol, section 6](https://github.com/DiamondLightSource/ADPhantom/blob/f0dab1241fc236189cc2d124cc97d43985a4eea6/documentation/v16proto-2.3.pdf)
+
+If you plug in a camera after opening the list, refresh the search. A previously used camera
+can appear even when it has not answered the current search. Select it to try its last address.
+You can also enter an address manually. For a VEO, use the XIP on the label for 10 Gb Ethernet
+and the regular IP for Gigabit Ethernet. The Mac’s wired adapter needs its own address on the
+corresponding subnet to open recordings. If macOS asks for Local Network access, allow it so PCA can find the camera.
 [Phantom VEO manual, chapter 3](https://www.phantomhighspeed.com/-/media/project/ameteksxa/visionresearch/documents/manuals/veomanual.pdf?download=1)
 
-Open the camera recording picker, enter the address, and list the completed RAM
-Cines. Finish any other image playback or download using the same camera
-interface before opening a recording. PH16 allows one image-transfer stream
-per interface. Leave the selected RAM recording in place until the scan and
-frame review finish. PCA checks its trigger timestamp and stored state during
-transfer to detect replacement. It sends read requests for stored frames and
-does not arm, trigger, change exposure or delete Cines.
+Finish any other image playback or download using the same camera interface before opening a recording.
+PH16 allows one image-transfer stream per interface. Leave the selected RAM recording in place until
+the scan and frame review finish. PCA reads stored frames and checks the trigger timestamp and stored
+state to detect a recording that has been replaced.
 
 ## Camera transfer options
 

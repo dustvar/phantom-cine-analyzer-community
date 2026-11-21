@@ -500,3 +500,6 @@ Event Finder 1.14.14
 
 Event Finder 1.14.15
 - Compatible cameras on a wired Mac can use XIMG to transfer 12-bit frames for rectangle or point searches. The existing standard 8-bit and full-precision choices remain available.
+
+Event Finder 1.14.16
+- Camera recordings searches the wired connection for Phantom cameras and lets you choose a camera to see its completed recordings. You can still enter a camera address manually.

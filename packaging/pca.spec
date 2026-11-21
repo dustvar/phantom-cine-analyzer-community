@@ -57,12 +57,13 @@ collection = COLLECT(exe, analysis.binaries, analysis.datas, strip=False, upx=Fa
                      name='PhantomCineAnalyzer')
 app = BUNDLE(collection, name='Phantom Cine Analyzer Additional Features.app',
              icon=str(module/'images/icon.icns'),
-             bundle_identifier='local.phantom-cine-analyzer.playback', version='1.14.15',
+             bundle_identifier='local.phantom-cine-analyzer.playback', version='1.14.16',
              info_plist={
                  'CFBundleDisplayName':'Phantom Cine Analyzer Additional Features',
-                 'CFBundleShortVersionString':'1.14.15',
+                 'CFBundleShortVersionString':'1.14.16',
                  'LSMinimumSystemVersion':'13.0', 'NSHighResolutionCapable':True,
                  'NSPrincipalClass':'NSApplication',
+                 'NSLocalNetworkUsageDescription':'PCA finds Phantom cameras on your Ethernet connection and reads the recordings you choose.',
                  'CFBundleDocumentTypes':[
                      {'CFBundleTypeName':'Phantom Analyzer Job', 'CFBundleTypeExtensions':['pcajob'],
                       'CFBundleTypeRole':'Editor', 'LSHandlerRank':'Owner'},

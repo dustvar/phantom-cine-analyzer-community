@@ -10,8 +10,9 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
-- **Event Finder (1.14.15).** Search a rectangle or a 4 × 4 brightness probe in a saved Cine or completed
-  Phantom RAM recording. Compatible cameras on a directly connected Mac can transfer packed 12-bit frames
+- **Event Finder (1.14.16).** Search a rectangle or a 4 × 4 brightness probe in a saved Cine or completed
+  Phantom RAM recording. Choose an available camera from the list or enter its IP address.
+  Compatible cameras on a directly connected Mac can transfer packed 12-bit frames
   over 10 Gb Ethernet with XIMG. Check every frame or request every Nth frame over a chosen range. Jump
   between ranked candidate intervals and inspect the original frames. See the
   [Event Finder guide](docs/EVENT_FINDER.md) for the USB-C Ethernet workflow.
@@ -177,7 +178,7 @@ Development requires access to the pyphantom helper packages listed in
 `environment.yml`. The native build uses the versions in
 `packaging/runtime-requirements.txt`.
 
-The native Mac app is at 1.14.15. The Windows x64 packaging notes describe the
+The native Mac app is at 1.14.16. The Windows x64 packaging notes describe the
 previously prepared portable build (1.14.3). See [startup and Windows portability](docs/STARTUP_AND_WINDOWS.md) for
 runtime requirements, per-user settings, packaging and validation limits.
 
