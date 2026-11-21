@@ -9,9 +9,9 @@ from unittest.mock import patch
 import numpy as np
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QPoint, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QStyle, QStyleOptionSlider
 
 from camera_capture_modes import RateOption
 from camera_control import ControlStatus, StoredCine
@@ -54,14 +54,22 @@ class FakeSession:
 
     def apply(self, **kwargs):
         self.camera.calls.append(('apply', kwargs))
+        if self.camera.apply_gate:
+            self.camera.apply_gate.wait(3)
         if self.camera.apply_error:
             raise ValueError('Exposure outside sensor limits')
         fields = dict(kwargs)
+        if 'exposure_us' in fields and self.camera.round_exposure:
+            fields['exposure_us'] = round(fields['exposure_us'], 2)
         mode = fields.pop('mode', None)
+        before = fields.pop('before_percent', None)
         if mode is not None:
-            before = fields.pop('before_percent', 75)
+            if before is None:
+                before = 100 * (1 - self.camera.settings.post_frames / self.camera.settings.capacity)
             fields.update(width=mode[0], height=mode[1], binning=mode[2],
                           capacity=3600, post_frames=round(3600 * (1 - before / 100)))
+        elif before is not None:
+            fields['post_frames'] = round(self.camera.settings.capacity * (1 - before / 100))
         self.camera.settings = replace(self.status(), **fields)
         return self.status()
 
@@ -95,7 +103,8 @@ class CameraControlPanelTests(unittest.TestCase):
         self.calls = []
         self.settings = armed()
         self.auto_rearm = False
-        self.preview_gate = self.trigger_gate = None
+        self.preview_gate = self.trigger_gate = self.apply_gate = None
+        self.round_exposure = False
         self.trigger_deadline = None
         self.preview_error = self.apply_error = self.status_error = False
         profile = self.enterContext(TemporaryDirectory())
@@ -126,6 +135,19 @@ class CameraControlPanelTests(unittest.TestCase):
         self.wait(lambda:self.panel.view.image is not None)
         self.assertEqual(self.panel.view.image.width(), 80)
 
+    def writes(self):
+        return [settings for command, settings in self.calls if command == 'apply']
+
+    def type_number(self, box, text):
+        box.setFocus()
+        box.selectAll()
+        QTest.keyClicks(box, text)
+
+    def choose(self, button, menu_text):
+        action = next(a for a in button.menu().actions() if a.text().startswith(menu_text))
+        self.assertTrue(button.isEnabled() and action.isEnabled())
+        action.trigger()
+
     def test_activation_is_read_only_and_unplug_pauses_monitor(self):
         self.assertFalse(self.calls)
         self.start()
@@ -135,8 +157,8 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertFalse(p.arm_button.isEnabled())
         self.assertEqual(p.exposure.value(), 49.256)
         self.assertTrue('Armed' in p.state.text())
-        self.assertFalse(p.apply_button.isEnabled())
-        self.assertFalse(any(c in ('arm','trigger','apply') for c, _ in self.calls))
+        self.assertNotIn('Apply settings', [b.text() for b in p.findChildren(QPushButton)])
+        self.assertFalse(any(c in ('arm','trigger','apply','csr') for c, _ in self.calls))
         p.preview_button.click()
         self.wait(lambda: ('stop_preview', None) in self.calls)
         self.assertTrue(p.trigger_button.isEnabled())
@@ -150,42 +172,111 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertFalse(p.trigger_button.isEnabled())
         self.assertIsNone(p.view.image)
 
-    def test_drafts_apply_trigger_position_and_readback(self):
+    def test_typing_waits_for_enter_or_focus_change_even_across_a_status_poll(self):
         self.start()
         p = self.panel
-        p.fps.setValue(2000)
-        p.exposure.setValue(15.431)
-        p.position.setValue(40)
-        self.assertEqual(p.post.value(), 600)
-        self.assertEqual(p.breakdown.text(), '400 before · 600 after')
+        self.type_number(p.fps, '200')
         self.settings = replace(self.settings, fps=1010.)
         p.next_status = 0
         self.wait(lambda:p.snapshot.fps==1010.)
-        self.assertEqual(p.fps.value(),2000.)
-        self.assertTrue(p.apply_button.isEnabled())
-        self.assertFalse(p.trigger_button.isEnabled())
-        self.assertFalse(any(c=='apply' for c,_ in self.calls))
-        p.apply_button.click()
-        self.wait(lambda:p.snapshot.post_frames==600)
-        self.assertEqual([a for c,a in self.calls if c=='apply'],
-                         [dict(fps=2000., exposure_us=15.431, post_frames=600)])
-        self.assertFalse(p.apply_button.isEnabled())
-        p.post.setValue(20)
-        self.assertEqual(p.position.value(),98)
-        p.revert_button.click()
-        self.assertEqual(p.post.value(),600)
+        self.assertEqual(self.writes(), [])
+        QTest.keyClicks(p.fps, '0')
+        QTest.keyClick(p.fps, Qt.Key_Return)
+        self.wait(lambda: p.snapshot.fps == 2000)
+        self.assertEqual(self.writes(), [dict(fps=2000.)])
+        self.type_number(p.exposure, '15.431')
+        self.round_exposure = True
+        QTest.keyClick(p.exposure, Qt.Key_Tab)
+        self.wait(lambda: p.snapshot.exposure_us == 15.43)
+        self.assertEqual(p.exposure.value(), 15.43)
+        self.assertEqual(self.writes()[-1], dict(exposure_us=15.431))
+        self.type_number(p.post, '20')
+        QTest.keyClick(p.post, Qt.Key_Return)
+        self.wait(lambda: p.snapshot.post_frames == 20)
+        self.assertEqual(p.position.value(), 98)
+        self.assertEqual(p.breakdown.text(), '980 before · 20 after')
+        self.assertEqual(self.writes()[-1], dict(post_frames=20))
         self.assertTrue(p.trigger_button.isEnabled())
+
+    def test_trigger_position_sends_once_on_mouse_release_and_supports_keyboard_steps(self):
+        self.settings = replace(armed(), post_frames=249)
+        self.start()
+        p = self.panel
+        slider = p.position
+        option = QStyleOptionSlider()
+        slider.initStyleOption(option)
+        handle = slider.style().subControlRect(QStyle.CC_Slider, option,
+                                               QStyle.SC_SliderHandle, slider)
+        self.assertEqual(slider.value(), 75)
+        QTest.mouseClick(slider, Qt.LeftButton, pos=handle.center())
+        QTest.qWait(100)
+        self.assertEqual(p.post.value(), 249)
+        self.assertFalse(self.writes())
+        QTest.mousePress(slider, Qt.LeftButton, pos=handle.center())
+        self.assertTrue(slider.isSliderDown())
+        QTest.mouseMove(slider, QPoint(slider.width() // 2, handle.center().y()))
+        end = QPoint(slider.width() // 3, handle.center().y())
+        QTest.mouseMove(slider, end)
+        percent = slider.value()
+        self.assertLess(percent, 50)
+        self.assertEqual(p.post.value(), (100 - percent) * 10)
+        QTest.qWait(250)
+        self.assertFalse(self.writes())
+        QTest.mouseRelease(slider, Qt.LeftButton, pos=end)
+        self.wait(lambda: p.snapshot.post_frames == (100 - percent) * 10)
+        QTest.keyClick(slider, Qt.Key_Right)
+        self.wait(lambda: p.snapshot.post_frames == (99 - percent) * 10)
+        self.assertEqual(len(self.writes()), 2)
+        self.assertFalse(any(c in ('arm','trigger','csr') for c, _ in self.calls))
+
+    def test_rapid_edits_while_waiting_can_return_to_the_original_value(self):
+        self.start()
+        p = self.panel
+        self.apply_gate = threading.Event()
+        self.choose(p.exposure_presets, '20 µs')
+        self.wait(lambda: len(self.writes()) == 1)
+        self.assertFalse(p.trigger_button.isEnabled())
+        self.choose(p.exposure_presets, '10 µs')
+        self.type_number(p.exposure, '49.256')
+        QTest.keyClick(p.exposure, Qt.Key_Return)
+        self.assertEqual(self.writes(), [dict(exposure_us=20.)])
+        self.apply_gate.set()
+        self.wait(lambda: p.trigger_button.isEnabled() and len(self.writes()) == 2)
+        self.assertEqual(self.writes()[-1], dict(exposure_us=49.256))
+        self.assertEqual(p.exposure.value(), 49.256)
 
     def test_apply_failure_restores_readback_without_resubmitting(self):
         self.start()
         p = self.panel
+        self.apply_gate = threading.Event()
         self.apply_error = True
-        p.exposure.setValue(999)
-        p.apply_button.click()
+        self.choose(p.exposure_presets, '20 µs')
+        self.wait(lambda: len(self.writes()) == 1)
+        self.choose(p.exposure_presets, '10 µs')
+        self.type_number(p.fps, '500')
+        self.apply_gate.set()
         self.wait(lambda:'outside sensor limits' in p.notice.text())
         self.assertEqual(p.exposure.value(),49.256)
-        self.assertFalse(p.apply_button.isEnabled())
-        self.assertEqual(sum(c=='apply' for c,_ in self.calls),1)
+        self.assertEqual(p.fps.valueFromText(p.fps.text()), p.snapshot.fps)
+        self.assertTrue(p.trigger_button.isEnabled())
+        QTest.keyClick(p.fps, Qt.Key_Tab)
+        QTest.qWait(260)
+        self.assertEqual(self.writes(), [dict(exposure_us=20.)])
+
+    def test_leaving_camera_control_discards_followup_edit_before_reconnect(self):
+        self.start()
+        p = self.panel
+        self.apply_gate = threading.Event()
+        self.choose(p.exposure_presets, '20 µs')
+        self.wait(lambda: len(self.writes()) == 1)
+        self.choose(p.exposure_presets, '10 µs')
+        p.pause()
+        self.apply_gate.set()
+        self.wait(lambda: not p.workers)
+        self.settings = replace(armed(), exposure_us=80.)
+        self.start()
+        self.assertEqual(p.exposure.value(), 80.)
+        self.assertEqual(self.writes(), [dict(exposure_us=20.)])
 
     def test_matching_presets_exposure_limit_and_duration_at_laptop_size(self):
         self.panel.resize(850, 540)
@@ -195,6 +286,7 @@ class CameraControlPanelTests(unittest.TestCase):
                                 exposure_dead_us=.74, exposure_us=900, min_exposure_us=.689)
         self.start()
         p = self.panel
+        self.apply_gate = threading.Event()
         self.assertTrue(p.rate_presets.isVisible())
         menu = p.rate_presets.menu()
         fast_action = next(action for action in menu.actions() if '4,000 fps' in action.text())
@@ -208,25 +300,23 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertIn('1 s', p.record_time.text())
         self.assertEqual(p.before.text(), 'Before · 750 ms')
         self.assertEqual(p.after.text(), 'After · 250 ms')
-        self.assertTrue(p.draft_note.isVisible())
-        self.assertIn('1,000 fps', p.draft_note.text())
         self.assertFalse(p.post.isVisible())
         exp_menu = p.exposure_presets.menu()
         self.assertEqual(exp_menu.actions()[0].text(), 'Longest · 249.26 µs')
-        p.exposure.setValue(310)
-        self.assertEqual(p.exposure.value(), 249.26)
-        p.exposure.setValue(10)
-        exp_menu.actions()[0].trigger()
-        p.position.setValue(25)
-        self.assertEqual(p.after.text(), 'After · 750 ms')
-        p.apply_button.click()
+        self.apply_gate.set()
         self.wait(lambda: p.snapshot.width == 40)
-        self.assertEqual([obj for c,obj in self.calls if c == 'apply'],
-                         [dict(mode=(40,30,2), fps=4000., exposure_us=249.26, before_percent=25)])
+        self.assertEqual(len(self.writes()), 1)
+        self.assertEqual(self.writes()[0]['mode'], (40, 30, 2))
+        self.assertEqual(self.writes()[0]['fps'], 4000.)
+        self.assertEqual(self.writes()[0]['exposure_us'], 249.26)
         self.assertEqual(p.record_time.text(), 'Record time · 900 ms')
-        self.assertEqual(p.breakdown.text(), '900 before · 2,700 after')
+        self.assertEqual(p.breakdown.text(), '2,700 before · 900 after')
         self.assertTrue(p.post.isVisible())
-        self.assertFalse(p.draft_note.isVisible())
+        self.choose(p.exposure_presets, '10 µs')
+        self.wait(lambda: p.snapshot.exposure_us == 10)
+        self.choose(p.exposure_presets, 'Longest')
+        self.wait(lambda: p.snapshot.exposure_us == 249.26)
+        self.assertEqual(len(self.writes()), 3)
 
     def test_menus_are_populated_before_first_press_and_stable_while_open(self):
         self.settings = replace(armed(), exposure_dead_us=.74)
@@ -254,7 +344,8 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertIs(menu.actions()[0], existing)
         menu.popup(p.exposure_presets.mapToGlobal(p.exposure_presets.rect().bottomLeft()))
         self.wait(menu.isVisible)
-        p.fps.setValue(2000)
+        self.settings = replace(self.settings, fps=2000.)
+        p._readback(self.settings, reset=False)
         self.assertIs(menu.actions()[0], existing)
         menu.close()
         self.wait(lambda: menu.actions()[0].text() == 'Longest · 499.26 µs')
@@ -262,17 +353,27 @@ class CameraControlPanelTests(unittest.TestCase):
         p._readback(self.settings, reset=True)
         self.assertEqual(menu.actions()[0].text(), 'Longest · 1,999.26 µs')
 
-    def test_custom_rate_beyond_window_is_blocked_and_revert_restores_capacity(self):
+    def test_custom_rate_beyond_window_is_blocked_and_explained(self):
         self.settings = replace(armed(), published_rates=(RateOption(1200,80,60,1),))
         self.start()
         p = self.panel
-        p.fps.setValue(2400.)
-        self.assertIn('1,200 fps', p.draft_note.text())
-        self.assertFalse(p.apply_button.isEnabled())
-        p.revert_button.click()
+        self.type_number(p.fps, '2400')
+        QTest.keyClick(p.fps, Qt.Key_Return)
+        self.wait(lambda: '1,200 fps' in p.notice.text())
+        self.assertEqual(self.writes(), [])
         self.assertEqual(p.fps.value(), 1000)
         self.assertEqual(p.position.value(),75)
         self.assertEqual(p.record_time.text(),'Record time · 1 s')
+
+    def test_camera_without_exposure_margin_gets_rate_and_frame_period_together(self):
+        self.settings = replace(armed(), exposure_us=800., exposure_dead_us=None)
+        self.start()
+        p = self.panel
+        self.type_number(p.fps, '2400')
+        QTest.keyClick(p.fps, Qt.Key_Return)
+        self.wait(lambda: p.snapshot.fps == 2400)
+        self.assertEqual(self.writes(), [dict(fps=2400., exposure_us=416.666)])
+        self.assertEqual(p.exposure.value(), 416.666)
 
     def test_csr_requires_confirmation_and_committed_settings(self):
         self.settings = replace(armed(), supports_csr=True, capping_shutter=False)
@@ -280,9 +381,11 @@ class CameraControlPanelTests(unittest.TestCase):
         p = self.panel
         self.assertTrue(p.csr_button.isVisible())
         self.assertTrue(p.csr_button.isEnabled())
-        p.exposure.setValue(20)
+        self.apply_gate = threading.Event()
+        self.choose(p.exposure_presets, '20 µs')
         self.assertFalse(p.csr_button.isEnabled())
-        p.revert_button.click()
+        self.apply_gate.set()
+        self.wait(p.csr_button.isEnabled)
         def answer(run):
             box = QApplication.activeModalWidget()
             self.assertIn('Cover the lens', box.informativeText())

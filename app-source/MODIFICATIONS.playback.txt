@@ -512,3 +512,6 @@ Camera Control 1.14.18
 
 Camera Control 1.14.19
 - The frame rate and exposure preset menus open on the first click on macOS.
+
+Camera Control 1.14.20
+- Capture presets update the connected camera immediately. Exact values update on Enter or leaving the field, and trigger position updates when you release the slider.

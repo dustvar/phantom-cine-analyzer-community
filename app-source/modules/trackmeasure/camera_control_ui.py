@@ -1,10 +1,10 @@
 """Live setup and recording controls for directly connected Phantom cameras."""
-from math import ceil
+from math import ceil, floor
 from time import monotonic
 
 from PySide6.QtCore import QSettings, QSize, Qt, QSignalBlocker, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
@@ -88,8 +88,15 @@ class CameraControlPanel(QWidget):
         self.discovery = self.session = self.snapshot = None
         self.read_pending = False
         self.pending = ''
-        self.edits = set()
-        self.draft_mode = None
+        # Only user commits enter these dictionaries. A pending request and any
+        # later choices have separate lifetimes because the camera rounds settings.
+        self.sending = {}
+        self.queued = {}
+        self.typing = set()
+        self.drag_start = self.drag_percent = None
+        self.commit_timer = QTimer(self)
+        self.commit_timer.setSingleShot(True)
+        self.commit_timer.timeout.connect(self._flush_settings)
         self.next_status = self.next_frame = 0.
         self.frames = 0
         self.preview_clock = 0.
@@ -211,15 +218,8 @@ class CameraControlPanel(QWidget):
         controls.addLayout(after_row)
         self.breakdown = _label()
         controls.addWidget(self.breakdown)
-        edit_actions = QHBoxLayout()
-        self.apply_button = QPushButton('Apply settings')
-        self.revert_button = QPushButton('Revert')
-        self.revert_button.setToolTip('Restore the current camera settings in these controls.')
-        edit_actions.addWidget(self.apply_button, 1)
-        edit_actions.addWidget(self.revert_button)
-        controls.addLayout(edit_actions)
         self.draft_note = _label()
-        self.draft_note.setAccessibleName('Pending capture settings')
+        self.draft_note.setAccessibleName('Capture settings status')
         controls.addWidget(self.draft_note)
         self.csr_button = QPushButton('Black reference (CSR)…')
         self.csr_button.setToolTip('Calibrate the sensor’s black level at the current settings.')
@@ -249,13 +249,16 @@ class CameraControlPanel(QWidget):
         self.connect_button.clicked.connect(self._connect_clicked)
         self.address.returnPressed.connect(self._connect_clicked)
         self.preview_button.clicked.connect(self._toggle_preview)
-        self.fps.valueChanged.connect(self._rate_changed)
-        self.exposure.valueChanged.connect(lambda: self._edited('exposure_us'))
+        self.editors = {'fps': self.fps, 'exposure_us': self.exposure, 'post_frames': self.post}
+        for field, editor in self.editors.items():
+            editor.setKeyboardTracking(False)
+            editor.lineEdit().textEdited.connect(lambda _, key=field: self._typing_started(key))
+            editor.valueChanged.connect(lambda _, key=field: self._number_changed(key))
+            editor.editingFinished.connect(lambda key=field: self._typing_finished(key))
+        self.position.sliderPressed.connect(self._drag_started)
         self.position.valueChanged.connect(self._slider_changed)
-        self.post.valueChanged.connect(self._post_changed)
-        self.apply_button.clicked.connect(self._apply)
+        self.position.sliderReleased.connect(self._drag_finished)
         self.csr_button.clicked.connect(self._csr)
-        self.revert_button.clicked.connect(self._revert)
         self.arm_button.clicked.connect(self._arm)
         self.trigger_button.clicked.connect(self._trigger)
         self._controls()
@@ -298,10 +301,13 @@ class CameraControlPanel(QWidget):
         self.pending = ''
         self.read_pending = False
         self.preview_on = False
-        self.edits.clear()
+        self.commit_timer.stop()
+        self.queued.clear()
+        self.sending.clear()
+        self.typing.clear()
+        self.drag_start = self.drag_percent = None
         self.state.setText('Disconnected')
         self.breakdown.clear()
-        self.draft_mode = None
         self.geometry_note.clear()
         self.record_time.clear()
         self.before.setText('Before')
@@ -394,7 +400,8 @@ class CameraControlPanel(QWidget):
 
     def _controls(self):
         ready = self.snapshot is not None and self.session is not None
-        editing = ready and self.snapshot.can_apply and not self.pending
+        editing = ready and self.snapshot.can_apply and self.pending in ('', 'apply')
+        settled = not (self.pending or self.queued or self.typing or self.drag_start is not None)
         self.cameras.setEnabled(self.active and not self.session and not self.discovery)
         self.address.setEnabled(self.cameras.isEnabled())
         self.refresh.setEnabled(self.active and not self.session and not self.workers and not self.discovery)
@@ -408,25 +415,27 @@ class CameraControlPanel(QWidget):
         self.exposure.setEnabled(editing and self.snapshot.manual_exposure)
         self.exposure_presets.setEnabled(self.exposure.isEnabled())
         self.position.setEnabled(editing)
-        self.post.setEnabled(editing and self.draft_mode is None)
+        self.post.setEnabled(editing and self._mode() == self._camera_mode())
         self.csr_button.setVisible(bool(ready and self.snapshot.supports_csr))
-        self.csr_button.setEnabled(bool(ready and self.snapshot.can_csr and not self.pending and not self.edits))
+        self.csr_button.setEnabled(bool(ready and self.snapshot.can_csr and settled))
         self.csr_button.setText(f'CSR · {self.snapshot.csr_remaining:,} frames left'
                                 if ready and self.snapshot.csr_remaining else 'Black reference (CSR)…')
-        issue = self._draft_issue() if ready else ''
-        self.draft_note.setVisible(bool(ready and self.edits))
-        if ready and self.edits:
-            live = f'On camera · {number(self.snapshot.fps)} fps · {number(self.snapshot.exposure_us)} µs'
-            self.draft_note.setText(issue or f'Pending changes. {live}')
-        self.apply_button.setEnabled(bool(editing and self.edits and not issue))
-        self.revert_button.setEnabled(bool(ready and self.edits and not self.pending))
+        self.draft_note.setVisible(ready)
+        if self.typing:
+            self.draft_note.setText('Press Enter or Tab to set the value.')
+        elif self.drag_start is not None:
+            self.draft_note.setText('Release to set the trigger position.')
+        elif self.pending == 'apply' or self.queued:
+            self.draft_note.setText('Updating camera settings…')
+        else:
+            self.draft_note.setText('Capture settings update automatically.')
         replace = self.snapshot.replaceable[0] if ready and self.snapshot.replaceable and not self.snapshot.can_arm else None
         self.arm_button.setText(f'Replace Cine {replace.slot}…' if replace else 'Arm')
         self.arm_button.setToolTip('Replace the stored Cine and start buffering a new recording.' if replace else
                                    'Start buffering the next recording in camera RAM.')
-        self.arm_button.setEnabled(bool(ready and not self.pending and not self.edits and
+        self.arm_button.setEnabled(bool(ready and settled and
                                   (self.snapshot.can_arm or self.snapshot.replaceable)))
-        self.trigger_button.setEnabled(bool(ready and not self.pending and not self.edits
+        self.trigger_button.setEnabled(bool(ready and settled
                                            and not self.trigger_guard.isActive() and self.snapshot.can_trigger))
 
     def _reply(self, command, result, error):
@@ -460,7 +469,11 @@ class CameraControlPanel(QWidget):
             self._stop()
             self.notice.setText(error or 'Camera disconnected.')
             return
-        self._readback(result, reset=command in ('connect', 'apply'))
+        if command == 'apply':
+            self.sending.clear()
+        # A later edit can depend on a rejected rate or sensor window. Show
+        # the worker's verified readback and never retry an uncertain write.
+        self._readback(result, reset=command == 'connect' or (command == 'apply' and bool(error)))
         if command == 'connect':
             self.preview_on = True
             self.frames, self.preview_clock = 0, monotonic()
@@ -480,31 +493,31 @@ class CameraControlPanel(QWidget):
                                  'arm':'Arm command accepted.', 'trigger':'Trigger command accepted.',
                                  'csr':'Black reference command accepted.'}[command])
         self._controls()
+        if self.queued and not self.pending:
+            self.commit_timer.start(0)
         self._schedule()
 
     def _readback(self, s, reset):
         self.snapshot = s
         if reset:
-            self.edits.clear()
-            self.draft_mode = None
-        if self.draft_mode == (s.width, s.height, s.binning):
-            self.draft_mode = None
-            self.edits.discard('mode')
-        with QSignalBlocker(self.fps):
-            self.fps.setRange(min(s.fps, s.min_fps or .001), max(s.fps, s.max_fps or 1e9))
-            if 'fps' not in self.edits and self.fps.value() != round(s.fps, 3):
-                self.fps.setValue(s.fps)
-        self._update_exposure_limit()
-        with QSignalBlocker(self.exposure):
-            if 'exposure_us' not in self.edits and self.exposure.value() != round(s.exposure_us, 3):
-                self.exposure.setValue(s.exposure_us)
-        with QSignalBlocker(self.post):
-            self.post.setMaximum(s.capacity)
-            if 'post_frames' not in self.edits and self.draft_mode is None and self.post.value() != s.post_frames:
-                self.post.setValue(s.post_frames)
-        self.geometry_note.setText(geometry_label(self._mode()))
-        self._update_preset_menus()
-        self._update_position()
+            self.commit_timer.stop()
+            self.queued.clear()
+            self.sending.clear()
+            self.typing.clear()
+            self.drag_start = self.drag_percent = None
+        unavailable = set()
+        if not s.can_apply:
+            unavailable.update(self.editors)
+            self.drag_start = self.drag_percent = None
+        if not s.internal_clock:
+            unavailable.add('fps')
+        if not s.manual_exposure:
+            unavailable.add('exposure_us')
+        if not s.can_apply or self.queued.keys() & unavailable:
+            self.queued.clear()
+        cancelled = self.typing & unavailable
+        self.typing -= cancelled
+        self._sync_editors(force=reset or bool(cancelled))
         states = dict(s.slots)
         active = states.get(s.active_slot, ())
         if 'TRG' in active and 'ACT' in active:
@@ -517,9 +530,9 @@ class CameraControlPanel(QWidget):
         if s.direct_recording:
             state = 'Direct-to-media recording mode'
         self.state.setText(state)
-        self.fps.setToolTip('Type a capture rate or use the arrow to choose a resolution and rate.'
+        self.fps.setToolTip('Choose a preset for an immediate update, or enter a rate and press Enter.'
                             if s.internal_clock else 'Frame rate is set by external sync.')
-        self.exposure.setToolTip('Sensor exposure time' if s.manual_exposure else 'Exposure is set by the camera’s current mode.')
+        self.exposure.setToolTip('Choose a preset or enter an exposure in microseconds and press Enter.' if s.manual_exposure else 'Exposure is set by the camera’s current mode.')
 
     def _schedule(self):
         if self.active and self.session and self.snapshot and not self.pending and not self.read_pending:
@@ -561,9 +574,12 @@ class CameraControlPanel(QWidget):
         self._controls()
         self._schedule()
 
-    def _mode(self):
+    def _camera_mode(self):
         s = self.snapshot
-        return self.draft_mode or (s.width, s.height, s.binning)
+        return s.width, s.height, s.binning
+
+    def _mode(self):
+        return self.queued.get('mode', self.sending.get('mode', self._camera_mode()))
 
     def _menu_closed(self, menu):
         if not menu.isVisible():
@@ -600,20 +616,7 @@ class CameraControlPanel(QWidget):
     def _select_rate(self, option):
         if not self.rate_presets.isEnabled():
             return
-        s = self.snapshot
-        old_mode = self.draft_mode
-        self.draft_mode = option.mode if option.mode != (s.width, s.height, s.binning) else None
-        if self.draft_mode:
-            self.edits.add('mode')
-        else:
-            self.edits.discard('mode')
-            if old_mode and 'before_percent' in self.edits:
-                self.post.setValue(round(s.capacity * (100 - self.position.value()) / 100))
-                self.edits.discard('before_percent')
-        self.geometry_note.setText(geometry_label(self._mode()))
-        with QSignalBlocker(self.fps):
-            self.fps.setValue(option.fps)
-        self._rate_changed()
+        self._set_rate(option.fps, option.mode)
 
     def _exposure_menu(self, menu):
         menu.clear()
@@ -622,101 +625,183 @@ class CameraControlPanel(QWidget):
         longest = self.snapshot.longest_exposure_us(self.fps.value())
         if longest is not None and longest >= self.exposure.minimum():
             menu.addAction(f'Longest · {number(longest)} µs',
-                           lambda: self.exposure.setValue(longest))
+                           lambda: self._queue_settings(exposure_us=longest))
             menu.addSeparator()
         for value in (10000, 5000, 2000, 1000, 500, 250, 100, 50, 20, 10, 5, 2, 1):
             if self.exposure.minimum() <= value <= self.exposure.maximum() and (longest is None or value < longest):
                 menu.addAction(f'{number(value)} µs',
-                               lambda checked=False, us=value: self.exposure.setValue(us))
+                               lambda checked=False, us=value: self._queue_settings(exposure_us=us))
         add_custom(menu, self.exposure)
 
-    def _update_exposure_limit(self):
+    @staticmethod
+    def _merge_settings(target, changes):
+        # Exact frame count and percentage are alternative trigger positions.
+        if 'post_frames' in changes:
+            target.pop('before_percent', None)
+        if 'before_percent' in changes:
+            target.pop('post_frames', None)
+        target.update(changes)
+
+    def _intent(self):
+        wanted = self.sending.copy()
+        self._merge_settings(wanted, self.queued)
+        return wanted
+
+    def _sync_editors(self, force=False):
         s = self.snapshot
-        limit = s.longest_exposure_us(self.fps.value())
+        wanted = self._intent()
+        rate = wanted.get('fps', s.fps)
+        exposure = wanted.get('exposure_us', s.exposure_us)
         minimum = min(s.exposure_us, s.min_exposure_us or .001)
-        maximum = max(minimum, limit) if limit is not None else max(s.exposure_us, 1e6 / self.fps.value())
-        # Always represent the applied reading, including an externally controlled exposure.
-        if 'fps' not in self.edits and self.fps.value() == round(s.fps, 3):
+        longest = s.longest_exposure_us(rate)
+        maximum = longest if longest is not None else floor(1e9 / rate) / 1000
+        if rate == s.fps:
             maximum = max(maximum, s.exposure_us)
-        with QSignalBlocker(self.exposure):
-            self.exposure.setRange(minimum, maximum)
 
-    def _rate_changed(self):
-        if self.snapshot is None:
-            return
-        self._edited('fps')
-        self._update_exposure_limit()
-        self._update_preset_menus()
-        if self.snapshot.manual_exposure:
-            self._edited('exposure_us')
-        self._update_position()
-        self._controls()
+        def sync(field, low, high, value):
+            if field in self.typing:
+                return
+            editor = self.editors[field]
+            with QSignalBlocker(editor):
+                if (editor.minimum(), editor.maximum()) != (low, high):
+                    editor.setRange(low, high)
+                if force or editor.value() != value:
+                    editor.setValue(value)
 
-    def _draft_issue(self):
-        if not self.edits:
-            return ''
-        s = self.snapshot
-        if 'fps' in self.edits or self.draft_mode:
-            maximum = s.max_rate_for(self._mode())
-            if maximum is not None and self.fps.value() > maximum:
-                return f'This image size supports up to {number(maximum)} fps. Choose a preset to change size.'
-        if 'exposure_us' in self.edits or 'fps' in self.edits:
-            limit = s.longest_exposure_us(self.fps.value())
-            if s.manual_exposure and limit is not None and self.exposure.value() > limit:
-                return f'Choose an exposure of {number(limit)} µs or shorter.'
-        return ''
+        sync('fps', min(s.fps, s.min_fps or .001), max(s.fps, s.max_fps or 1e9), rate)
+        sync('exposure_us', minimum, max(minimum, maximum), exposure)
 
-    def _update_position(self):
-        s = self.snapshot
-        if s is None:
-            return
-        rate = self.fps.value()
-        self.frames_after_row.setRowVisible(self.post, self.draft_mode is None)
-        if self.draft_mode is None:
-            count = s.capacity
-            after = self.post.value()
-            with QSignalBlocker(self.position):
-                self.position.setValue(round(100 * (count - after) / max(1, count)))
-            title = 'Record time'
+        mode = self._mode()
+        resizing = mode != self._camera_mode()
+        count = round(s.capacity * s.width * s.height / (mode[0] * mode[1])) if resizing else s.capacity
+        percent = self.drag_percent if self.drag_percent is not None else wanted.get('before_percent')
+        if percent is not None:
+            after = round(count * (1 - percent / 100))
+        elif resizing:
+            after = round(count * wanted.get('post_frames', s.post_frames) / max(1, s.capacity))
         else:
-            width, height, _ = self.draft_mode
-            count = round(s.capacity * s.width * s.height / (width * height))
-            after = round(count * (100 - self.position.value()) / 100)
-            title = 'Estimated record time'
+            after = wanted.get('post_frames', s.post_frames)
+        self.frames_after_row.setRowVisible(self.post, not resizing)
+        if not resizing:
+            sync('post_frames', 0, s.capacity, after)
         before = count - after
+        with QSignalBlocker(self.position):
+            self.position.setValue(round(percent if percent is not None else 100 * before / max(1, count)))
+        self.geometry_note.setText(geometry_label(mode))
         self.breakdown.setText(f'{before:,} before · {after:,} after')
         self.before.setText(f'Before · {duration(before / rate)}')
         self.after.setText(f'After · {duration(after / rate)}')
+        title = 'Estimated record time' if resizing else 'Record time'
         self.record_time.setText(f'{title} · {duration(count / rate)}')
-        self.record_time.setToolTip('Estimated from the current RAM capacity and the new image size. '
-                                    'Apply settings to read the exact capacity.' if self.draft_mode else
-                                    f'{count:,} frames at {number(rate)} fps.')
+        self.record_time.setToolTip('Exact capacity will appear when the camera confirms the new image size.'
+                                    if resizing else f'{count:,} frames at {number(rate)} fps.')
+        self._update_preset_menus()
 
-    def _slider_changed(self, percent):
-        if self.snapshot is None:
+    def _set_rate(self, rate, mode=None):
+        target = mode or self._mode()
+        limit = self.snapshot.max_rate_for(target)
+        if limit is not None and rate > limit:
+            self.notice.setText(f'This image size supports up to {number(limit)} fps. Choose a preset to change size.')
+            self._sync_editors()
+            self._controls()
             return
-        if self.draft_mode is None:
-            self.post.setValue(round(self.snapshot.capacity * (100 - percent) / 100))
-        else:
-            self.edits.add('before_percent')
-            self._update_position()
+        changes = {'fps': rate}
+        if mode is not None:
+            changes['mode'] = mode
+            if mode != self._camera_mode() and 'post_frames' in self.queued:
+                changes['before_percent'] = 100 * (1 - self.queued['post_frames'] / max(1, self.snapshot.capacity))
+        exposure = self.exposure.value()
+        longest = self.snapshot.longest_exposure_us(rate)
+        if self.snapshot.manual_exposure:
+            if longest is None:
+                # Older firmware may omit sensor dead time. The frame period is
+                # still a hard upper bound. The camera validates the actual value.
+                longest = floor(1e9 / rate) / 1000
+                if self.snapshot.exposure_dead_us is not None or longest < (self.snapshot.min_exposure_us or .001):
+                    self.notice.setText('This rate leaves too little time for the minimum exposure. Choose a lower rate.')
+                    self._sync_editors()
+                    self._controls()
+                    return
+            if exposure > longest:
+                changes['exposure_us'] = longest
+        self._queue_settings(**changes)
+
+    def _typing_started(self, field):
+        if self.editors[field].isEnabled():
+            self.typing.add(field)
             self._controls()
 
-    def _post_changed(self):
-        self._update_position()
-        self._edited('post_frames')
+    def _typing_finished(self, field):
+        if field in self.typing:
+            self._number_changed(field)
 
-    def _edited(self, field):
-        if self.snapshot is None:
+    def _number_changed(self, field):
+        self.typing.discard(field)
+        if self.snapshot is None or not self.editors[field].isEnabled():
+            self._controls()
             return
-        box = {'fps':self.fps, 'exposure_us':self.exposure, 'post_frames':self.post}[field]
-        value = getattr(self.snapshot, field)
-        if value == box.value() or (isinstance(box, QDoubleSpinBox) and
-                                    round(value, box.decimals()) == box.value()):
-            self.edits.discard(field)
+        value = self.editors[field].value()
+        if field == 'fps':
+            self._set_rate(value)
         else:
-            self.edits.add(field)
+            self._queue_settings(**{field: value})
+
+    def _drag_started(self):
+        self.drag_start = self.position.value()
         self._controls()
+
+    def _slider_changed(self, percent):
+        if self.snapshot is None or not self.position.isEnabled():
+            return
+        if self.position.isSliderDown():
+            self.drag_percent = percent if self.drag_start is not None and percent != self.drag_start else None
+            self._sync_editors()
+            self._controls()
+        else:
+            self._set_position(percent)
+
+    def _drag_finished(self):
+        percent = self.drag_percent
+        self.drag_start = self.drag_percent = None
+        if percent is not None:
+            self._set_position(percent)
+        else:
+            self._controls()
+
+    def _set_position(self, percent):
+        if self._mode() != self._camera_mode() or 'mode' in self.sending:
+            self._queue_settings(before_percent=percent)
+        else:
+            self._queue_settings(post_frames=round(self.snapshot.capacity * (1 - percent / 100)))
+
+    def _queue_settings(self, **changes):
+        if self.snapshot is None or not self.snapshot.can_apply or self.pending not in ('', 'apply'):
+            return
+        self._merge_settings(self.queued, changes)
+        self._sync_editors()
+        self._controls()
+        if not self.pending:
+            # Group the signals from a single gesture into one camera request.
+            self.commit_timer.start(0)
+
+    def _flush_settings(self):
+        if self.pending or self.snapshot is None or not self.session or not self.queued:
+            return
+        s = self.snapshot
+        current = {'fps': round(s.fps, self.fps.decimals()), 'exposure_us': round(s.exposure_us, self.exposure.decimals()),
+                   'mode': self._camera_mode(), 'post_frames': s.post_frames}
+        changes = {k: v for k, v in self.queued.items() if current.get(k) != v}
+        self.queued.clear()
+        if 'mode' not in changes and 'before_percent' in changes:
+            after = round(s.capacity * (1 - changes.pop('before_percent') / 100))
+            if after != s.post_frames:
+                changes['post_frames'] = after
+        if changes and s.can_apply:
+            self.sending = changes
+            self._send('apply', changes)
+        else:
+            self._sync_editors()
+            self._controls()
 
     def _send(self, command, argument=None):
         if self.pending or not self.session:
@@ -725,23 +810,6 @@ class CameraControlPanel(QWidget):
         self.timer.stop()
         self._controls()
         self.session.submit(command, argument)
-
-    def _revert(self):
-        if self.snapshot is not None:
-            self._readback(self.snapshot, reset=True)
-            self._controls()
-
-    def _apply(self):
-        if self.apply_button.isEnabled():
-            values = {'fps':self.fps.value(), 'exposure_us':self.exposure.value(),
-                      'post_frames':self.post.value()}
-            changes = {key: values[key] for key in values if key in self.edits}
-            if self.draft_mode is not None:
-                changes['mode'] = self.draft_mode
-                if 'before_percent' in self.edits or 'post_frames' in self.edits:
-                    changes.pop('post_frames', None)
-                    changes['before_percent'] = self.position.value()
-            self._send('apply', changes)
 
     def _csr(self):
         if not self.csr_button.isEnabled():
