@@ -9,9 +9,22 @@ import event_camera_discovery as discovery
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_empty_search_identifies_the_wired_subnet_without_treating_it_as_a_camera(self):
+        with patch.object(discovery, '_wired_addresses') as wired:
+            wired.return_value = [(7, IPv4Interface('172.16.6.7/16'))]
+            note = discovery.empty_discovery_hint()
+            self.assertIn('No camera replied on 172.16.6.7', note)
+            self.assertIn('100.100.x.x', note)
+            wired.return_value.append((7, IPv4Interface('100.100.6.7/16')))
+            self.assertIn('same subnet', discovery.empty_discovery_hint())
+            wired.return_value = []
+            self.assertIn('No active Ethernet', discovery.empty_discovery_hint())
+
     def test_wire_formats(self):
         net = IPv4Interface('10.3.4.3/24')
         peer = '10.3.4.25'
+        self.assertEqual(discovery._parse(b'PH23 7115 9111 12345 "12345"\x00', peer, net),
+                         discovery.DiscoveredCamera(peer, '12345', '12345'))
         self.assertEqual(discovery._parse(b'PH16 7115 8001 1234\r\n', peer, net),
                          discovery.DiscoveredCamera(peer, '1234'))
         self.assertEqual(discovery._parse(b'PH16 7115 1.0.0.5 1234 "Rig A"\x00', peer, net),

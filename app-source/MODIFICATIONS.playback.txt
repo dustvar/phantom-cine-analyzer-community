@@ -518,3 +518,12 @@ Camera Control 1.14.20
 
 Camera Control 1.14.21
 - The frame-rate dropdown compares standard and binned output resolutions at each listed speed. Select a resolution to apply that sensor mode and frame rate together.
+
+1.15.0 Beta — Camera monitor and terminal workspace
+- Added permanent tool navigation, an animated pixel wordmark and two source actions at startup.
+  Calibrate has its own Setup section above the Cine analysis tools. The header opens
+  the Info, Adjust and Tracks inspectors. Playback buttons and readouts share a compact grid.
+- Added editable monitor brightness curves, presets and reset. Camera and Cine frames
+  support zoom, pan, purple framing guides and a yellow overview of the visible area.
+- Added standalone C980 PH23 discovery, status and read-only live preview alongside
+  existing VEO PH16 control. The Ethernet panel reports adapter, speed and subnets.

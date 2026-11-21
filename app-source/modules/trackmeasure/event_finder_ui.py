@@ -170,7 +170,6 @@ class EventFinderPanel(QWidget):
 
         inspector = QFrame()
         inspector.setObjectName('eventFinderInspector')
-        inspector.setStyleSheet('QFrame#eventFinderInspector { border: 1px solid #404956; border-radius: 6px; }')
         side = QVBoxLayout(inspector)
         self.region_label = QLabel()
         self.region_label.setWordWrap(True)
@@ -210,7 +209,8 @@ class EventFinderPanel(QWidget):
         interval.addWidget(self.step)
         self.step_unit = QLabel('frame')
         interval.addWidget(self.step_unit, 1)
-        self.reset_range = QPushButton('Full range')
+        self.reset_range = QPushButton('Reset')
+        self.reset_range.setAccessibleName('Reset to the full frame range')
         self.reset_range.setToolTip('Use the entire recorded Cine')
         self.reset_range.clicked.connect(self._reset_range)
         interval.addWidget(self.reset_range)

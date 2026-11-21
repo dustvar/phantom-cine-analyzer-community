@@ -61,8 +61,8 @@ class CompactWorkspaceTests(unittest.TestCase):
     def test_navigation_drawers_and_header_leave_video_unobstructed(self):
         w = self.w
         self.assertTrue(w.main_tab.isHidden())
-        self.assertNotIn('Camera Comparator', [a.text() for a in w.mode_menu.actions()])
-        self.assertIn('Video Overlay', [a.text() for a in w.mode_menu.actions()])
+        self.assertNotIn('Camera Comparator', [a.text() for a in w.mode_actions.values()])
+        self.assertIn('Video Overlay', [a.text() for a in w.mode_actions.values()])
         w.track_tool.click(); self.app.processEvents()
         self.assertTrue(w.main_tab.isHidden())
         self.assertFalse(w.track_pages.isTabVisible(0))

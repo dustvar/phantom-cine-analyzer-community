@@ -1,7 +1,7 @@
 """Real multi-Cine view arrangement without mutating source identity or measurements."""
 import unittest,shutil
 import numpy as np
-from PySide6.QtCore import QPoint,QPointF,Qt
+from PySide6.QtCore import QPoint,QPointF,QRect,Qt
 from PySide6.QtTest import QTest
 import test_guided_workspace as workspace
 from multi_cine_layout import pane_positions
@@ -73,6 +73,25 @@ class MultiCineLayoutTests(unittest.TestCase):
         self.assertEqual(other.transform(),initial)
         pane.view_controls.fit.click();self.assertEqual(graph._view_zoom,1)
         QTest.mouseClick(pane.title,Qt.LeftButton);self.assertEqual(w.vm.active_cine_index,1)
+
+    def test_recorded_navigator_clear_of_transport_and_guides_stay_out_of_scene(self):
+        w = self.w
+        pane = w.workspace_panes[0]
+        graph = pane.graph
+        viewport = graph.viewport()
+        graph.zoom_at(viewport.rect().center(), 4)
+        pane.view_controls.bar.guides.click()
+        QTest.qWait(30)
+        overview, region = graph.navigator_geometry()
+        card = QRect(viewport.mapFromGlobal(w.playback_card.mapToGlobal(QPoint())), w.playback_card.size())
+        self.assertTrue(w.playback_card.isVisible())
+        self.assertFalse(overview.toAlignedRect().intersects(card))
+        self.assertTrue(overview.contains(region))
+        self.assertLess(region.height(), overview.height())
+        self.assertEqual(graph.guide_mode, 1)
+        frame = graph._image_item.pixmap().toImage()
+        center = frame.pixelColor(frame.width()//2, frame.height()//2)
+        self.assertEqual(center.red(), center.green())
 
     def test_rotated_zoom_layout_and_job_roundtrip(self):
         self.load(3);w=self.w;w.track_tool.click()

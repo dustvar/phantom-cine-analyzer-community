@@ -17,6 +17,8 @@ class WorkspaceLayoutMixin:
         detail_layout=QVBoxLayout(self.details_panel);detail_layout.setContentsMargins(4,4,4,4)
         header=QHBoxLayout();self.details_title=QLabel('Info');header.addWidget(self.details_title,1)
         self.details_close=QToolButton();self.details_close.setText('Close ›')
+        self.details_close.setFocusPolicy(Qt.StrongFocus)
+        self.details_close.setAccessibleName('Close inspector')
         self.details_close.clicked.connect(self._collapse_details);header.addWidget(self.details_close)
         detail_layout.addLayout(header)
         self.tab_splitter.replaceWidget(1,self.details_panel)
@@ -81,12 +83,27 @@ class WorkspaceLayoutMixin:
         grid.removeWidget(self.playback_card)
         # Keep the long seek bar below the image. The small transport floats on
         # the image and its background is translucent, without fading its text.
-        self.seek_bar=QWidget();seek=QHBoxLayout(self.seek_bar)
-        seek.setContentsMargins(2,0,2,0);seek.setSpacing(6)
-        for widget in (self.frame_first_button,self.frame_slider,self.frame_last_button):seek.addWidget(widget,1 if widget is self.frame_slider else 0)
+        self.seek_bar = QWidget()
+        self.seek_bar.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        seek = QGridLayout(self.seek_bar)
+        seek.setContentsMargins(2, 0, 2, 0)
+        seek.setSpacing(6)
+        self.seek_track = QWidget(self.seek_bar)
+        track_row = QHBoxLayout(self.seek_track)
+        track_row.setContentsMargins(0, 0, 0, 0)
+        track_row.setSpacing(6)
+        for widget in (self.frame_first_button, self.frame_slider, self.frame_last_button):
+            track_row.addWidget(widget, int(widget is self.frame_slider))
+        self.seek_actions = QWidget(self.seek_bar)
+        actions_row = QHBoxLayout(self.seek_actions)
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(6)
         self.transport_toggle=QToolButton();self.transport_toggle.setText('Playback');self.transport_toggle.setCheckable(True);self.transport_toggle.setChecked(True)
         self.transport_toggle.setToolTip('Show / hide floating playback controls')
-        self.transport_toggle.toggled.connect(self._sync_video_layout);seek.addWidget(self.transport_toggle)
+        self.transport_toggle.toggled.connect(self._sync_video_layout)
+        actions_row.addWidget(self.transport_toggle)
+        self._seek_arrangement = None
+        self._arrange_seek_bar('single')
         self.first_frame_disp.hide();self.last_frame_disp.hide()
         old=self.playback_card.layout()
         def clear(layout):
@@ -98,17 +115,25 @@ class WorkspaceLayoutMixin:
         self.playback_card.setParent(self.workspace_grid_widget)
         self.playback_card.setObjectName('floating_playback')
         self.playback_card.setProperty('viewerCard',False)
-        old.setContentsMargins(7,6,7,6);old.setSpacing(0)
-        row=QHBoxLayout();row.setSpacing(8);row.addWidget(self.pcc_transport_controls)
-        column=QVBoxLayout();column.setSpacing(2);column.addWidget(self.active_frame_label);column.addWidget(self.playback_fps)
-        row.addLayout(column);old.addLayout(row)
+        old.setContentsMargins(5, 5, 5, 5)
+        old.setSpacing(0)
+        old.setSizeConstraint(QLayout.SetFixedSize)
+        controls = QGridLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setHorizontalSpacing(6)
+        controls.setVerticalSpacing(self.pcc_transport_controls.layout().spacing())
+        controls.addWidget(self.pcc_transport_controls, 0, 0, 2, 1)
+        controls.addWidget(self.active_frame_label, 0, 1)
+        controls.addWidget(self.playback_fps, 1, 1)
+        self.active_frame_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        old.addLayout(controls)
         for widget in (self.pcc_transport_controls,self.active_frame_label,self.playback_fps):widget.show()
-        self.playback_fps.setFixedWidth(100)
-        self.playback_card.setFixedSize(268,76)
         grid.addWidget(self.seek_bar,3,0,1,-1)
         self.status_bar.setWordWrap(False);self.status_bar.setFixedHeight(18)
         grid.removeWidget(self.status_bar);grid.addWidget(self.status_bar,5,0,1,-1)
         self.workspace_grid_widget.installEventFilter(self)
+        self.playback_card.installEventFilter(self)
+        self.seek_bar.installEventFilter(self)
         for pane in self.workspace_panes:pane.graph.viewport().installEventFilter(self)
 
         # Derivative controls live with the graph and always identify filtering.
@@ -137,11 +162,16 @@ class WorkspaceLayoutMixin:
         self._sync_motion_filter()
 
     def eventFilter(self,obj,event):
+        if (event.type() == QEvent.ShortcutOverride and event.key() == Qt.Key_Space
+                and obj in (*self.details_buttons, self.details_close)):
+            # Space activates a focused inspector button before the playback shortcut.
+            event.accept()
+            return True
         if (hasattr(self,'workspace_header') and event.type() in (QEvent.FontChange,QEvent.StyleChange)
                 and (obj in self.details_buttons or obj is self.playback_fps)):
             QTimer.singleShot(0,self,self._sync_compact_control_metrics)
         if isValid(self) and getattr(self,'_layout_ready',False) and event.type()==QEvent.Resize:
-            if obj is self.workspace_grid_widget or any(obj is pane.graph.viewport() for pane in self.workspace_panes):
+            if obj in (self.workspace_grid_widget, self.playback_card, self.seek_bar) or any(obj is pane.graph.viewport() for pane in self.workspace_panes):
                 self._playback_position_timer.start(0)
         return super().eventFilter(obj,event)
 
@@ -161,7 +191,7 @@ class WorkspaceLayoutMixin:
             self.setup_area.setVisible(guided or busy);self.run_panel.setVisible(busy)
         viewer=self.current_tool is self.viewer_tool and not guided
         self.frame_slider.set_viewer_mode(viewer)
-        self.viewer_side_tools.setVisible(viewer)
+        self.viewer_side_tools.setVisible(viewer and bool(self.cine_path))
         self.viewer_controls.setVisible(viewer and self.timeline_toggle.isChecked())
         self.timeline_toggle.setText('Hide timeline' if self.timeline_toggle.isChecked() else 'Show timeline')
         self.finish_card.hide()
@@ -179,6 +209,31 @@ class WorkspaceLayoutMixin:
         self._sync_viewer_panels()
         self._playback_position_timer.start(0)
 
+    def _arrange_seek_bar(self, arrangement):
+        if self._seek_arrangement == arrangement:
+            return
+        self._seek_arrangement = arrangement
+        grid = self.seek_bar.layout()
+        for widget in (self.playback_card, self.seek_track, self.seek_actions):
+            grid.removeWidget(widget)
+        grid.setColumnStretch(0, int(arrangement in ('single', 'narrow')))
+        grid.setColumnStretch(1, int(arrangement in ('inline', 'wrapped')))
+        if arrangement == 'inline':
+            grid.addWidget(self.playback_card, 0, 0)
+            grid.addWidget(self.seek_track, 0, 1)
+            grid.addWidget(self.seek_actions, 0, 2)
+        elif arrangement == 'wrapped':
+            grid.addWidget(self.playback_card, 0, 0)
+            grid.addWidget(self.seek_actions, 0, 1, Qt.AlignRight | Qt.AlignVCenter)
+            grid.addWidget(self.seek_track, 1, 0, 1, 2)
+        else:
+            # With unusually wide readouts, give the card its own row.
+            row = int(arrangement == 'narrow')
+            if row:
+                grid.addWidget(self.playback_card, 0, 0, 1, 2, Qt.AlignLeft)
+            grid.addWidget(self.seek_track, row, 0)
+            grid.addWidget(self.seek_actions, row, 1)
+
     def _position_playback(self):
         if not isValid(self) or not getattr(self,'_layout_ready',False):return
         if not isValid(self.workspace_grid_widget) or not isValid(self.playback_card):return
@@ -190,13 +245,29 @@ class WorkspaceLayoutMixin:
         if multiple:
             if not docked:
                 self.playback_card.setParent(self.seek_bar)
-                self.seek_bar.layout().insertWidget(0,self.playback_card)
                 self.playback_card.setVisible(visible)
+            arrangement = 'single'
+            if visible:
+                grid = self.seek_bar.layout()
+                margins = grid.contentsMargins()
+                available = self.seek_bar.width() - margins.left() - margins.right()
+                control_width = self.playback_card.sizeHint().width() + self.seek_actions.sizeHint().width() + grid.horizontalSpacing()
+                ends = self.frame_first_button.sizeHint().width() + self.frame_last_button.sizeHint().width()
+                # Base reflow on the allocated width, independent of the current
+                # arrangement. Keep at least 200 px for scrubbing in one row.
+                if available >= control_width + ends + 3 * grid.horizontalSpacing() + 200:
+                    arrangement = 'inline'
+                elif available >= control_width:
+                    arrangement = 'wrapped'
+                else:
+                    arrangement = 'narrow'
+            self._arrange_seek_bar(arrangement)
             return
         if docked:
             self.seek_bar.layout().removeWidget(self.playback_card)
             self.playback_card.setParent(self.workspace_grid_widget)
             self.playback_card.setVisible(visible)
+        self._arrange_seek_bar('single')
         index=max(0,getattr(self.vm,'active_cine_index',0)) if self.vm else 0
         pane=self.workspace_panes[index]
         viewport=pane.graph.viewport()

@@ -458,7 +458,7 @@ class RecordStudio(QFrame):
                                first=0, last=model.count-1)
         self.setObjectName('bosRecordStudio')
         self.setStyleSheet('''
-            QFrame#bosRecordStudio { background: #242b34; border: 1px solid #45505e; border-radius: 6px; }
+            QFrame#bosRecordStudio { background: #242b34; border: 1px solid #45505e; border-radius: 0px; }
             QFrame#bosRecordStudio QLabel { color: #d6dfe8; background: transparent; }
             QFrame#bosRecordStudio QPushButton { min-width: 0; min-height: 22px; padding: 2px 8px; }
             QFrame#bosRecordStudio QSpinBox, QFrame#bosRecordStudio QDoubleSpinBox {

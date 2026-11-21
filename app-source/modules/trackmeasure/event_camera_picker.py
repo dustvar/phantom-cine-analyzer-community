@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, Q
 
 from app_runtime import user_data_dir
 from event_camera import list_recordings, validate_address
-from event_camera_discovery import discover_cameras
+from event_camera_discovery import discover_cameras, empty_discovery_hint
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,8 @@ class _Discover(QThread):
         self.cameras, self.error = [], ''
         try:
             self.cameras = discover_cameras(cancelled=self.isInterruptionRequested)
+            if not self.cameras and not self.isInterruptionRequested():
+                self.error = empty_discovery_hint()
         except CancelledError:
             pass
         except (ValueError, OSError, RuntimeError) as exc:

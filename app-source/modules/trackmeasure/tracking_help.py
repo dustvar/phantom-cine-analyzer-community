@@ -1,7 +1,7 @@
 """User guidance for the PCA adapters; not required by either portable engine."""
 USAGE_HTML = """
 <h2>Track an object</h2>
-<p>Choose <b>Tools → Track</b>, then <b>Add Object</b> in the Cine title bar.
+<p>Choose <b>Track</b> in the left rail, then <b>Add Object</b> in the Cine title bar.
 Choose <b>Classic</b>, <b>Edge Assist</b>, or <b>Tumbling</b>. The setup panel opens only
 while adding or editing. Select an existing object in the title bar and press <b>Edit</b>
 to reopen its parameters. Click the right-side Tracks button to show or hide results.</p>

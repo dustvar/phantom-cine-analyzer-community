@@ -1,13 +1,15 @@
 """Compact workspace controls shared by the Windows and Mac applications."""
 from copy import deepcopy
-import os
 import numpy as np
 from PySide6.QtCore import QObject, QEvent, Qt, QSignalBlocker, QPointF, QTimer
-from PySide6.QtGui import QIcon, QWheelEvent, QShortcut, QKeySequence
+from PySide6.QtGui import QWheelEvent, QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QAbstractSlider,
     QAbstractScrollArea, QScrollBar, QComboBox, QFrame, QToolButton, QPushButton,
     QMenu, QLabel, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDoubleSpinBox,
     QSpinBox, QDialog, QDialogButtonBox, QSizePolicy, QMessageBox)
+
+
+from terminal_workspace import NAVIGATION, PixelBrand, StartWorkspace, glyph, navigation_button
 
 
 class IntentionalWheelEditing(QObject):
@@ -128,68 +130,93 @@ class ReferenceDialog(QDialog):
 
 class CompactWorkspaceMixin:
     def _install_workspace_header(self):
-        """One shared header; no permanent navigation gutter or job row."""
-        self.workspace_header=QWidget(self);self.workspace_header.setObjectName('workspace_header')
-        header=QHBoxLayout(self.workspace_header);header.setContentsMargins(0,0,0,0);header.setSpacing(6)
-        tools=self.analysis_tools.layout()
-        tools.removeWidget(self.mode_button);tools.removeWidget(self.scale_tool)
-        tools.setRowStretch(2,0);tools.setHorizontalSpacing(6)
-        tools.addWidget(self.mode_button,0,0);tools.addWidget(self.scale_tool,0,1)
-        self.analysis_tools.setMinimumWidth(0);self.analysis_tools.setMaximumWidth(16777215)
-        self.analysis_tools.setSizePolicy(QSizePolicy.Maximum,QSizePolicy.Fixed)
-        self.mode_button.setFixedSize(96,38);self.mode_button.setToolTip('Choose a viewing or analysis tool')
-        self.mode_button.setStyleSheet('QToolButton { background: #704f7c; color: #ffffff; border: 1px solid #b18ac1; font-weight: 600; font-size: 14px; padding: 4px 10px; } QToolButton:hover { background: #83608f; } QToolButton:disabled { background: #34313a; color: #8d8492; }')
-        self.scale_tool.setFixedSize(38,38);self.scale_tool.setAccessibleName('Calibrate image scale')
-        self.scale_tool.setStyleSheet('padding: 4px; min-width: 28px; min-height: 28px;')
-        header.addWidget(self.analysis_tools)
-        cine_grid=self.cine_disp_col.layout()
-        cine_header=cine_grid.itemAtPosition(0,0).layout()
-        cine_grid.removeItem(cine_header)
-        self._viewer_source_row = cine_header
-        header.addLayout(cine_header,1)
-        header.addWidget(self.job_controls)
-        outer=self.layout()
-        for widget in (self.analysis_tools,self.workflow_stack,self.details_rail):outer.removeWidget(widget)
-        outer.addWidget(self.workspace_header,0,0,1,2)
-        outer.addWidget(self.workflow_stack,1,0);outer.addWidget(self.details_rail,1,1)
-        for column in range(outer.columnCount()):outer.setColumnStretch(column,0);outer.setColumnMinimumWidth(column,0)
-        outer.setColumnStretch(0,1);outer.setContentsMargins(6,6,6,6);outer.setSpacing(4)
+        self.workspace_header = QFrame(self)
+        self.workspace_header.setObjectName('workspace_header')
+        header = QHBoxLayout(self.workspace_header)
+        header.setContentsMargins(0, 0, 6, 0)
+        header.setSpacing(6)
+        self.brand = PixelBrand(self.workspace_header)
+        header.addWidget(self.brand)
+        self.workspace_caption = QLabel('Viewer')
+        self.workspace_caption.setObjectName('workspace_caption')
+        header.addWidget(self.workspace_caption)
+        cine_grid = self.cine_disp_col.layout()
+        self._viewer_source_row = cine_grid.itemAtPosition(0, 0).layout()
+        cine_grid.removeItem(self._viewer_source_row)
+        header.addLayout(self._viewer_source_row, 1)
+        # Accent and help live together in the rail's preferences menu.
+        self._viewer_source_row.removeWidget(self.theme_button)
+        self.theme_button.hide()
+        self.open_job_button.setIcon(glyph('open'))
+        self.save_job_button.setIcon(glyph('save'))
+        self.header_space = QWidget(self.workspace_header)
+        header.addWidget(self.header_space, 1)
+        header.addWidget(self.inspector_controls, 0, Qt.AlignVCenter)
+        self.job_controls.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        header.addWidget(self.job_controls, 0, Qt.AlignRight)
+        header_actions = (*self.details_buttons, self.open_job_button, self.save_job_button)
+        for left, right in zip(header_actions, header_actions[1:]):
+            self.setTabOrder(left, right)
+        outer = self.layout()
+        outer.addWidget(self.workspace_header, 0, 0, 1, 2)
+        outer.setColumnStretch(1, 1)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(6)
         self.tab_splitter.widget(0).layout().setContentsMargins(0,0,0,0)
         cine_grid.setContentsMargins(0,0,0,0)
+        self.welcome = StartWorkspace(self.workspace_grid_widget, self._choose_image,
+                                      self.camera_control_tool.click)
         self.analysis_tools_bg.buttonClicked.connect(self._sync_workspace_header)
         self.workflow_stack.currentChanged.connect(self._sync_workspace_header)
-        for control in (*self.details_buttons,self.playback_fps):control.installEventFilter(self)
+        for control in (*self.details_buttons, self.details_close, self.playback_fps):
+            control.installEventFilter(self)
         self._sync_workspace_header()
 
     def _sync_compact_control_metrics(self):
         """Keep compact defaults while accommodating larger accessibility fonts."""
-        width=max(46,*(button.fontMetrics().horizontalAdvance(button.text())+12 for button in self.details_buttons))
-        for button in self.details_buttons:button.setFixedWidth(width)
-        self.details_rail.setFixedWidth(width+4)
-        fps_width=max(100,self.playback_fps.sizeHint().width())
-        self.playback_fps.setFixedWidth(fps_width)
-        self.playback_card.setFixedSize(268+fps_width-100,max(76,self.playback_card.layout().minimumSize().height()))
+        for button in self.details_buttons:
+            button.setFixedWidth(max(44, button.fontMetrics().horizontalAdvance(button.text()) + 16))
+            button.setMinimumHeight(self.open_job_button.minimumHeight())
+        self.playback_fps.setMinimumWidth(max(100, self.playback_fps.sizeHint().width()))
+        row_height = max(28, self.playback_fps.fontMetrics().height() + 8, self.active_frame_label.sizeHint().height())
+        for control in (*self.transport_buttons, self.active_frame_label, self.playback_fps):
+            if control.minimumHeight() != row_height or control.maximumHeight() != row_height:
+                control.setFixedHeight(row_height)
         if getattr(self,'_layout_ready',False):self._playback_position_timer.start(0)
 
     def _sync_workspace_header(self,*args):
         self._sync_compact_control_metrics()
-        analysis=self.workflow_stack.currentWidget() is self.tab_splitter
-        tracking=analysis and self.current_tool is self.track_tool
-        has_own_source = self.workflow_stack.currentWidget() in (self.event_finder, self.camera_control)
+        panel = self.workflow_stack.currentWidget()
+        analysis = panel is self.tab_splitter
+        tracking = analysis and self.current_tool is self.track_tool
+        loaded = bool(self.cine_path)
+        welcome = analysis and not loaded
+        # Other tools have their own source picker and capture status.
         for index in range(self._viewer_source_row.count()):
             widget = self._viewer_source_row.itemAt(index).widget()
-            if widget is not None and widget is not self.theme_button:
-                widget.setVisible(not has_own_source)
-        self.scale_tool.setVisible(not has_own_source)
-        self.details_rail.setVisible(analysis)
+            if widget is not None:
+                widget.setVisible(analysis and loaded)
+        manager = getattr(self, 'pane_layout_manager', None)
+        if manager is not None and manager.count() < 2:
+            manager.choice.hide()
+            manager.layout_label.hide()
+        if not hasattr(self, 'pane_layout_manager') or not self.vm or len(self.vm.workspace_contexts) < 2:
+            self.workspace_count_label.hide()
+        self.welcome.setVisible(welcome)
+        if welcome:
+            self.welcome.raise_()
+        self.seek_bar.setVisible(loaded)
+        self.header_space.setVisible(not analysis or not loaded)
+        self.workspace_caption.setVisible(analysis)
+        self.inspector_controls.setVisible(analysis and loaded)
         self.details_buttons[2].setVisible(tracking)
-        self.details_buttons[2].setToolTip('Tracked objects, measured points and object settings')
         if not tracking and self.main_tab.currentIndex()==2:
             self._collapse_details();self.main_tab.setCurrentIndex(0)
         self._sync_mode_menu()
 
     def _install_compact_workspace(self):
         self._details_open = False
+        self._details_width = None
         self._tracking_editor_open = False
         self._graphs_open = True
         self._picking_reference = None
@@ -201,54 +228,76 @@ class CompactWorkspaceMixin:
         if not hasattr(app, '_pca_wheel_guard'):
             app._pca_wheel_guard = IntentionalWheelEditing(app)
             app.installEventFilter(app._pca_wheel_guard)
-        # Keep the existing buttons/signals as the workflow API, presented by a menu.
+        # Route all navigation through the existing capture/analysis callbacks.
+        self.report_tool = self.findChild(QWidget, 'qt_export_button')
         layout = self.analysis_tools.layout()
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget(): item.widget().hide()
-        self.analysis_tools.setFixedWidth(48)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.mode_button = QToolButton(); self.mode_button.setText('Tools')
-        self.mode_button.setAccessibleName('Choose workspace tool')
-        self.mode_button.setPopupMode(QToolButton.InstantPopup)
-        self.mode_button.setFixedSize(46, 38)
-        self.mode_menu = QMenu(self.mode_button); self.mode_button.setMenu(self.mode_menu)
+            if item.widget():
+                item.widget().hide()
+        for row in range(layout.rowCount()):
+            layout.setRowStretch(row, 0)
+        self.analysis_tools.setFixedWidth(148)
+        layout.setContentsMargins(5, 6, 5, 6)
+        layout.setSpacing(2)
         self.mode_actions = {}
-        names = [('Viewer', self.viewer_tool, 'viewer-eye.svg'), ('Video Overlay', self.overlay_tool, 'viewer-eye.svg'),
-                 ('Camera Control', self.camera_control_tool, 'icons8-camera-transparent.gif'),
-                 ('Event Finder', self.event_tool, 'target-32.png'),
-                 ('Background-Oriented Schlieren (BOS)', self.bos_tool, 'bos.svg'),
-                 ('Track', self.track_tool, 'target-32.png'), ('Distance', self.two_pt_tool, 'line-32.png'),
-                 ('Angle', self.three_pt_tool, 'angle-32.png'), ('Lines', self.two_line_tool, '2-line-32.png'),
-                 ('Area', self.area_tool, 'rect-32.png')]
-        for name, button, icon in names:
-            action = self.mode_menu.addAction(QIcon(os.path.join(os.path.dirname(__file__), 'images', icon)), name)
-            action.setCheckable(True); action.triggered.connect(lambda checked=False, b=button: b.click())
-            self.mode_actions[button] = action
-        self.mode_menu.addSeparator()
-        report = self.mode_menu.addAction('Report…')
-        # The original Report button is created before Viewer creates its Export button.
-        self.report_tool = self.findChild(QWidget, 'qt_export_button')
-        report.triggered.connect(lambda: self.report_tool.click())
-        self.mode_menu.aboutToShow.connect(self._sync_mode_menu)
-        layout.addWidget(self.mode_button, 0, 0, 1, 2)
-        self.scale_tool.setFixedSize(40, 34); self.scale_tool.show()
-        layout.addWidget(self.scale_tool, 1, 0, 1, 2)
-        layout.setRowStretch(2, 1)
+        self.nav_buttons = {}
+        row = 0
+        for group, entries in NAVIGATION:
+            title = QLabel(group.upper())
+            title.setObjectName('nav_group')
+            layout.addWidget(title, row, 0)
+            row += 1
+            for attribute, label, icon, hint in entries:
+                tool = getattr(self, attribute)
+                button, action = navigation_button(self.analysis_tools, label, icon, hint,
+                    lambda checked=False, target=tool: self._select_rail_tool(target))
+                self.mode_actions[tool] = action
+                self.nav_buttons[tool] = button
+                layout.addWidget(button, row, 0)
+                row += 1
+        layout.setRowStretch(row, 1)
+        row += 1
+        report, self.report_action = navigation_button(self.analysis_tools, 'Report', 'report',
+            'Export a measurement report', self.report_tool.click, checkable=False)
+        layout.addWidget(report, row, 0)
+        self.rail_settings = QToolButton()
+        self.rail_settings.setObjectName('rail_tool')
+        self.rail_settings.setText('Settings')
+        self.rail_settings.setIcon(glyph('settings'))
+        self.rail_settings.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.rail_settings.setToolTip('Interface appearance and user manual')
+        self.rail_settings.setPopupMode(QToolButton.InstantPopup)
+        options = QMenu(self.rail_settings)
+        options.addAction('Interface accent…', self._choose_theme_color)
+        options.addAction('User manual', self._open_manual)
+        self.rail_settings.setMenu(options)
+        self.rail_settings.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        layout.addWidget(self.rail_settings, row+1, 0)
         self.comparator_tool.hide()
 
-        self.details_rail = QFrame(); self.details_rail.setObjectName('details_rail')
-        self.details_rail.setFixedWidth(50)
-        rail = QVBoxLayout(self.details_rail); rail.setContentsMargins(2, 2, 2, 2)
+        self.inspector_controls = QFrame()
+        self.inspector_controls.setObjectName('inspector_controls')
+        self.inspector_controls.setAccessibleName('Cine inspectors')
+        self.inspector_controls.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        inspectors = QHBoxLayout(self.inspector_controls)
+        inspectors.setContentsMargins(0, 0, 0, 0)
+        inspectors.setSpacing(1)
         self.details_buttons = []
-        for index, text in enumerate(('Info', 'Adjust', 'Tracks')):
-            button = QToolButton(); button.setText(text); button.setFixedSize(46, 32)
-            button.setCheckable(True); button.setToolTip('Show / hide '+text.lower())
+        for index, (text, description) in enumerate((
+            ('Info', 'Camera metadata and frame timing'),
+            ('Adjust', 'Image adjustments and orientation'),
+            ('Tracks', 'Tracked objects and measured points'),
+        )):
+            button = QToolButton()
+            button.setText(text)
+            button.setCheckable(True)
+            button.setFocusPolicy(Qt.StrongFocus)
+            button.setAccessibleName(text + ' inspector')
+            button.setToolTip(description + '. Click again to close.')
             button.clicked.connect(lambda checked=False, i=index: self._toggle_details(i))
-            rail.addWidget(button); self.details_buttons.append(button)
-        rail.addStretch()
-        self.layout().addWidget(self.details_rail, 1, 3)
-        self.layout().setColumnStretch(2, 1)
+            inspectors.addWidget(button)
+            self.details_buttons.append(button)
         self.main_tab.setMinimumWidth(0)
         self.main_tab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.tab_splitter.setCollapsible(1, True)
@@ -315,21 +364,12 @@ class CompactWorkspaceMixin:
         hint = QLabel('Green = lowest · red = highest\nX/Y displacement is signed from the reference.')
         hint.setWordWrap(True); self.path_fade_panel.layout().addRow(hint)
         self.playback_fps = QDoubleSpinBox(); self.playback_fps.setRange(.1, 10000)
+        self.playback_fps.setObjectName('transport_fps')
         self.playback_fps.setDecimals(1); self.playback_fps.setValue(30); self.playback_fps.setSuffix(' fps')
-        self.playback_fps.setKeyboardTracking(False); self.playback_fps.setFixedWidth(112)
+        self.playback_fps.setKeyboardTracking(False)
         self.playback_fps.setAccessibleName('Playback frames per second')
         self.playback_card.layout().itemAt(0).layout().insertWidget(2, self.playback_fps)
         self.playback_fps.valueChanged.connect(self._change_transport_fps)
-        # Reuse all existing PCC transport actions/shortcuts in the familiar two rows.
-        grid = self.pcc_transport_controls.layout()
-        while grid.count(): grid.takeAt(0)
-        for button in self.transport_buttons:
-            button.setText(''); button.setToolButtonStyle(Qt.ToolButtonIconOnly); button.setFixedSize(32, 26)
-            button.setAccessibleName(button.toolTip())
-        for column, button in enumerate((self.reverse_play_button, self.pause_button, self.forward_play_button)):
-            grid.addWidget(button, 0, column*4, 1, 4)
-        for column, button in enumerate((self.reverse_faster_button, self.previous_frame_button, self.next_frame_button, self.forward_faster_button)):
-            grid.addWidget(button, 1, column*3, 1, 3)
         self._place_header_controls()
 
     def _connect_compact_workspace(self):
@@ -338,9 +378,14 @@ class CompactWorkspaceMixin:
         self.frame_slider.valueChanged.connect(self._sync_transport_fps)
         self.analysis_tools_bg.buttonClicked.connect(lambda *args: self._sync_transport_fps())
         self.analysis_tools_bg.buttonClicked.connect(lambda *args: self._cancel_reference_pick())
-        self.workflow_stack.currentChanged.connect(lambda: self.details_rail.setVisible(
-            self.workflow_stack.currentWidget() is self.tab_splitter))
         self._sync_compact_objects()
+
+    def _select_rail_tool(self, tool):
+        if self.mode_actions[tool].isEnabled():
+            panel = self.workflow_stack.currentWidget()
+            if panel is not self.tab_splitter or tool is not self.current_tool:
+                tool.click()
+        self._sync_mode_menu()
 
     def _sync_mode_menu(self):
         panel = self.workflow_stack.currentWidget()
@@ -353,12 +398,26 @@ class CompactWorkspaceMixin:
             active = self.bos_tool
         elif panel is self.overlay_panel:
             active = self.overlay_tool
+        if active is None:
+            active = self.viewer_tool
+        always = (self.camera_control_tool, self.viewer_tool, self.overlay_tool, self.event_tool, self.bos_tool)
         for button, action in self.mode_actions.items():
             action.setChecked(button is active)
+            # Loading a Cine temporarily disables the whole window. The rail
+            # already inherits that lock; preserve each tool's own availability.
+            available = button.isEnabledTo(self.analysis_tools) and (bool(self.cine_path) or button in always)
+            action.setEnabled(available)
+            if button is active:
+                self.workspace_caption.setText(action.text())
+        self.report_action.setEnabled(bool(self.cine_path) and self.report_tool.isEnabledTo(self.analysis_tools))
 
     def _details_splitter_moved(self, *args):
-        if self.main_tab.isVisible() and self.tab_splitter.sizes()[1] == 0:
-            self._collapse_details()
+        if self._details_open:
+            width = self.tab_splitter.sizes()[1]
+            if width:
+                self._details_width = width
+            else:
+                self._collapse_details()
         QTimer.singleShot(0, self, self._place_header_controls)
 
     def _sync_details_buttons(self, *args):
@@ -377,10 +436,18 @@ class CompactWorkspaceMixin:
             self.main_tab.setCurrentIndex(index); self._ensure_details_panel_open(force=True)
 
     def _collapse_details(self):
-        self._details_open = False; self.main_tab.hide()
+        focused = QApplication.focusWidget()
+        restore_focus = (self._details_open and focused is not None
+                         and self.details_panel.isAncestorOf(focused))
+        if self._details_open and self.tab_splitter.sizes()[1] > 0:
+            self._details_width = self.tab_splitter.sizes()[1]
+        self._details_open = False
+        self.main_tab.hide()
         if hasattr(self,'details_panel'): self.details_panel.hide()
         self.tab_splitter.setSizes([max(1, self.tab_splitter.width()), 0])
         self._sync_details_buttons()
+        if restore_focus:
+            self.details_buttons[self.main_tab.currentIndex()].setFocus(Qt.OtherFocusReason)
 
     def _set_graphs_open(self, checked):
         self._graphs_open = bool(checked)

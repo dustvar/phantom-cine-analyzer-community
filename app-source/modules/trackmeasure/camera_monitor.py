@@ -1,8 +1,46 @@
 """Live monitor tone mapping for linear Phantom images. Capture pixels stay in camera RAM."""
+from dataclasses import dataclass
 from math import exp, log
 from time import monotonic
 
 import numpy as np
+from scipy.interpolate import PchipInterpolator
+
+
+@dataclass(frozen=True)
+class MonitorCurve:
+    # A fixed base gain keeps the first edit of an automatic curve seamless.
+    # None uses linear input. Other gains use the same sRGB encoding as Standard.
+    base_gain: float | None = None
+    points: tuple = ((0., 0.), (1., 1.))
+
+    def base(self, x):
+        if self.base_gain is None:
+            return x
+        y = self.base_gain * x / (1. + (self.base_gain - 1.) * x)
+        return np.where(y <= .0031308, 12.92 * y, 1.055 * y ** (1 / 2.4) - .055)
+
+    def values(self, x):
+        encoded = self.base(x)
+        if self.points == ((0., 0.), (1., 1.)):
+            return encoded
+        inputs, outputs = np.asarray(self.points).T
+        return np.clip(PchipInterpolator(self.base(inputs), outputs)(encoded), 0., 1.)
+
+
+LINEAR_CURVE = MonitorCurve()
+PRESET_CURVES = {
+    'linear': LINEAR_CURVE,
+    'standard': MonitorCurve(base_gain=1.),
+    'shadows': MonitorCurve(base_gain=3.),
+    'contrast': MonitorCurve(points=((0., 0.), (.22, .14), (.5, .5), (.78, .86), (1., 1.))),
+}
+
+
+def active_curve(mode, gain, custom):
+    if mode == 'auto':
+        return MonitorCurve(base_gain=round(gain, 1))
+    return PRESET_CURVES.get(mode, custom)
 
 
 def _sample(pixels):
@@ -28,7 +66,7 @@ class MonitorLevels:
         self._depth = None
         self._key = self._lut = None
 
-    def render(self, pixels, mode='auto', now=None):
+    def render(self, pixels, mode='auto', now=None, *, curve=LINEAR_CURVE):
         """Return an 8-bit display image using the original sensor precision."""
         now = monotonic() if now is None else now
         depth = pixels.dtype.itemsize * 8
@@ -54,14 +92,10 @@ class MonitorLevels:
 
         if mode == 'linear':
             return pixels if depth == 8 else (pixels >> 8).astype(np.uint8)
-        gain = round(self.gain, 1) if mode == 'auto' else 1.
-        key = (depth, gain)
+        display_curve = active_curve(mode, self.gain, curve)
+        key = (depth, display_curve)
         if self._key != key:
-            # A bounded lift keeps white fixed while revealing shadow detail.
-            # The second step encodes linear light for an ordinary sRGB display.
             x = np.linspace(0., 1., min(1 << depth, 4096))
-            y = gain * x / (1. + (gain - 1.) * x)
-            encoded = np.where(y <= .0031308, 12.92 * y, 1.055 * y ** (1 / 2.4) - .055)
-            self._lut = np.rint(encoded * 255.).astype(np.uint8)
+            self._lut = np.rint(display_curve.values(x) * 255.).astype(np.uint8)
             self._key = key
         return self._lut[pixels if depth == 8 else pixels >> 4]

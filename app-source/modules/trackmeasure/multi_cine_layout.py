@@ -2,6 +2,7 @@
 from PySide6.QtCore import QObject,QEvent,Qt,QPoint,QPointF,QTimer,QSignalBlocker
 from PySide6.QtWidgets import QComboBox,QFrame,QHBoxLayout,QToolButton,QMenu,QLabel
 from PySide6.QtGui import QTransform
+from view_inspection import InspectionBar
 
 LAYOUTS=(('Auto','auto'),('Grid','grid'),('Side by side','side_by_side'),('Stacked','stacked'))
 
@@ -25,15 +26,9 @@ class PaneViewControls(QObject):
         self.move.setPopupMode(QToolButton.InstantPopup)
         self.menu=QMenu(self.move);self.move.setMenu(self.menu);self.menu.aboutToShow.connect(self.fill_menu)
         pane.header.insertWidget(pane.header.count()-1,self.move)
-        self.bar=QFrame(pane.graph.viewport());self.bar.setObjectName('pane_zoom_controls')
-        self.bar.setStyleSheet('QFrame#pane_zoom_controls { background: rgba(28,33,41,210); border: 1px solid #657080; border-radius: 4px; } QToolButton { padding: 1px 4px; font-size: 11px; }')
-        row=QHBoxLayout(self.bar);row.setContentsMargins(2,2,2,2);row.setSpacing(2)
-        for label,name,callback in (('−','Zoom out',lambda:self.zoom(-1)),('Fit','Fit image',pane.graph.reset_view_zoom),('+','Zoom in',lambda:self.zoom(1))):
-            button=QToolButton(self.bar);button.setText(label);button.setFixedSize(30 if label=='Fit' else 24,22)
-            button.setAccessibleName(f'{name} · Cine C{pane.pane_index+1}');button.setToolTip(name+' in this Cine only')
-            button.clicked.connect(callback);row.addWidget(button)
-            setattr(self,{'−':'minus','Fit':'fit','+':'plus'}[label],button)
-        self.bar.adjustSize();pane.graph.viewport().installEventFilter(self)
+        self.bar = InspectionBar(pane.graph, f'Cine C{pane.pane_index + 1}')
+        self.minus, self.fit, self.plus = self.bar.minus, self.bar.fit, self.bar.plus
+        pane.graph.viewport().installEventFilter(self)
         pane.title.installEventFilter(self);pane.title.setCursor(Qt.PointingHandCursor)
         pane.title.setToolTip('Click to make this Cine active. Zoom and drag each video independently.')
         self.position()
@@ -47,9 +42,6 @@ class PaneViewControls(QObject):
     def position(self):
         self.bar.move(6,6);self.bar.setVisible(not bool(getattr(self.window,'_guide',None)))
         self.bar.raise_()
-
-    def zoom(self,steps):
-        graph=self.pane.graph;graph.zoom_at(graph.viewport().rect().center(),steps)
 
     def fill_menu(self):
         self.menu.clear();manager=self.window.pane_layout_manager
@@ -81,7 +73,8 @@ class MultiCineLayout(QObject):
                     found=locate(item.layout())
                     if found:return found
         target,index=locate(window.workspace_header.layout())
-        target.insertWidget(index,QLabel('Layout'));target.insertWidget(index+1,self.choice)
+        self.layout_label = QLabel('Layout')
+        target.insertWidget(index,self.layout_label);target.insertWidget(index+1,self.choice)
         self.choice.currentIndexChanged.connect(self.set_layout)
         for pane in window.workspace_panes:pane.view_controls=PaneViewControls(pane,window)
         self.update_metrics()

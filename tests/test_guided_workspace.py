@@ -38,12 +38,14 @@ class GuidedWorkspaceTests(unittest.TestCase):
         cls.app.setStyleSheet((MODULE/'styles.css').read_text())
     @classmethod
     def tearDownClass(cls):cls.app.setStyleSheet(cls.old_style)
-    def setUp(self):
+    def setUp(self, load=True):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name);self.source=self.root/'motion.cine';motion_cine(self.source)
         self.errors=[];self.hook=patch('sys.excepthook',lambda *e:self.errors.append(e));self.hook.start()
         self.w=simplemeas_ui.MainWindow();self.w.vm=simplemeas_vm.SimpleMeasVM(self.w,measmodel.MeasModel(),reportmodel.ReportHandler(),FakeConfig(),CineHandler(),{})
         self.w.connect_events();self.w.initialize_theme();self.w.resize(1280,820);self.w.show()
-        self.assertTrue(self.w.vm.load_cine_workspace_cb([str(self.source)]));QTest.qWait(30)
+        if load:
+            self.assertTrue(self.w.vm.load_cine_workspace_cb([str(self.source)]))
+        QTest.qWait(30)
     def tearDown(self):
         self.w._stop_playback()
         if self.w._tracking_busy():

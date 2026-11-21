@@ -13,6 +13,7 @@ import simplemeas_vm
 from viewer_processing import apply_grade
 from image_orientation import OrientationMixin
 from multi_cine_layout import MultiCineLayout
+from view_inspection import InspectionView
 from multi_cine_playback import GroupPlayback
 from viewer_grade_ui import ViewerGradePanel
 from viewer_scrubber import ViewerScrubber
@@ -49,7 +50,9 @@ import pandas as pd
 
 # constants
 MINIGRAPH_SIZE = 160
-VERSION = '1.14.21 · Camera Control'
+from app_runtime import APP_VERSION
+from terminal_workspace import CineSourceLabel
+VERSION = APP_VERSION + ' - Beta'
 HYBRID_TRACKING_METHOD = 'Hybrid (Edge + Intensity)'
 CLASSIC_TRACKING_METHOD = 'Classic (Intensity Only)'
 HYBRID_TRACKING_DISPLAY = 'Intensify Tracking + Edge Assist (Beta)'
@@ -659,10 +662,9 @@ class HybridRegionItem(QGraphicsRectItem):
     def commit_changes(self):
         self.parent_window.commit_hybrid_region(self)
 
-class ResizableGraph(QGraphicsView):
+class ResizableGraph(InspectionView):
     def __init__(self, label, parent):
         super().__init__()
-        self.setScene(QGraphicsScene(self))
         self.parent = parent
         self.xMax = 100
         self.yMax = 100
@@ -673,55 +675,8 @@ class ResizableGraph(QGraphicsView):
         self.mouse_pos = (0,0)
         self._hybrid_drag_start = None
         self._hybrid_drag_preview = None
-        self._view_zoom = 1.0
         self._pan_enabled = False
         self._background_pan_last = None
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
-        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-
-    def resizeEvent(self, event):
-        if self._view_zoom <= 1.0:
-            self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-        super().resizeEvent(event)
-
-    def reset_view_zoom(self):
-        self._view_zoom = 1.0
-        self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-
-    def zoom_at(self, view_pos, wheel_steps):
-        if not wheel_steps:
-            return
-        old_zoom = self._view_zoom
-        new_zoom = float(np.clip(old_zoom * (1.20 ** wheel_steps), 1.0, 20.0))
-        if abs(new_zoom - old_zoom) < 1e-9:
-            return
-        scene_before = self.mapToScene(view_pos)
-        if new_zoom <= 1.0:
-            self.reset_view_zoom()
-        else:
-            target_viewport_pos = QPointF(view_pos)
-            self.scale(new_zoom / old_zoom, new_zoom / old_zoom)
-            self._view_zoom = new_zoom
-            # Keep the scene location beneath the wheel cursor stationary. At
-            # the image boundary Qt may clamp a small amount to avoid showing
-            # empty space, but the zoom still moves toward that cursor.
-            self.centerOn(scene_before)
-            viewport_delta = target_viewport_pos - QPointF(
-                self.viewport().width() / 2.0,
-                self.viewport().height() / 2.0,
-            )
-            viewport_center = self.mapFromScene(scene_before) - viewport_delta.toPoint()
-            self.centerOn(self.mapToScene(viewport_center))
-            scene_after = self.mapToScene(view_pos)
-            residual = scene_before - scene_after
-            transform = self.transform()
-            screen_residual = transform.map(residual) - transform.map(QPointF(0, 0))
-            self.horizontalScrollBar().setValue(
-                round(self.horizontalScrollBar().value() + screen_residual.x())
-            )
-            self.verticalScrollBar().setValue(
-                round(self.verticalScrollBar().value() + screen_residual.y())
-            )
 
     def event(self, event):
         # Plain Left/Right normally belong to global playback actions. During
@@ -736,11 +691,6 @@ class ResizableGraph(QGraphicsView):
         if getattr(self.parent, '_guided_key_press', lambda *_: False)(event):
             return
         super().keyPressEvent(event)
-
-    def wheelEvent(self, event):
-        steps = event.angleDelta().y() / 120.0
-        self.zoom_at(event.position().toPoint(), steps)
-        event.accept()
 
     def set_pan_enabled(self, enabled):
         """Let the user drag a zoomed Cine instead of using its scrollbars."""
@@ -1142,7 +1092,9 @@ def create_color_wheel_icon(size=28):
 
 def create_playback_icon(kind, size=24):
     """Draw crisp PCC-style transport symbols without relying on OS icons."""
-    pixmap = QPixmap(size, size)
+    # Draw at Retina resolution so icon edges stay sharp on scaled desktops.
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.setDevicePixelRatio(2)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -2031,7 +1983,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         event.accept()
 
     def init_ui(self):
-        self.setWindowTitle(f"Track & Measure v{VERSION}")
+        self.setWindowTitle(f"Phantom PCA {VERSION}")
         
         self._create_analysis_tools_col()
         self._create_metadata_tab()
@@ -2077,9 +2029,9 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self._pending_event_jump = None
         main_layout = QGridLayout()
         self.job_controls = self._create_job_bar()
-        main_layout.addWidget(self.job_controls, 0, 0, 1, 3)
+        main_layout.addWidget(self.job_controls, 0, 0, 1, 2)
         main_layout.addWidget(self.analysis_tools, 1, 0)
-        main_layout.addWidget(self.workflow_stack, 1, 2)
+        main_layout.addWidget(self.workflow_stack, 1, 1)
         main_layout.setRowStretch(1, 1)
         self.setLayout(main_layout)
 
@@ -2181,7 +2133,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
     def _create_cine_display_col(self):
         self.cine_disp_col = QWidget()
         cine_disp_layout = QGridLayout()
-        self.cine_path_disp = QLabel("No Cine Selected")
+        self.cine_path_disp = CineSourceLabel()
         self.cine_path_disp.setObjectName('cine_path_disp')
         self.cine_path_disp.setMinimumWidth(0)
         self.cine_path_disp.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -2190,7 +2142,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         cine_upload_button.setMinimumWidth(104)
         cine_upload_button.clicked.connect(self._choose_image)
         cine_upload_button.setToolTip('Open up to four Cine files (Ctrl/Cmd+Shift+O)')
-        self.workspace_count_label = QLabel('1 Cine')
+        self.workspace_count_label = QLabel('')
         self.workspace_count_label.setObjectName('workspace_count_label')
         self.theme_button = QToolButton()
         self.theme_button.setObjectName('qt_theme_button')
@@ -2273,10 +2225,9 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
 
         self.pcc_transport_controls = QFrame()
         self.pcc_transport_controls.setObjectName('pcc_transport_controls')
-        pcc_layout = QGridLayout(self.pcc_transport_controls)
-        pcc_layout.setContentsMargins(5, 5, 5, 5)
-        pcc_layout.setHorizontalSpacing(3)
-        pcc_layout.setVerticalSpacing(3)
+        pcc_layout = QVBoxLayout(self.pcc_transport_controls)
+        pcc_layout.setContentsMargins(0, 0, 0, 0)
+        pcc_layout.setSpacing(4)
 
         self.reverse_play_button = QToolButton()
         self.pause_button = QToolButton()
@@ -2298,8 +2249,11 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         for button, icon_kind, tooltip in button_specs:
             button.setObjectName('pcc_transport_button')
             button.setIcon(create_playback_icon(icon_kind))
-            button.setIconSize(QSize(22, 22))
+            button.setIconSize(QSize(21, 21))
             button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             button.setEnabled(False)
 
         for button in (self.reverse_play_button, self.pause_button, self.forward_play_button,
@@ -2313,20 +2267,19 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             self.transport_mode_group.addButton(button)
         self.pause_button.setChecked(True)
 
-        # A single row keeps transport compact and labels the core actions.
-        for column, button in enumerate((self.reverse_faster_button, self.previous_frame_button,
-                self.reverse_play_button, self.pause_button, self.forward_play_button,
-                self.next_frame_button, self.forward_faster_button)):
-            button.setFixedSize(29, 29)
-            button.setIconSize(QSize(17, 17))
-            pcc_layout.addWidget(button, 0, column)
-        for button, label, width in ((self.reverse_play_button, 'Reverse', 74),
-                                     (self.pause_button, 'Pause', 65),
-                                     (self.forward_play_button, 'Play', 59)):
-            button.setText(label)
-            button.setAccessibleName(label)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setFixedWidth(width)
+        # At 152 logical pixels both rows divide exactly: 3 × 48 or 4 × 35,
+        # with 4 px between neighboring buttons.
+        self.pcc_transport_controls.setFixedWidth(152)
+        for controls in (
+                (self.reverse_play_button, self.pause_button, self.forward_play_button),
+                (self.reverse_faster_button, self.previous_frame_button,
+                 self.next_frame_button, self.forward_faster_button)):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            for button in controls:
+                row.addWidget(button, 1)
+            pcc_layout.addLayout(row)
 
         self.viewer_speed_buttons = {
             self.reverse_faster_button: -4,
@@ -3270,12 +3223,12 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             themed = re.sub(re.escape(source), replacement, themed, flags=re.IGNORECASE)
         QApplication.instance().setStyleSheet(themed)
         palette = QApplication.instance().palette()
-        for role, value in ((QPalette.ColorRole.Window, '#181b20'),
+        for role, value in ((QPalette.ColorRole.Window, '#101216'),
                             (QPalette.ColorRole.WindowText, '#e7ebf2'),
-                            (QPalette.ColorRole.Base, '#20262e'),
-                            (QPalette.ColorRole.AlternateBase, '#272e38'),
+                            (QPalette.ColorRole.Base, '#161a1e'),
+                            (QPalette.ColorRole.AlternateBase, '#1b2025'),
                             (QPalette.ColorRole.Text, '#e7ebf2'),
-                            (QPalette.ColorRole.Button, '#2a3039'),
+                            (QPalette.ColorRole.Button, '#22262d'),
                             (QPalette.ColorRole.ButtonText, '#e7ebf2'),
                             (QPalette.ColorRole.Highlight, '#51435e'),
                             (QPalette.ColorRole.HighlightedText, '#ffffff')):
@@ -3286,13 +3239,6 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self._sync_object_preview_grid()
         if persist and self.vm is not None:
             self.vm.config.set('ui_accent_color', color.name())
-
-    def _shrink_string(self, string, label):
-        seg = int(label.width()/13)
-        if len(string) > label.width()/6:
-            left, right = string[:seg], string[len(string) - seg:]
-            string = f'{left}...{right}'
-        return string
 
     def _set_metadata_table(self, data):
         for i, d in enumerate(data):
@@ -4430,13 +4376,16 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
     def _ensure_details_panel_open(self, force=False):
         if not force and not getattr(self, '_details_open', False):
             return
+        opening = not self._details_open
         self._details_open = True
         self.main_tab.show()
-        if hasattr(self, 'details_panel'): self.details_panel.show()
-        width = max(1, self.tab_splitter.width())
-        preferred = min(380, max(340, width // 3))
-        if hasattr(self,'details_panel'):self.details_panel.setMinimumWidth(340)
-        self.tab_splitter.setSizes([max(1, width-preferred), preferred])
+        self.details_panel.show()
+        if opening:
+            available = max(1, self.tab_splitter.width() - self.tab_splitter.handleWidth())
+            preferred = self._details_width or min(380, max(340, available // 3))
+            self.details_panel.setMinimumWidth(min(340, available // 2))
+            width = min(preferred, max(self.details_panel.minimumWidth(), available - 240))
+            self.tab_splitter.setSizes([available - width, width])
         QTimer.singleShot(0, self, self._position_tracking_overlay_controls)
         self._sync_details_buttons()
 
@@ -4484,7 +4433,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         self._set_viewer_controls_visible(False)
 
     def _tracking_disabled(self):
-        if self.main_tab.currentIndex()==2 and hasattr(self,'details_rail'):
+        if self.main_tab.currentIndex()==2 and hasattr(self,'inspector_controls'):
             self._collapse_details()
         self.track_tab.setEnabled(False)
         self.track_canvas.redraw({})
@@ -4606,7 +4555,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         img_ct = metadata.ImageCount - 1
         self.last_fr = metadata.FirstImageNo + img_ct
         pane_prefix = f'C{self.vm.active_cine_index + 1} · ' if len(self.vm.workspace_contexts) > 1 else ''
-        self.cine_path_disp.setText(self._shrink_string(pane_prefix + cine_path, self.cine_path_disp)) 
+        self.cine_path_disp.set_source(cine_path, pane_prefix)
         frame_blocker = QSignalBlocker(self.frame_slider)
         self.frame_slider.setRange(0, img_ct)
         self.frame_slider.setValue(self.vm.active_frame)
@@ -4726,7 +4675,7 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             tile.set_name(track.get('name', f'Object {object_id}'))
             tile.setStyleSheet(
                 f'QFrame#track_preview_tile {{ border: 1px solid '
-                f'{self.theme_accent}; border-radius: 4px; }}'
+                f'{self.theme_accent}; }}'
             )
             self.preview_grid_layout.addWidget(
                 tile, display_index // 2, display_index % 2
@@ -6138,8 +6087,6 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
 
     def resizeEvent(self, event):
         self.update_active_frame(self.frame_slider.value())
-        if self.cine_path != '':
-            self.cine_path_disp.setText(self._shrink_string(self.cine_path, self.cine_path_disp))
         self.track_canvas.redraw(self.vm.track_data)
         super().resizeEvent(event)
         # Child geometry is finalized after the parent resize event returns.

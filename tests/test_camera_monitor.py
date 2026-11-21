@@ -2,10 +2,25 @@ import unittest
 
 import numpy as np
 
-from camera_monitor import MonitorLevels, needs_shadow_precision
+from camera_monitor import LINEAR_CURVE, MonitorCurve, MonitorLevels, active_curve, needs_shadow_precision
 
 
 class CameraMonitorTests(unittest.TestCase):
+    def test_editing_auto_preserves_current_mapping_and_sensor_data(self):
+        ramp = np.linspace(0, 4000, 420, dtype=np.uint16)[None, :]
+        original = ramp.copy()
+        monitor = MonitorLevels()
+        automatic = monitor.render(ramp, 'auto', now=0)
+        base = active_curve('auto', monitor.gain, LINEAR_CURVE)
+        x = .14
+        anchored = MonitorCurve(base.base_gain, ((0., 0.), (x, float(base.values(x))), (1., 1.)))
+        np.testing.assert_array_equal(automatic, monitor.render(ramp, 'custom', now=1, curve=anchored))
+        darker = MonitorCurve(base.base_gain, ((0., 0.), (x, .12), (1., 1.)))
+        result = monitor.render(ramp, 'custom', now=2, curve=darker)
+        self.assertLess(np.mean(result), np.mean(automatic))
+        self.assertTrue(np.all(np.diff(result.astype(int)) >= 0))
+        np.testing.assert_array_equal(ramp, original)
+
     def test_dark_sensor_detail_survives_display_and_linear_mode(self):
         pixels = np.array([[0, 16, 32, 48, 64, 128, 255]], dtype='<u2')
         before = pixels.copy()

@@ -1,4 +1,4 @@
-"""Read completed Phantom PH16 RAM recordings over wired Ethernet.
+"""Read completed Phantom RAM recordings over wired Ethernet.
 
 Protocol reference: PH16 camera protocol, v2.3, sections 3, 4.7 and 5.9–5.11.
 Acquisition stays under the camera operator's control. PCA requests corrected,
@@ -16,6 +16,8 @@ from time import monotonic
 import numpy as np
 from event_ximg import IncompleteXimgFrame, XimgError, XimgStream, decode_region, matches_standard
 from event_ximg_receiver import PacketReceiver, can_receive
+
+READABLE_PROTOCOLS = {'16', '23'}
 
 
 class CameraReadError(RuntimeError):
@@ -238,11 +240,11 @@ def list_recordings(host, cancelled=lambda: False):
     host = validate_address(host)
     channel = _Channel(host, cancelled)
     try:
-        if channel.get('info.pver').strip() != '16':
-            raise CameraReadError('This camera must support the Phantom PH16 protocol.')
+        if channel.get('info.pver').strip() not in READABLE_PROTOCOLS:
+            raise CameraReadError('Event Finder supports Phantom PH16 and PH23 cameras.')
         features = _tokens(channel.get('info.features'))
         if 'ATTACH' not in features:
-            raise CameraReadError('This camera does not advertise the PH16 image connection used by Event Finder.')
+            raise CameraReadError('This camera does not advertise the image connection used by Event Finder.')
         formats = _tokens(channel.get('info.imgformats'))
         wired_ximg = False
         camera_mac = None

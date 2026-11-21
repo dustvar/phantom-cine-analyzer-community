@@ -184,7 +184,7 @@ class WorkspaceJobMixin:
             self.vm.track_data={};self.vm.meas_data={'_curr_i':0};self.vm.cine_path='';self.cine_path=''
             self.vm.active_tool=None;self.vm.active_object=None
             for pane in self.workspace_panes:pane.graph.scene().clear();pane.hide()
-            self.cine_path_disp.setText('No Cine Selected');self.metadata_table.setRowCount(0)
+            self.cine_path_disp.set_source('');self.metadata_table.setRowCount(0)
             self.track_canvas.redraw({})
         self._restore_job_view(payload)
         c.saved_states=deepcopy(payload['comparator']['states'])

@@ -1,4 +1,4 @@
-"""Find PH16 cameras using the read-only broadcast in Phantom protocol §6."""
+"""Find PH16 and PH23 cameras using Phantom's wired discovery broadcast."""
 from contextlib import ExitStack
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Interface, IPv4Network
@@ -14,8 +14,9 @@ from PySide6.QtNetwork import QNetworkInterface
 _PORT = 7380
 _QUERY = b'phantom?'
 _XIP_NETWORK = IPv4Network('172.16.0.0/16')  # Conventional Phantom 10 Gb camera network
+_GIGABIT_NETWORK = IPv4Network('100.100.0.0/16')
 _REPLY = re.compile(
-    rb'PH16[ \t]+7115[ \t]+[0-9]{1,10}(?:\.[0-9]{1,10}){0,3}[ \t]+'
+    rb'PH(?:16|23)[ \t]+7115[ \t]+[0-9]{1,10}(?:\.[0-9]{1,10}){0,3}[ \t]+'
     rb'([0-9]{1,10})(?:[ \t]+"([\x20-\x21\x23-\x7e]{0,96})")?'
 )
 
@@ -27,20 +28,24 @@ class DiscoveredCamera:
     name: str = ''  # Optional user-assigned camera name, distinct from its model
 
 
-def _wired_addresses():
+def wired_interfaces():
     flag = QNetworkInterface.InterfaceFlag
     required = flag.IsRunning | flag.IsUp | flag.CanBroadcast
-    addresses = []
     for adapter in QNetworkInterface.allInterfaces():
         if adapter.type() != QNetworkInterface.InterfaceType.Ethernet:
             continue
         if adapter.flags() & required != required:
             continue
+        addresses = []
         for entry in adapter.addressEntries():
             if entry.ip().toIPv4Address() and 1 <= entry.prefixLength() <= 30:
-                address = IPv4Interface((entry.ip().toString(), entry.prefixLength()))
-                addresses.append((adapter.index(), address))
-    return list(dict.fromkeys(addresses))
+                addresses.append(IPv4Interface((entry.ip().toString(), entry.prefixLength())))
+        yield adapter, tuple(dict.fromkeys(addresses))
+
+
+def _wired_addresses():
+    return [(adapter.index(), address) for adapter, addresses in wired_interfaces()
+            for address in addresses]
 
 
 def _parse(data, host, interface):
@@ -120,3 +125,16 @@ def _search(addresses, cancelled, timeout=1.6):
 def discover_cameras(cancelled=lambda: False):
     """Discover directly reachable cameras on active wired IPv4 interfaces."""
     return _search(_wired_addresses(), cancelled)
+
+
+def empty_discovery_hint():
+    addresses = [interface for _, interface in _wired_addresses()]
+    if not addresses:
+        return 'No active Ethernet adapter with an IPv4 address was found.'
+    hosts = ', '.join(str(address.ip) for address in addresses)
+    hint = 'Check that the camera and wired adapter use the same subnet, then refresh.'
+    if all(address.ip in _XIP_NETWORK for address in addresses):
+        hint = 'For a camera labeled 100.100.x.x, give the adapter a different address on that subnet, then refresh.'
+    elif all(address.ip in _GIGABIT_NETWORK for address in addresses):
+        hint = 'For a camera labeled 172.16.x.x, give the adapter a different address on that subnet, then refresh.'
+    return f'No camera replied on {hosts}. {hint}'

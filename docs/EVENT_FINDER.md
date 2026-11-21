@@ -1,6 +1,6 @@
 # Event Finder
 
-Use **Tools → Event Finder** after recording. It searches for changes in a
+Use **Analysis → Event Finder** after recording. It searches for changes in a
 rectangle and gives you native Cine frame numbers, including negative
 pre-trigger numbers.
 
@@ -22,7 +22,7 @@ pre-trigger numbers.
 
 ## Read a completed camera recording on the Mac
 
-Connect the camera through the Mac’s Ethernet adapter, then open **Tools → Event Finder → Camera recordings…**.
+Connect the camera through the Mac’s Ethernet adapter, then open **Analysis → Event Finder → Camera recordings…**.
 PCA searches the connected Ethernet interfaces using Phantom’s discovery protocol.
 With one camera, its completed RAM recordings appear automatically. With several cameras,
 select the camera you want, then select a RAM Cine and click **Open recording**.

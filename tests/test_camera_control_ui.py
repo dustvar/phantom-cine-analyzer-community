@@ -228,6 +228,34 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertEqual(self.writes()[-1], dict(post_frames=20))
         self.assertTrue(p.trigger_button.isEnabled())
 
+    def test_brightness_curve_paused_preview_click_drag_presets_and_reset(self):
+        p = self.panel
+        pixels = np.tile(np.arange(256, dtype=np.uint8), (8, 1))
+        p.view.set_frame(pixels)
+        QTest.mouseClick(p.brightness_button, Qt.LeftButton)
+        editor = p.curve_editor
+        self.wait(editor.isVisible)
+        editor.preset.setCurrentIndex(editor.preset.findData('linear'))
+        self.assertEqual(p.view.image.pixelColor(128, 1).red(), 128)
+        graph = editor.graph
+        start = graph.point_at(.5, .5).toPoint()
+        end = graph.point_at(.5, .78).toPoint()
+        QTest.mousePress(graph, Qt.LeftButton, pos=start)
+        QTest.mouseMove(graph, end)
+        QTest.mouseRelease(graph, Qt.LeftButton, pos=end)
+        self.assertEqual(editor.preset.currentData(), 'custom')
+        self.assertEqual(len(graph.curve.points), 3)
+        self.assertGreater(p.view.image.pixelColor(128, 1).red(), 185)
+        QTest.keyClick(graph, Qt.Key_Delete)
+        self.assertEqual(len(graph.curve.points), 2)
+        for name in ('contrast', 'shadows'):
+            editor.preset.setCurrentIndex(editor.preset.findData(name))
+            self.assertEqual(p.view.mode, name)
+        editor.reset.click()
+        self.assertEqual(p.view.mode, 'auto')
+        self.assertEqual(editor.custom.points, ((0., 0.), (1., 1.)))
+        self.assertEqual(self.calls, [])
+
     def test_trigger_position_sends_once_on_mouse_release_and_supports_keyboard_steps(self):
         self.settings = replace(armed(), post_frames=249)
         self.start()

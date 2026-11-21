@@ -398,12 +398,13 @@ class ViewerControlsTest(unittest.TestCase):
         self.assertEqual(self.window.hybrid_search_multiplier.value(), 1.5)
 
     def test_seek_bar_keeps_endpoints_and_slider_below_video(self):
-        layout=self.window.seek_bar.layout()
+        layout=self.window.seek_track.layout()
         self.assertIs(layout.itemAt(0).widget(),self.window.frame_first_button)
         self.assertIs(layout.itemAt(1).widget(),self.window.frame_slider)
         self.assertIs(layout.itemAt(2).widget(),self.window.frame_last_button)
-        self.assertIs(layout.itemAt(3).widget(),self.window.group_playback_toggle)
-        self.assertIs(layout.itemAt(4).widget(),self.window.transport_toggle)
+        actions=self.window.seek_actions.layout()
+        self.assertIs(actions.itemAt(0).widget(),self.window.group_playback_toggle)
+        self.assertIs(actions.itemAt(1).widget(),self.window.transport_toggle)
 
     def test_current_frame_label_stays_in_playback_header(self):
         self.window.resize(1200, 800)

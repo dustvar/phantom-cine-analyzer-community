@@ -91,7 +91,7 @@ class GroupPlayback(QObject):
         self.toggle.setAccessibleName('Synchronize visible Cines by trigger time')
         self.toggle.hide();owner.group_playback_toggle=self.toggle
         self.toggle.installEventFilter(self);self._size_toggle()
-        owner.seek_bar.layout().insertWidget(owner.seek_bar.layout().count()-1,self.toggle)
+        owner.seek_actions.layout().insertWidget(0, self.toggle)
         self.toggle.toggled.connect(self._toggled)
         for name in ('timeline_button','fps_button','multiply_button','add_video_button',
                      'split_button','timeline_undo_button','timeline_redo_button'):

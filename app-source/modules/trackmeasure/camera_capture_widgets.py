@@ -256,9 +256,9 @@ def add_custom(menu, editor):
 
 
 TRIGGER_STYLE = """
-QSlider::groove:horizontal { height: 7px; border-radius: 3px; background: #404b57; }
-QSlider::sub-page:horizontal { background: #3caa84; border-radius: 3px; }
-QSlider::add-page:horizontal { background: #d46a6d; border-radius: 3px; }
+QSlider::groove:horizontal { height: 7px; border-radius: 0px; background: #404b57; }
+QSlider::sub-page:horizontal { background: #3caa84; border-radius: 0px; }
+QSlider::add-page:horizontal { background: #d46a6d; border-radius: 0px; }
 QSlider::handle:horizontal { width: 10px; margin: -4px 0; border: 1px solid #f0f4f7;
-                            background: #e4e9f0; border-radius: 4px; }
+                            background: #e4e9f0; border-radius: 0px; }
 """

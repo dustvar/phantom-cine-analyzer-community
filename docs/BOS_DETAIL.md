@@ -1,6 +1,6 @@
 # Seeing fine structure in a BOS recording
 
-Open **Tools → Background-Oriented Schlieren (BOS)**. Pin a still frame, then
+Open **Analysis → Schlieren**. Pin a still frame, then
 draw a rectangle over the patterned background. Each preview or exported frame
 is measured against this fixed reference.
 

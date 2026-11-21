@@ -14,7 +14,7 @@ class BOSRangeBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('bosRangeBar')
-        self.setStyleSheet('QFrame#bosRangeBar {background: #282f39; border: 1px solid #505d6c; border-radius: 5px;}')
+        self.setStyleSheet('QFrame#bosRangeBar {background: #282f39; border: 1px solid #505d6c; border-radius: 0px;}')
         self.first_native = 0
         self.count = 0
         self.current_index = 0

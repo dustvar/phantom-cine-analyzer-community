@@ -142,7 +142,6 @@ class WorkspaceJobUITests(unittest.TestCase):
         self.assertEqual(other.bos_panel.settings(), dict(settings, path=str(moved.resolve())))
         self.assertEqual(other.bos_panel.last_result['index'], 4)
         self.assertIsNotNone(other.bos_panel.last_result['field'])
-        other.mode_menu.aboutToShow.emit()
         self.assertTrue(other.mode_actions[other.bos_tool].isChecked())
         other.viewer_tool.click()
         self.assertIs(other.workflow_stack.currentWidget(), other.tab_splitter)

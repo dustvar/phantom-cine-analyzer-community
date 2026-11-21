@@ -107,6 +107,23 @@ class CameraControlTests(unittest.TestCase):
         self.assertTrue(self.session.status().can_apply)
         self.assertEqual(self.veo.writes,[])
 
+    def test_ph23_monitor_reads_frames_and_blocks_all_acquisition_commands(self):
+        self.veo.fields['info.pver'] = '23'
+        status = self.session.status()
+        self.assertEqual(status.protocol, '23')
+        np.testing.assert_array_equal(self.session.preview(), self.veo.frame)
+        for state in (['RDY DEF PRE ACT','RDY DEF'], ['RDY DEF PRE','WTR DEF ABL ACT'],
+                      ['RDY DEF PRE ACT','TRG DEF STR']):
+            self.veo.state = state
+            status = self.session.status()
+            self.assertFalse(any((status.can_apply, status.can_arm, status.can_trigger,
+                                  status.can_csr, status.replaceable)))
+            for action in (lambda: self.session.apply(fps=1000), self.session.arm,
+                           lambda: self.session.trigger(1), self.session.csr):
+                with self.assertRaises(ValueError):
+                    action()
+        self.assertEqual(self.veo.writes, [])
+
     def test_monitor_can_request_shadow_bits_or_the_fast_eight_bit_format(self):
         dark = np.arange(21, dtype='<u2').reshape(3, 7) * 16
         self.veo.frame = dark

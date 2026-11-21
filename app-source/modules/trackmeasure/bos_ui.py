@@ -171,7 +171,6 @@ class BOSPanel(QWidget):
         super().__init__(parent)
         self.setObjectName('bos_workspace')
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet('QWidget#bos_workspace {background-color: #20242b;}')
         self.state = default_bos_settings()
         self.remembered = {}
         self.session = self.job = self.last_result = self.presented_state = None

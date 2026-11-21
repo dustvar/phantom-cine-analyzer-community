@@ -10,9 +10,19 @@ keys, or private build credentials are included in this repository.
 
 ## What changed
 
-- **Camera Control (1.14.21).** Open **Tools → Camera Control** to monitor a connected Phantom
-  over Ethernet. **Auto brightness**, **Standard**, and **Linear** change how the live image
-  appears on screen.
+- **Terminal workspace (1.15.0 beta).** Choose Cines and Camera Control are the two startup actions.
+  The left rail puts Calibrate in its own Setup section above analysis and measurement.
+  Info, Adjust and the tracking inspector open from the header and close with a second click.
+  The Settings menu contains interface color and help.
+- **Camera monitor.** Brightness opens an editable curve with Auto, Linear, Standard, shadow
+  and contrast presets. Drag the displayed line to add a control point. Reset restores Auto.
+  The curve affects the monitor only. Cycle the purple guides or inspect live and recorded
+  frames with the mouse wheel, trackpad pinch and drag. The yellow navigator shows the
+  visible area inside the full frame.
+- **Camera Control.** The standalone C980 (PH23) supports discovery, status and live Ethernet
+  preview. Its acquisition controls are read-only. On the tested VEO 1310S (PH16), capture
+  settings, arm, trigger and CSR are also available. The Ethernet dialog shows negotiated
+  link speed, addresses and subnet information for the wired adapter.
   Open the frame-rate menu and choose an output resolution under **Standard** or **Binned**
   for the desired fps. For example, at 100 fps a VEO 1310S with 2×2 binning can use the
   full sensor at 1280 × 960 standard or 640 × 480 binned. The exposure menu puts the
@@ -24,7 +34,7 @@ keys, or private build credentials are included in this repository.
   **Black reference (CSR)** is available on supported cameras.
   **Arm** starts buffering in RAM and **Trigger** captures the event. Use
   **Event Finder → Camera recordings…** to review a completed Cine. Camera Control
-  uses the documented Phantom PH16 Ethernet protocol and needs no separate SDK installation.
+  communicates directly over Ethernet.
 
 - **Event Finder (1.14.16).** Search a rectangle or a 4 × 4 brightness probe in a saved Cine or completed
   Phantom RAM recording. Choose an available camera from the list or enter its IP address.

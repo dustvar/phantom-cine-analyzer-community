@@ -3,26 +3,30 @@ from math import ceil, floor
 from time import monotonic
 
 from PySide6.QtCore import QSettings, QSize, Qt, QSignalBlocker, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from app_runtime import user_data_dir
 from camera_control_ui_worker import CameraWorker
-from camera_monitor import MonitorLevels
+from camera_ethernet_ui import CameraEthernetDialog
+from camera_monitor import LINEAR_CURVE, MonitorLevels
+from camera_curve_ui import MonitorCurveEditor
 from camera_capture_widgets import (TRIGGER_STYLE, add_custom, duration, geometry_label,
                                     number, preset_field)
 from event_camera import validate_address
 from event_camera_picker import _Discover
+from view_inspection import LiveInspectionView
 
 
-class _Preview(QWidget):
+class _Preview(LiveInspectionView):
     def __init__(self):
         super().__init__()
         self.image = self.pixels = None
         self.levels = MonitorLevels()
         self.mode = 'auto'
+        self.curve = LINEAR_CURVE
         self.message = 'Connect a camera to see the live image.'
         self.setAccessibleName('Live camera image')
         self.setMinimumSize(160, 110)
@@ -35,35 +39,21 @@ class _Preview(QWidget):
         self.image = self.pixels = None
         self.levels.reset()
         self.message = message
-        self.update()
+        self.refresh_image()
 
-    def set_mode(self, mode):
+    def set_mode(self, mode, curve=LINEAR_CURVE):
         self.mode = mode
+        self.curve = curve
         if self.pixels is not None:
             self.set_frame(self.pixels)
 
     def set_frame(self, pixels):
         self.pixels = pixels
-        array = self.levels.render(pixels, self.mode)
+        array = self.levels.render(pixels, self.mode, curve=self.curve)
         height, width = array.shape
         self.image = QImage(array.data, width, height, int(array.strides[0]),
                             QImage.Format_Grayscale8).copy()
-        self.update()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor('#101317'))
-        if self.image is None:
-            p.setPen(QColor('#b6beca'))
-            p.drawText(self.rect().adjusted(10, 5, -10, -5),
-                       Qt.AlignCenter | Qt.TextWordWrap, self.message)
-        else:
-            size = self.image.size().scaled(self.size(), Qt.KeepAspectRatio)
-            box = self.rect()
-            box.setSize(size)
-            box.moveCenter(self.rect().center())
-            p.drawImage(box, self.image)
-        p.end()
+        self.refresh_image()
 
 
 def _label(text=''):
@@ -129,7 +119,14 @@ class CameraControlPanel(QWidget):
         top.addWidget(self.cameras)
         self.refresh = QPushButton('Refresh')
         self.refresh.setAccessibleName('Refresh cameras')
+        network = QPushButton('Ethernet')
+        network.setAccessibleName('Ethernet setup')
+        network.setToolTip('Check the wired link speed and camera subnet.')
+        self.ethernet = CameraEthernetDialog(self)
+        network.clicked.connect(self.ethernet.open)
+        self.ethernet.finished.connect(lambda: self._discover())
         self.connect_button = QPushButton('Connect')
+        top.addWidget(network)
         top.addWidget(self.refresh)
         top.addWidget(self.connect_button)
         layout.addLayout(top)
@@ -151,13 +148,14 @@ class CameraControlPanel(QWidget):
         self.preview_button = QPushButton('Pause preview')
         self.preview_button.setToolTip('Pause the monitor while the camera continues operating.')
         live_row.addWidget(self.preview_info, 1)
-        self.monitor_mode = QComboBox()
-        self.monitor_mode.setAccessibleName('Monitor brightness')
-        for label, mode in [('Auto brightness', 'auto'), ('Standard', 'standard'), ('Linear', 'linear')]:
-            self.monitor_mode.addItem(label, mode)
-        self.monitor_mode.setToolTip('Monitor brightness affects only this preview. Linear shows the camera signal directly.')
-        self.monitor_mode.currentIndexChanged.connect(lambda: self.view.set_mode(self.monitor_mode.currentData()))
-        live_row.addWidget(self.monitor_mode)
+        self.curve_editor = MonitorCurveEditor(lambda: self.view.levels.gain, self)
+        self.brightness_button = QPushButton('Brightness · Auto')
+        self.brightness_button.setAccessibleName('Edit monitor brightness curve')
+        self.brightness_button.setToolTip('Open the monitor brightness curve and presets. '
+                                          'Adjustments affect the preview only.')
+        self.brightness_button.clicked.connect(lambda: self.curve_editor.toggle_at(self.brightness_button))
+        self.curve_editor.changed.connect(self._brightness_changed)
+        live_row.addWidget(self.brightness_button)
         live_row.addWidget(self.preview_button)
         left.addLayout(live_row)
 
@@ -269,6 +267,11 @@ class CameraControlPanel(QWidget):
         worker.finished.connect(self._finished)
         worker.start()
 
+    def _brightness_changed(self, mode, curve):
+        label = 'Auto' if mode == 'auto' else self.curve_editor.preset.currentText()
+        self.brightness_button.setText(f'Brightness · {label}')
+        self.view.set_mode(mode, curve)
+
     def set_active(self, active):
         if self.active == active:
             return
@@ -288,6 +291,7 @@ class CameraControlPanel(QWidget):
         return all(w.isFinished() for w in self.workers)
 
     def _stop(self):
+        self.curve_editor.hide()
         if self.discovery is not None:
             self.discovery.requestInterruption()
             self.discovery = None
@@ -424,7 +428,9 @@ class CameraControlPanel(QWidget):
         self.csr_button.setText(f'CSR · {self.snapshot.csr_remaining:,} frames left'
                                 if ready and self.snapshot.csr_remaining else 'Black reference (CSR)…')
         self.draft_note.setVisible(ready)
-        if self.typing:
+        if ready and self.snapshot.protocol != '16':
+            self.draft_note.setText(f'PH{self.snapshot.protocol} · Monitor only. Capture controls are unavailable.')
+        elif self.typing:
             self.draft_note.setText('Press Enter or Tab to set the value.')
         elif self.drag_start is not None:
             self.draft_note.setText('Release to set the trigger position.')
@@ -526,7 +532,7 @@ class CameraControlPanel(QWidget):
         if 'TRG' in active and 'ACT' in active:
             state = f'Recording after trigger · Cine {s.active_slot}'
         elif 'WTR' in active and 'ACT' in active:
-            state = f'{"Armed" if s.can_trigger else "Buffering"} · Cine {s.active_slot}'
+            state = f'{"Armed" if "ABL" in active else "Buffering"} · Cine {s.active_slot}'
         else:
             count = sum(1 for n, flags in s.slots if n > 0 and 'STR' in flags)
             state = f'{count} stored {"Cine" if count == 1 else "Cines"}' if count else 'Ready to arm'

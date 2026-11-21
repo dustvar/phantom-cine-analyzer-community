@@ -106,7 +106,7 @@ class SectionTimeline(QWidget):
                     painter.drawPath(curve); painter.drawLine(2,11,2,17);painter.drawLine(18,3,18,9)
                 painter.end()
                 button.setIcon(QIcon(pix))
-                button.setStyleSheet('QToolButton { background: #293440; border: 1px solid #8294aa; border-radius: 5px; padding: 0; } QToolButton:hover { background: #43566b; }')
+                button.setStyleSheet('QToolButton { background: #293440; border: 1px solid #8294aa; border-radius: 0px; padding: 0; } QToolButton:hover { background: #43566b; }')
                 button.setAccessibleName(f'Edit transition: section {previous + 1} to {i + 1}')
                 detail = f"{section['ramp']:g} s · {section['ramp_place']}" if section['ramp'] else 'Cut · add a speed transition'
                 button.setToolTip(f'Section {previous+1} → {i+1}\nCut at {frame_label(edit,section["start"],source_first_frame)}\n{detail}\n' + ('New video join · click to edit effects' if is_video_join(edit,i) else 'Click to edit · drag to move cut'))

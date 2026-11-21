@@ -10,7 +10,8 @@ from time import monotonic
 import numpy as np
 
 from camera_capture_modes import RateOption, published_modes, rate_options
-from event_camera import CameraReadError, CameraCommandError, _Channel, _stored, _tokens, _trigger, validate_address
+from event_camera import (READABLE_PROTOCOLS, CameraReadError, CameraCommandError, _Channel,
+                          _stored, _tokens, _trigger, validate_address)
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class ControlStatus:
     supports_csr: bool = False
     capping_shutter: bool = False
     csr_remaining: int | None = 0
+    protocol: str = '16'
 
     def rate_options(self):
         return rate_options(self)
@@ -74,18 +76,18 @@ class ControlStatus:
     @property
     def can_apply(self):
         flags = self._active_flags
-        return (not self.direct_recording and not self.csr_remaining and 'TRG' not in flags
+        return (self.protocol == '16' and not self.direct_recording and not self.csr_remaining and 'TRG' not in flags
                 and bool({'PRE', 'WTR'} & flags))
 
     @property
     def can_arm(self):
-        return (not self.direct_recording and not self.csr_remaining and 'PRE' in self._active_flags
+        return (self.protocol == '16' and not self.direct_recording and not self.csr_remaining and 'PRE' in self._active_flags
                 and any(n and 'RDY' in flags for n, flags in self.slots))
 
     @property
     def can_trigger(self):
         flags = self._active_flags
-        return (not self.direct_recording and not self.csr_remaining and self.active_slot is not None and
+        return (self.protocol == '16' and not self.direct_recording and not self.csr_remaining and self.active_slot is not None and
                 {'WTR', 'ABL'} <= flags and not {'TRG', 'STR', 'PRE'} & flags)
 
 
@@ -154,8 +156,9 @@ class CameraControl:
         try:
             if self.channel is None:
                 channel = self.channel = _Channel(self.host, self.cancelled)
-                if channel.get('info.pver') != '16':
-                    raise CameraReadError('Camera Control requires the Phantom PH16 protocol.')
+                self.protocol = channel.get('info.pver')
+                if self.protocol not in READABLE_PROTOCOLS:
+                    raise CameraReadError('Camera Control supports Phantom PH16 and PH23 cameras.')
                 serial = channel.get('info.serial')
                 if not serial.isdigit() or (self.serial and self.serial != serial):
                     raise CameraReadError('The camera identity changed. Select the camera again.')
@@ -204,7 +207,7 @@ class CameraControl:
         remaining = self._limit(channel, 'auto.bref_progress') if csr else 0
         slots = _cine_states(channel.request('cstats'))
         replaceable = ()
-        if (not direct and not remaining and {'PRE','ACT'} <= slots[0][1] and
+        if (self.protocol == '16' and not direct and not remaining and {'PRE','ACT'} <= slots[0][1] and
                 not any(n and 'RDY' in flags for n, flags in slots)):
             replaceable = tuple(StoredCine(n, self.serial, _trigger(channel, n))
                                 for n, flags in slots if n and 'STR' in flags)
@@ -213,7 +216,7 @@ class CameraControl:
                              None if self.min_exp_ns is None else self.min_exp_ns / 1000,
                              None if self.dead_ns is None else self.dead_ns / 1000, manual, internal, direct,
                              binning, self.published_rates, csr, 'SHTR' in self.features,
-                             None if remaining is None else int(remaining))
+                             None if remaining is None else int(remaining), self.protocol)
 
     def status(self):
         with self._connection() as channel:
@@ -239,8 +242,9 @@ class CameraControl:
             channel._read_pixels(pixels)
             return pixels if full_precision or fmt == '8' else (pixels >> 8).astype(np.uint8)
 
-    @staticmethod
-    def _command(channel, wire):
+    def _command(self, channel, wire):
+        if self.protocol != '16':
+            raise ValueError(f'PH{self.protocol} is in monitor-only mode.')
         try:
             response = channel.request(wire)
         except CameraCommandError:
