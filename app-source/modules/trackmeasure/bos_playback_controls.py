@@ -31,8 +31,7 @@ class ReplaySpeed(QWidget):
         self.number.valueChanged.connect(self.sync_slider)
         for label, delta in [('‹', -10), ('›', 10)]:
             button = QPushButton(label)
-            button.setStyleSheet('min-width: 0; padding: 2px;')
-            button.setFixedWidth(28)
+            button.setProperty('analysisStep', True)
             action = 'Decrease' if delta < 0 else 'Increase'
             button.setAccessibleName(f'{action} playback speed by 10 fps')
             button.setToolTip(f'{action} by 10 fps')

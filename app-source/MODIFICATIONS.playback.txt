@@ -534,3 +534,14 @@ Camera Control 1.14.21
 - Camera Control identifies the connected model, sensor, RAM and serial number.
   Ethernet identifies the active adapter and distinguishes link speed from adapter capability.
   Its details include camera and adapter addresses, recording memory and storage media.
+
+1.15.2 Beta — Panel layout and compact controls
+- Put section titles inside their panels in Camera Control, Schlieren and Video Overlay.
+  Capture fields and preset buttons align; the frame-rate picker shows supported modes.
+- In compact Viewer layouts, open editors share the toolbox space. Playback docks
+  below narrow previews and the video tools scroll when the timeline reduces their height.
+- Kept Schlieren settings within the sidebar and made frame-step targets consistent
+  across Schlieren, Video Overlay and Event Finder.
+- Prevented overlapping tools in compact BOS Record Studio. Report export now explains
+  which measurements it needs. Tracking graphs and reports use the selected time unit
+  for trigger-relative timestamps, including frames before the trigger.

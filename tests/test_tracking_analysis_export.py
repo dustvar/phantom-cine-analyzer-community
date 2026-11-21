@@ -211,6 +211,50 @@ class AnalysisExportUITests(unittest.TestCase):
         w.track_canvas.redraw(vm.track_data)
         return vm.track_data[0]
 
+    def test_report_availability_and_recorded_trigger_units(self):
+        import csv
+        import struct
+        w, vm = self.w, self.w.vm
+        source = self.root / 'trigger.cine'
+        workspace.motion_cine(source)
+        with source.open('r+b') as stream:
+            stream.seek(36)
+            trigger = struct.unpack('<Q', stream.read(8))[0] + round(.0015 * 2**32)
+            stream.seek(36)
+            stream.write(struct.pack('<Q', trigger))
+        self.assertTrue(vm.load_cine_workspace_cb([str(source)]))
+        w.nav_buttons[w.two_pt_tool].click()
+        self.assertFalse(w.report_action.isEnabled())
+        vm.graph_click_cb((30, 40)); vm.active_frame = 1; vm.graph_click_cb((60, 80))
+        self.assertTrue(w.report_action.isEnabled())
+        w.nav_buttons[w.track_tool].click()
+        self.assertFalse(w.report_action.isEnabled())
+        vm.track_type = 'Manual'
+        vm._update_track_type()
+        vm.active_tool.track_select = True
+        for frame in range(8):
+            vm.active_frame = frame
+            vm.graph_click_cb((150 + frame, 120))
+        track = vm.track_data[0]
+        self.assertTrue(w.report_action.isEnabled())
+        expected_s = (np.arange(8) - 3) * .0005
+        for units, factor in [('s', 1), ('ms', 1000), ('μs', 1e6)]:
+            vm.time_selection_cb(units)
+            np.testing.assert_allclose(track['frame_ts_trig'], expected_s * factor, atol=3e-7 * factor)
+        output = self.root / 'report.csv'
+        vm.autogen_report_name = False
+        with patch('simplemeas_ui.QFileDialog.getSaveFileName', return_value=(str(output), '')), \
+             patch('pdfreport.PDFReport.generate_pdf'):
+            w.report_action.trigger()
+        with output.open(newline='') as file:
+            rows = list(csv.reader(file))
+        self.assertIn(['Cine File', str(source)], rows)
+        n = next(i for i, row in enumerate(rows) if row and row[0] == 'Frame #')
+        self.assertEqual(rows[n][1:3], ['Time from Trigger (us)', 'Time from Zero (us)'])
+        measured = np.array([[float(row[1]), float(row[2])] for row in rows[n+1:] if row])
+        np.testing.assert_allclose(measured[:, 0], expected_s * 1e6, atol=.3)
+        np.testing.assert_allclose(measured[:, 1], np.arange(8) * 500, atol=.3)
+
     def test_save_action_exports_graph_in_chosen_units_from_worker(self):
         w=self.w;w.save_job_menu.aboutToShow.emit();self.assertFalse(w.export_tracking_action.isEnabled())
         self.add_track();w.save_job_menu.aboutToShow.emit();self.assertTrue(w.export_tracking_action.isEnabled())

@@ -67,6 +67,7 @@ class FakeReport:
 
 class FakeReportHandler:
     def __init__(self):
+        self.active_type = ''
         self.active_report = FakeReport()
 
 

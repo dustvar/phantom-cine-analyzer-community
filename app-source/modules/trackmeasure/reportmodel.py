@@ -44,7 +44,7 @@ class BaseReport():
 		return self._cine_path
 	@cine_path.setter
 	def cine_path(self, new_path):
-		self._cine_path = new_path.replace('/','\\')
+		self._cine_path = os.path.normpath(new_path) if new_path else ''
 		# reports are saved next to active cine with childname_datetimestamp
 		self.report_path = os.path.join(os.path.dirname(self.cine_path), f'{type(self).__name__}_{datetime.now().strftime("%H%M%S_%m%d%Y")}.csv')
 

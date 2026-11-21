@@ -9,6 +9,7 @@ from matplotlib.font_manager import FontProperties
 from PySide6.QtCore import Qt, QTimer, QEvent, QSignalBlocker
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QToolButton, QLabel, QComboBox, QSizePolicy, QMenu
+from cine_metadata import capture_time_seconds
 from tracking_graph_data import (LENGTH_UNITS, LENGTH_METERS, normalize_length_unit,
                                  metric_mode, metric_units, graph_series)
 
@@ -234,7 +235,8 @@ class TrackingGraph(FigureCanvas):
         if handler is not None:
             try:
                 stamp = handler.get_timestamp(frame)
-                return float(stamp['time_from_trig' if len(contexts)>1 else 'time_from_start'])*getattr(vm, 'time_scale', 1)
+                seconds = capture_time_seconds(stamp, from_trigger=len(contexts) > 1)
+                return float(seconds) * getattr(vm, 'time_scale', 1)
             except (IndexError, KeyError, ValueError, TypeError): pass
         return None
 

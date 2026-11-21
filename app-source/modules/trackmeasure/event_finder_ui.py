@@ -160,7 +160,7 @@ class EventFinderPanel(QWidget):
         self.native.setGroupSeparatorShown(True)
         self.native.valueChanged.connect(self._native_seek)
         for button in (self.prev, self.next):
-            button.setFixedWidth(32)
+            button.setProperty('analysisStep', True)
             button.setToolTip(button.accessibleName())
             nav.addWidget(button)
         nav.addWidget(self.slider, 1)

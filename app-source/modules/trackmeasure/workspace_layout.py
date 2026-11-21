@@ -2,7 +2,7 @@
 from shiboken6 import isValid
 from PySide6.QtCore import Qt,QTimer,QSignalBlocker,QPoint,QEvent
 from PySide6.QtWidgets import (QWidget,QFrame,QVBoxLayout,QHBoxLayout,QGridLayout,
-    QSplitter,QLabel,QToolButton,QPushButton,QSizePolicy,QComboBox,QSpinBox,QLayout)
+    QSplitter,QLabel,QToolButton,QPushButton,QSizePolicy,QComboBox,QSpinBox,QLayout,QScrollArea)
 
 
 class WorkspaceLayoutMixin:
@@ -51,9 +51,17 @@ class WorkspaceLayoutMixin:
 
         # Move non-timeline editor actions to the side, leaving the horizontal
         # timeline available on demand instead of consuming half the video area.
-        self.viewer_side_tools=QFrame();self.viewer_side_tools.setObjectName('viewer_side_tools')
+        self.viewer_side_tools = QScrollArea()
+        self.viewer_side_tools.setObjectName('viewer_side_tools')
+        self.viewer_side_tools.setWidgetResizable(True)
+        self.viewer_side_tools.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.viewer_side_tools.setFixedWidth(184)
-        side=QVBoxLayout(self.viewer_side_tools);side.setContentsMargins(8,8,8,8);side.setSpacing(6)
+        tools_content = QWidget()
+        self.viewer_side_tools.setWidget(tools_content)
+        side = QVBoxLayout(tools_content)
+        side.setSizeConstraint(QLayout.SetMinimumSize)
+        side.setContentsMargins(8, 8, 8, 8)
+        side.setSpacing(6)
         side.addWidget(QLabel('Video tools'))
         self.timeline_toggle=QPushButton('Show timeline');self.timeline_toggle.setCheckable(True)
         self.timeline_toggle.setToolTip('Show or hide the segment and speed editor.')
@@ -101,6 +109,12 @@ class WorkspaceLayoutMixin:
         self.transport_toggle=QToolButton();self.transport_toggle.setText('Playback');self.transport_toggle.setCheckable(True);self.transport_toggle.setChecked(True)
         self.transport_toggle.setToolTip('Show / hide floating playback controls')
         self.transport_toggle.toggled.connect(self._sync_video_layout)
+        self.video_tools_back = QToolButton()
+        self.video_tools_back.setText('‹ Video tools')
+        self.video_tools_back.setToolTip('Close the open viewer panels and return to the editing tools')
+        self.video_tools_back.clicked.connect(self._return_to_video_tools)
+        self.video_tools_back.hide()
+        actions_row.addWidget(self.video_tools_back)
         actions_row.addWidget(self.transport_toggle)
         self._seek_arrangement = None
         self._arrange_seek_bar('single')
@@ -191,7 +205,6 @@ class WorkspaceLayoutMixin:
             self.setup_area.setVisible(guided or busy);self.run_panel.setVisible(busy)
         viewer=self.current_tool is self.viewer_tool and not guided
         self.frame_slider.set_viewer_mode(viewer)
-        self.viewer_side_tools.setVisible(viewer and bool(self.cine_path))
         self.viewer_controls.setVisible(viewer and self.timeline_toggle.isChecked())
         self.timeline_toggle.setText('Hide timeline' if self.timeline_toggle.isChecked() else 'Show timeline')
         self.finish_card.hide()
@@ -237,12 +250,16 @@ class WorkspaceLayoutMixin:
     def _position_playback(self):
         if not isValid(self) or not getattr(self,'_layout_ready',False):return
         if not isValid(self.workspace_grid_widget) or not isValid(self.playback_card):return
-        # A shared transport must not cover neighboring videos in narrow rows
-        # or consume most of a short stacked pane. Keep it beside the seek bar.
-        multiple=sum(pane.isVisible() for pane in self.workspace_panes)>1
+        self._layout_viewer_panels()
+        index = max(0, getattr(self.vm, 'active_cine_index', 0)) if self.vm else 0
+        viewport = self.workspace_panes[index].graph.viewport()
+        multiple = sum(pane.isVisible() for pane in self.workspace_panes) > 1
+        # A single preview also needs a dock if the inspector leaves too little room.
+        float_fits = viewport.width() >= self.playback_card.sizeHint().width() + 20
+
         docked=self.playback_card.parentWidget() is self.seek_bar
         visible=bool(self.cine_path) and self.transport_toggle.isChecked() and self.current_tool is not self.scale_tool
-        if multiple:
+        if multiple or not float_fits:
             if not docked:
                 self.playback_card.setParent(self.seek_bar)
                 self.playback_card.setVisible(visible)
@@ -268,9 +285,6 @@ class WorkspaceLayoutMixin:
             self.playback_card.setParent(self.workspace_grid_widget)
             self.playback_card.setVisible(visible)
         self._arrange_seek_bar('single')
-        index=max(0,getattr(self.vm,'active_cine_index',0)) if self.vm else 0
-        pane=self.workspace_panes[index]
-        viewport=pane.graph.viewport()
         corner=viewport.mapTo(self.workspace_grid_widget,viewport.rect().bottomRight())
         self.playback_card.move(max(0,corner.x()-self.playback_card.width()-10),max(0,corner.y()-self.playback_card.height()-9))
         self.playback_card.raise_()

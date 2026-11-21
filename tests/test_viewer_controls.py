@@ -404,7 +404,9 @@ class ViewerControlsTest(unittest.TestCase):
         self.assertIs(layout.itemAt(2).widget(),self.window.frame_last_button)
         actions=self.window.seek_actions.layout()
         self.assertIs(actions.itemAt(0).widget(),self.window.group_playback_toggle)
-        self.assertIs(actions.itemAt(1).widget(),self.window.transport_toggle)
+        self.assertIs(actions.itemAt(1).widget(), self.window.video_tools_back)
+        self.assertTrue(self.window.video_tools_back.isHidden())
+        self.assertIs(actions.itemAt(2).widget(), self.window.transport_toggle)
 
     def test_current_frame_label_stays_in_playback_header(self):
         self.window.resize(1200, 800)

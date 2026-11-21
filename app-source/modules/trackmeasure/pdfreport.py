@@ -159,7 +159,7 @@ class PDFReport:
         # add cine name and metadata
         self.pdf.ln(35)
         self.pdf.set_font('Sans', '', 14)
-        cine_name = self.cine_path.split('\\')[-1]
+        cine_name = os.path.basename(self.cine_path)
         self.pdf.cell(0, 10, f"Cine: {cine_name}", align='C')
         self.pdf.ln(45)
         self.pdf.set_font('SansBold', '', 18)
@@ -349,7 +349,7 @@ class PDFReport:
                 notes_table = []
                 for idx, note in temp_dict['notes'].items():
                     frame = f"{temp_dict['frames'][idx] + int(self.info['first_frame'])}"
-                    time_from_trig = f"{temp_dict['frame_ts'][idx]:.4g}"
+                    time_from_trig = f"{temp_dict['frame_ts_trig'][idx]:.4g}"
                     disp = temp_dict['Displacement'][idx]
                     x_disp = temp_dict['X-Displacement'][idx]
                     y_disp = temp_dict['Y-Displacement'][idx]
@@ -385,16 +385,16 @@ class PDFReport:
             self.pdf.ln(20)
             self.pdf.cell(0, 10, f"Kinematic Graphical Output for {temp_dict['name']}", align='C')
             # displacement graph
-            self.plot_graph(temp_dict['frame_ts'], (temp_dict['X-Displacement'], temp_dict['Y-Displacement'], temp_dict['Displacement']), 'disp', i, temp_dict['notes'], n_diff)
+            self.plot_graph(temp_dict['frame_ts_trig'], (temp_dict['X-Displacement'], temp_dict['Y-Displacement'], temp_dict['Displacement']), 'disp', i, temp_dict['notes'], n_diff)
             # speed graph
             if len(temp_dict['Speed']) > 0:
-                x = temp_dict['frame_ts'][n_diff - speed_offset:frames_length - speed_offset]
+                x = temp_dict['frame_ts_trig'][n_diff - speed_offset:frames_length - speed_offset]
             else:
                 x = []
             self.plot_graph(x, (temp_dict['X-Speed'], temp_dict['Y-Speed'], temp_dict['Speed']), 'speed', i, temp_dict['notes'], n_diff)
             # acceleration graph
             if len(temp_dict['Acceleration']) > 0:
-                x = temp_dict['frame_ts'][(2 * n_diff) - accel_offset:frames_length - accel_offset]
+                x = temp_dict['frame_ts_trig'][(2 * n_diff) - accel_offset:frames_length - accel_offset]
             else:
                 x = []
             self.plot_graph(x, (temp_dict['X-Acceleration'], temp_dict['Y-Acceleration'], temp_dict['Acceleration']), 'accel', i, temp_dict['notes'], n_diff)

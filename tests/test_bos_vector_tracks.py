@@ -154,6 +154,12 @@ class IndependentVectorTrackTests(unittest.TestCase):
             with clip.reader() as reader:
                 np.testing.assert_array_equal(w.view._pixels, reader.read(5, False))
                 self.assertIsNone(w.view.vector_key_card)
+            stylesheet = Path(__file__).resolve().parents[1]/'app-source/modules/trackmeasure/styles.css'
+            w.setStyleSheet(stylesheet.read_text())
+            w.resize(560, 540)
+            QTest.qWait(30)
+            self.assertEqual(w.width(), 560)
+            self.assertLess(p.track.geometry().bottom(), p.add.mapTo(p, QPoint()).y())
         finally:
             w.close()
             while not w.cleaned:

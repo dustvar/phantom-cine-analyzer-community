@@ -191,7 +191,8 @@ class CineSelectionRailTests(unittest.TestCase):
         self.choose(w.welcome.choose, [str(self.source)])
         self.assertFalse(w.welcome.isVisible())
         self.assertEqual(w.cine_path, str(self.source))
-        self.assertTrue(w.report_action.isEnabled())
+        self.assertFalse(w.report_action.isEnabled())
+        self.assertIn('measurement', w.report_button.accessibleDescription())
         choose = w.findChild(QPushButton, 'cine_upload_button')
         for files in (None, [bad], []):
             if files is not None:

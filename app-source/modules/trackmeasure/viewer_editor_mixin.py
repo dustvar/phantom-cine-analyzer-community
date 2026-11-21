@@ -116,11 +116,41 @@ class ViewerEditorMixin(PlaybackPreviewMixin, ViewerSequenceMixin):
             options['enabled'] = True
             self._apply_viewer_edit(edit)
 
+    def _return_to_video_tools(self):
+        if self._details_open:
+            self._collapse_details()
+        for button in (self.levels_button, self.timeline_button, self.fps_button):
+            with QSignalBlocker(button):
+                button.setChecked(False)
+        self._sync_viewer_panels()
+        self.timeline_toggle.setFocus(Qt.ShortcutFocusReason)
+
+    def _layout_viewer_panels(self):
+        ready = getattr(self, '_layout_ready', False)
+        viewer = (self.current_tool is self.viewer_tool and not getattr(self, '_guide', None)
+                  if ready else not self.viewer_controls.isHidden())
+        editing = self.timeline_button.isChecked() or self.fps_button.isChecked()
+        grading = self.levels_button.isChecked()
+        show_editor = viewer
+        if ready:
+            inspector = self._details_open
+            # Use the width of the whole working area. It stays stable when the
+            # toolbox disappears, including while dragging the inspector divider.
+            body = self.cine_disp_col.width()
+            editor_width = (self.editor_panel.width() if editing else
+                            self.grade_panel.width() if grading else 0)
+            compact = body < 400 + self.viewer_side_tools.width() + editor_width
+            show_editor = viewer and not (compact and inspector)
+            collapse_tools = compact and (editing or grading or inspector)
+            loaded = viewer and bool(self.cine_path)
+            self.video_tools_back.setVisible(loaded and collapse_tools and not inspector)
+            self.viewer_side_tools.setVisible(loaded and not collapse_tools)
+        self.grade_panel.setVisible(show_editor and grading)
+        self.editor_panel.setVisible(show_editor and editing)
+
     def _sync_viewer_panels(self):
-        visible = self.current_tool is self.viewer_tool and not getattr(self,'_guide',None) if getattr(self,'_layout_ready',False) else not self.viewer_controls.isHidden()
-        self.grade_panel.setVisible(visible and self.levels_button.isChecked())
-        self.editor_panel.setVisible(visible and (self.timeline_button.isChecked() or self.fps_button.isChecked()))
-        if visible and self.levels_button.isChecked() and self.vm is not None:
+        self._layout_viewer_panels()
+        if not self.grade_panel.isHidden() and self.vm is not None:
             self.grade_panel.set_image(self.vm.transformed_img)
 
     def _viewer_timeline(self):

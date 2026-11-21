@@ -3023,6 +3023,11 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
 
     @Slot()
     def _finish_workspace_load(self):
+        # Qt emits finished before the loader has released its thread-local objects.
+        # Let their Python callbacks finish before deleting the thread on the UI thread.
+        if not self.load_cine_thread.wait(0):
+            QTimer.singleShot(10, self, self._finish_workspace_load)
+            return
         self.loading_msg.hide()
         self.setEnabled(True)
         self.load_cine_thread.deleteLater()
@@ -3221,7 +3226,9 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
         themed = self._base_stylesheet
         for source, replacement in replacements.items():
             themed = re.sub(re.escape(source), replacement, themed, flags=re.IGNORECASE)
-        QApplication.instance().setStyleSheet(themed)
+        app = QApplication.instance()
+        if app.styleSheet() != themed:
+            app.setStyleSheet(themed)
         palette = QApplication.instance().palette()
         for role, value in ((QPalette.ColorRole.Window, '#101216'),
                             (QPalette.ColorRole.WindowText, '#e7ebf2'),
@@ -6111,14 +6118,9 @@ class MainWindow(TrackingDataEditMixin, OrientationMixin, GuidedTrackingMixin, W
             self.vm.reset_image_tools_cb()
 
     def on_export_report(self):
-        if self.vm.report_handler.active_type == '':
-            self.vm.update_status_text.emit('No Data to Export')
-            return
-        if self.vm.report_handler.active_type == 'meas' and self.vm.meas_data == {}:
-            self.vm.update_status_text.emit('No Measurement Data to Export')
-            return
-        if self.vm.report_handler.active_type == 'track' and self.vm.track_data == {}:
-            self.vm.update_status_text.emit('No Tracking Data to Export')
+        ready, hint = self.vm.report_status()
+        if not ready:
+            self.vm.update_status_text.emit(hint)
             return
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
         self.report_tool.setEnabled(False)

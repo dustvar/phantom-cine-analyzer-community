@@ -185,7 +185,7 @@ class BOSPreviewWindow(QDialog):
         self._last_rate_update = 0.
         self._last_controls_update = 0.
         self.setWindowTitle(f'Analyzed BOS · {Path(clip.manifest["source"]).name}')
-        self.setMinimumSize(560, 360)
+        self.setMinimumWidth(560)
         self._build()
         rect = self.screen().availableGeometry()
         self.resize(min(1280, rect.width()-40), min(960, rect.height()-60))

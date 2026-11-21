@@ -12,7 +12,7 @@ import threading
 import cv2
 import numpy as np
 from PIL import ImageColor
-from cine_metadata import CineHandler
+from cine_metadata import CineHandler, capture_time_seconds
 from image_orientation import rotate_image, rotate_points
 from pyphantom_image.imagetools import ImageTools
 from tracking_render import fade_alphas
@@ -238,8 +238,8 @@ def export_tracking_analysis(source, destination, first, last, fps, settings, gr
                     canvas = np.full((output_height, output_width, 3), (23, 28, 34), dtype=np.uint8)
                     x = (output_width-width)//2;canvas[:height, x:x+width] = image
                     timing = handler.get_timestamp(index)
-                    key = 'time_from_trig' if graph.get('time_reference') == 'trigger' else 'time_from_start'
-                    timestamp = float(timing[key])*float(graph.get('time_scale', 1))
+                    seconds = capture_time_seconds(timing, from_trigger=graph.get('time_reference') == 'trigger')
+                    timestamp = float(seconds) * float(graph.get('time_scale', 1))
                     canvas[height:] = plot.render(index, timestamp, cine_index, object_id)
                     image = canvas
                 yield video_frame(image) if movie else np.ascontiguousarray(image)

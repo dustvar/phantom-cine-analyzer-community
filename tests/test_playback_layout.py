@@ -65,6 +65,40 @@ class PlaybackLayoutTests(unittest.TestCase):
                 self.assertIs(w.playback_card.parentWidget(), w.seek_bar)
                 self.assert_aligned_transport()
 
+    def test_compact_viewer_keeps_panels_and_playback_readable(self):
+        w = self.w
+        w.resize(900, 680)
+        QTest.mouseClick(w.timeline_toggle, Qt.LeftButton)
+        QTest.qWait(40)
+        scroll = w.viewer_side_tools
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        self.assertLessEqual(scroll.widget().width(), scroll.viewport().width())
+        scroll.ensureWidgetVisible(w.mark_out_button)
+        self.assertTrue(w.mark_out_button.visibleRegion().contains(w.mark_out_button.rect().center()))
+        scroll.ensureWidgetVisible(w.timeline_toggle)
+        QTest.mouseClick(w.timeline_toggle, Qt.LeftButton)
+
+        QTest.mouseClick(w.timeline_button, Qt.LeftButton)
+        QTest.qWait(40)
+        self.assertTrue(w.editor_panel.isVisible() and w.video_tools_back.isVisible())
+        self.assertTrue(scroll.isHidden())
+        QTest.mouseClick(w.video_tools_back, Qt.LeftButton)
+        self.assertTrue(scroll.isVisible() and w.editor_panel.isHidden())
+
+        QTest.mouseClick(w.details_buttons[0], Qt.LeftButton)
+        QTest.qWait(40)
+        self.assertTrue(scroll.isHidden() and w.video_tools_back.isHidden())
+        self.assertGreater(w.graph.width(), 300)
+        w.tab_splitter.setSizes([320, 440])
+        w.playback_fps.setStyleSheet('font-size: 24px;')
+        w.active_frame_label.setText('Frame V4 · −2,147,483,648')
+        QTest.qWait(60)
+        self.assertIs(w.playback_card.parentWidget(), w.seek_bar)
+        self.assertTrue(w.playback_fps.visibleRegion().contains(w.playback_fps.rect().center()))
+        QTest.mouseClick(w.details_close, Qt.LeftButton)
+        QTest.qWait(40)
+        self.assertIs(w.playback_card.parentWidget(), w.workspace_grid_widget)
+
     def test_long_frame_numbers_and_large_fps_fonts_preserve_both_columns(self):
         self.w.playback_fps.setStyleSheet('font-size: 20px;')
         self.w.playback_fps.setValue(self.w.playback_fps.maximum())

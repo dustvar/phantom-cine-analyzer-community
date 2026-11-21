@@ -20,6 +20,13 @@ from cinereader.cinereader import MetaData, unpacking_the_image
 from pyphantom_cine.cine_handler import CineHandler as BaseCineHandler
 
 
+def capture_time_seconds(timestamp, *, from_trigger=False):
+    # The Cine reader returns trigger offsets in microseconds and start offsets in seconds.
+    if from_trigger and 'time_from_trig' in timestamp:
+        return timestamp['time_from_trig'] * 1e-6
+    return timestamp['time_from_start']
+
+
 def read_metadata(path):
     md = MetaData()
     with open(path, 'rb') as stream:

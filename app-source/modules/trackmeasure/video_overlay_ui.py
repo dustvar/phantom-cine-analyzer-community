@@ -84,6 +84,11 @@ class VideoOverlayPanel(QWidget):
         transport=QHBoxLayout();self.play=QPushButton('Play');self.play.clicked.connect(self.toggle_play)
         previous=QPushButton('‹');previous.clicked.connect(lambda:self.step(-1))
         following=QPushButton('›');following.clicked.connect(lambda:self.step(1))
+        for button, label in ((previous, 'Previous frame'), (following, 'Next frame')):
+            button.setProperty('analysisStep', True)
+            button.setToolTip(label)
+            button.setAccessibleName(label)
+        self.play.setProperty('analysisPlay', True)
         self.slider=QSlider(Qt.Orientation.Horizontal);self.slider.setRange(0,0);self.slider.valueChanged.connect(self.request_render);self.slider.sliderPressed.connect(self.pause)
         self.fps=QDoubleSpinBox();self.fps.setRange(.1,MAX_OVERLAY_PLAYBACK_FPS);self.fps.setValue(30);self.fps.setSuffix(' fps replay');self.fps.valueChanged.connect(self.pause)
         for w in (previous,self.play,following,self.slider,self.fps):transport.addWidget(w,1 if w is self.slider else 0)

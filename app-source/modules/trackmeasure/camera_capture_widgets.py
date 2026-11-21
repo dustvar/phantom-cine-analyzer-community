@@ -108,7 +108,8 @@ class _RatePopup(QFrame):
         if len(factors) == 1:
             factor = next(iter(factors))
             binned = f'Binned · {factor}×{factor}'
-        table.setHorizontalHeaderLabels(('FPS', 'Standard', binned))
+        table.setHorizontalHeaderLabels(('FPS', 'Standard' if factors else 'Resolution', binned))
+        table.setColumnHidden(2, not factors)
         checked = first = None
         for fps, group in groupby(options, key=lambda option: option.fps):
             group = list(group)
@@ -167,7 +168,9 @@ class _RatePopup(QFrame):
         height = (self.table.horizontalHeader().sizeHint().height()
                   + self.table.verticalHeader().defaultSectionSize() * min(12, self.table.rowCount())
                   + self.custom_button.sizeHint().height() + 20)
-        width = max(360, self.fontMetrics().horizontalAdvance('✓  1,280 × 1,024') * 2 + 110)
+        resolution_width = self.fontMetrics().horizontalAdvance('✓  1,280 × 1,024')
+        columns = 1 if self.table.isColumnHidden(2) else 2
+        width = max(244 if columns == 1 else 360, resolution_width * columns + 110)
         width = min(width, screen.width())
         height = min(height, max(above, below))
         x = max(screen.left(), min(anchor.x() + button.width() - width, screen.right() + 1 - width))
@@ -237,6 +240,7 @@ def preset_field(name, suffix, *, rate_table=False):
         presets.setMenu(QMenu(presets))
 
     field = QWidget()
+    field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     layout = QHBoxLayout(field)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(2)

@@ -258,9 +258,9 @@ class CompactWorkspaceMixin:
                 row += 1
         layout.setRowStretch(row, 1)
         row += 1
-        report, self.report_action = navigation_button(self.analysis_tools, 'Report', 'report',
+        self.report_button, self.report_action = navigation_button(self.analysis_tools, 'Report', 'report',
             'Export a measurement report', self.report_tool.click, checkable=False)
-        layout.addWidget(report, row, 0)
+        layout.addWidget(self.report_button, row, 0)
         self.rail_settings = QToolButton()
         self.rail_settings.setObjectName('rail_tool')
         self.rail_settings.setText('Settings')
@@ -374,6 +374,8 @@ class CompactWorkspaceMixin:
 
     def _connect_compact_workspace(self):
         self.vm.new_track_data.connect(self._sync_compact_objects)
+        self.vm.new_track_data.connect(self._sync_report_action)
+        self.vm.measurement_added.connect(self._sync_report_action)
         self.vm.image_scale_changed.connect(lambda text: self.scale_tool.setToolTip('Calibrate distance · '+text))
         self.frame_slider.valueChanged.connect(self._sync_transport_fps)
         self.analysis_tools_bg.buttonClicked.connect(lambda *args: self._sync_transport_fps())
@@ -409,7 +411,14 @@ class CompactWorkspaceMixin:
             action.setEnabled(available)
             if button is active:
                 self.workspace_caption.setText(action.text())
-        self.report_action.setEnabled(bool(self.cine_path) and self.report_tool.isEnabledTo(self.analysis_tools))
+        self._sync_report_action()
+
+    def _sync_report_action(self, *_):
+        ready, hint = (self.vm.report_status() if self.vm and self.cine_path else
+                       (False, 'Open a Cine, then track an object or take a measurement.'))
+        self.report_action.setToolTip(hint)
+        self.report_button.setAccessibleDescription(hint)
+        self.report_action.setEnabled(ready and self.report_tool.isEnabledTo(self.analysis_tools))
 
     def _details_splitter_moved(self, *args):
         if self._details_open:

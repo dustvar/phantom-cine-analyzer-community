@@ -14,7 +14,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'app-source/modules/trackmeasure'))
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter
 from bos_ui import BOSPanel
 from bos_frames import BOSFrames, validate_bos_settings
 from test_cine_metadata import write_cine
@@ -66,6 +66,23 @@ class BOSWorkspaceTests(unittest.TestCase):
     def ready_at(self, index):
         return (not self.panel.pending and not self.panel.busy() and self.panel.last_result is not None
                 and self.panel.last_result['index'] == index)
+
+    def test_vector_controls_fit_narrow_sidebar_with_application_theme(self):
+        panel = self.panel
+        stylesheet = Path(__file__).resolve().parents[1]/'app-source/modules/trackmeasure/styles.css'
+        panel.setStyleSheet(stylesheet.read_text())
+        self.wait(lambda: self.ready_at(0))
+        panel.resize(720, 560)
+        panel.show_vectors.click()
+        panel.vector_appearance.toggle.click()
+        sidebar = panel.findChild(QScrollArea)
+        panel.findChild(QSplitter).setSizes([720, sidebar.minimumWidth()])
+        QTest.qWait(20)
+        self.assertTrue(panel.vector_appearance.panel.isVisible())
+        self.assertGreater(sidebar.verticalScrollBar().maximum(), 0)
+        self.assertEqual(sidebar.horizontalScrollBar().maximum(), 0)
+        for button in (panel.previous, panel.following):
+            self.assertGreaterEqual(button.width(), 28)
 
     def test_native_frame_reference_reverse_rectangle_and_source_switch(self):
         self.wait(lambda: self.ready_at(0))

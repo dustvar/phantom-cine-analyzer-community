@@ -1,5 +1,6 @@
 import os
 from dataclasses import replace
+from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
 import time
@@ -11,7 +12,8 @@ import numpy as np
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QPoint, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QStyle, QStyleOptionSlider
+from PySide6.QtWidgets import (QApplication, QGroupBox, QMessageBox, QPushButton, QStyle,
+                               QStyleOptionGroupBox, QStyleOptionSlider)
 
 from camera_capture_modes import RateOption, published_modes
 from camera_control import ControlStatus, StoredCine
@@ -365,6 +367,25 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertEqual(p.exposure.value(), 80.)
         self.assertEqual(self.writes(), [dict(exposure_us=20.)])
 
+    def test_section_titles_fit_inside_frames_above_their_first_controls(self):
+        theme = Path(__file__).resolve().parents[1] / 'app-source/modules/trackmeasure/styles.css'
+        stylesheet = theme.read_text(encoding='utf-8')
+        groups = {g.title(): g for g in self.panel.findChildren(QGroupBox)}
+        first_controls = {'Capture settings': self.panel.fps, 'Recording': self.panel.state}
+        for pixels in (12, 17):
+            self.panel.setStyleSheet(stylesheet + f'\nQGroupBox {{ font-size: {pixels}px; }}')
+            self.app.processEvents()
+            for name, first in first_controls.items():
+                with self.subTest(font=pixels, section=name):
+                    group = groups[name]
+                    option = QStyleOptionGroupBox()
+                    group.initStyleOption(option)
+                    rect = group.style().subControlRect
+                    border = rect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxFrame, group)
+                    title = rect(QStyle.CC_GroupBox, option, QStyle.SC_GroupBoxLabel, group)
+                    self.assertTrue(border.adjusted(1, 1, -1, -1).contains(title))
+                    self.assertLess(title.bottom(), first.mapTo(group, QPoint(0, 0)).y())
+
     def test_matching_presets_exposure_limit_and_duration_at_laptop_size(self):
         self.panel.resize(850, 540)
         current = RateOption(1000, 80, 60, 1)
@@ -495,7 +516,7 @@ class CameraControlPanelTests(unittest.TestCase):
         self.wait(lambda: p.snapshot.fps == 137.)
         self.assertEqual(self.writes(), [dict(fps=137.)])
 
-    def test_rate_picker_disables_unavailable_binning(self):
+    def test_rate_picker_omits_column_when_binning_is_unavailable(self):
         self.start_veo(binning=False)
         table = self.open_rates()
         left = self.rate_cell(table, 100, (1280, 960, 1))
@@ -503,10 +524,8 @@ class CameraControlPanelTests(unittest.TestCase):
         self.assertFalse(right and right.flags() & Qt.ItemIsEnabled)
         side = table.model().index(left.row(), 2)
         self.assertFalse(table.model().flags(side) & Qt.ItemIsEnabled)
-        table.scrollTo(side)
-        self.app.processEvents()
-        QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=table.visualRect(side).center())
-        self.assertTrue(self.panel.rate_presets.popup.isVisible())
+        self.assertTrue(table.isColumnHidden(2))
+        self.assertEqual(table.horizontalHeaderItem(1).text(), 'Resolution')
         QTest.keyClick(table, Qt.Key_Escape)
         self.assertFalse(self.writes())
 

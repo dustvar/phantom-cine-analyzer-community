@@ -4,7 +4,7 @@ import logging, os
 
 import measmodel
 import reportmodel
-from cine_metadata import CineHandler
+from cine_metadata import CineHandler, capture_time_seconds
 from viewer_processing import default_grade, render_cine_image
 from viewer_timeline import default_edit
 from pyphantom_config.config import JsonConfig
@@ -54,6 +54,7 @@ class SimpleMeasVM(QObject):
     track_fig_changed = Signal(object)
     draw_roi = Signal(object, object, str)
     process_tool_complete = Signal()
+    measurement_added = Signal()
     update_status_text = Signal(str)
     update_progress = Signal(int)
     format_progress = Signal(str)
@@ -808,6 +809,15 @@ class SimpleMeasVM(QObject):
                         t[p] = self.track_data[self.active_object][p]
             self.draw_all()
 
+    def report_status(self):
+        if self.report_handler.active_type == 'meas' and self.meas_data.get('_curr_i', 0):
+            return True, 'Export the measurements for this Cine.'
+        if self.report_handler.active_type == 'track' and self.track_data:
+            if all(len(track['frames']) for track in self.track_data.values()):
+                return True, 'Export the tracked points and graphs for this Cine.'
+            return False, 'Finish or remove the empty tracking object to export a report.'
+        return False, 'Track an object or complete a measurement to export a report.'
+
     def export_cb(self, filepath=''):
         try:
             data = None
@@ -841,7 +851,7 @@ class SimpleMeasVM(QObject):
                     imgs[i] = self._draw_frame()
                     self.active_frame = original_frame
                     
-                    t['frame_ts_trig'] = self.cal.time_transform(self.cine_handler.get_timestamp(t['frames'])['time_from_trig'])
+                    t['frame_ts'], t['frame_ts_trig'] = self._track_times(t['frames'])
                     t['X-Vibration'] = (self.vibration('X', obj=i))
                     t['Y-Vibration'] = (self.vibration('Y', obj=i))
 
@@ -1058,19 +1068,18 @@ class SimpleMeasVM(QObject):
         return render_cine_image(img, self.cine_handler.metadata,
                                  self.image_settings_snapshot(), self.image_tools)
 
+    def _track_times(self, frames):
+        from_start, from_trigger = [], []
+        for frame in frames:
+            stamp = self.cine_handler.get_timestamp(frame)
+            from_start.append(capture_time_seconds(stamp))
+            from_trigger.append(capture_time_seconds(stamp, from_trigger=True))
+        return self.cal.time_transform(np.array(from_start)), self.cal.time_transform(np.array(from_trigger))
+
     def track_fig_calculations(self, obj=None):
         if self.track_data != {}:
             t = self.track_data[self.active_object] if obj is None else obj
-            time_from_start_values = []
-            time_from_trigger_values = []
-            for frame in t['frames']:
-                timestamp_data = self.cine_handler.get_timestamp(frame)
-                time_from_start_values.append(timestamp_data['time_from_start'])
-                time_from_trigger_values.append(
-                    timestamp_data.get('time_from_trig', timestamp_data['time_from_start'])
-                )
-            t['frame_ts'] = self.cal.time_transform(np.array(time_from_start_values))
-            t['frame_ts_trig'] = self.cal.time_transform(np.array(time_from_trigger_values))
+            t['frame_ts'], t['frame_ts_trig'] = self._track_times(t['frames'])
             from tracking_kinematics import calculate_motion
             t.setdefault('motion_filter', {'mode':'local_polynomial','window':21})
             t.update(calculate_motion(t, self.track_data, t['frame_ts'], self.n_diff))

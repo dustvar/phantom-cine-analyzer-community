@@ -54,6 +54,12 @@ class BaseTool(ABC):
         if len(self.points) >= self._point_target and self._point_target != -1:
             self.evaluate()
     
+    def _save_measurement(self, name, data):
+        self.vm.meas_data[name] = data
+        self.vm.meas_data['_curr_i'] += 1
+        self.vm.measurement_added.emit()
+        self.cleanup()
+
     def cleanup(self):
         self.points_frame_ids = []
         
@@ -134,10 +140,7 @@ class ScaleTool(BaseTool):
             d['Scale'].append(self.vm.image_scale)
             d['Known Length'].append(known_length)
             d['Units'].append(self.vm.length_units)
-            self.vm.meas_data['Scale Tool'] = d
-            self.vm.meas_data['_curr_i'] = i + 1
-
-            self.cleanup()
+            self._save_measurement('Scale Tool', d)
             
         except Exception as e:
             logging.exception(e)
@@ -1098,10 +1101,7 @@ class TwoPointTool(BaseTool):
             d['Displacement'].append(displacement_phys)
             d['Speed'].append(speed_abs_phys)
             d['Delta Frame'].append(delta_frame)
-            self.vm.meas_data['Two Point Tool'] = d
-            self.vm.meas_data['_curr_i'] = i + 1
-            
-            self.cleanup()
+            self._save_measurement('Two Point Tool', d)
             
         except Exception as e:
             logging.exception(e)
@@ -1143,10 +1143,7 @@ class ThreePointTool(BaseTool):
             d['Angular Speed (deg/s)'].append(angle_rate)
             d['Delta Frame'].append(delta_frame)
             d['Area'].append(area)
-            self.vm.meas_data['Three Point Tool'] = d
-            self.vm.meas_data['_curr_i'] = i + 1
-
-            self.cleanup()
+            self._save_measurement('Three Point Tool', d)
             
         except Exception as e:
             logging.exception(e)
@@ -1189,10 +1186,7 @@ class TwoLineTool(BaseTool):
             d['Angle (deg)'].append(angle)
             d['Angular Speed (deg/s)'].append(angle_rate_lines)
             d['Delta Frame'].append(delta_frame)
-            self.vm.meas_data['Two Line Tool'] = d
-            self.vm.meas_data['_curr_i'] = i + 1
-
-            self.cleanup()
+            self._save_measurement('Two Line Tool', d)
         except Exception as e:
             logging.exception(e)
             self.vm.update_status_text.emit(f'{e}')
@@ -1229,10 +1223,7 @@ class AreaTool(BaseTool):
             d['Area (sq-px)'].append(area_pixel)
             d['Area (unit)'].append(area_phys)
             d['Mean'].append(avg_pixel_val)
-            self.vm.meas_data['Area Tool'] = d
-            self.vm.meas_data['_curr_i'] = i + 1
-            
-            self.cleanup()
+            self._save_measurement('Area Tool', d)
         except Exception as e:
             logging.exception(e)
             self.vm.update_status_text.emit(f'{e}')
