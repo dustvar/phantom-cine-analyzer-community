@@ -497,3 +497,6 @@ Event Finder 1.14.13
 Event Finder 1.14.14
 - Added frame-range and sampling controls, a click-to-place 4 × 4 brightness probe, and estimated time remaining.
 - Camera scans request only the selected frames in fast 8-bit or full precision. Sensitivity changes can reuse measured values after checking the recording identity.
+
+Event Finder 1.14.15
+- Compatible cameras on a wired Mac can use XIMG to transfer 12-bit frames for rectangle or point searches. The existing standard 8-bit and full-precision choices remain available.

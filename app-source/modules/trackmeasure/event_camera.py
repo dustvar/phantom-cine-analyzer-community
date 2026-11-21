@@ -1,6 +1,6 @@
-"""Read completed Phantom PH16 RAM recordings over the standard Ethernet interface.
+"""Read completed Phantom PH16 RAM recordings over wired Ethernet.
 
-Protocol reference: PH16 camera protocol, v2.3, sections 3, 4.7, 5.9 and 5.10.
+Protocol reference: PH16 camera protocol, v2.3, sections 3, 4.7 and 5.9–5.11.
 Acquisition stays under the camera operator's control. PCA requests corrected,
 linear raw sensor intensities and crops the chosen rectangle on the host.
 """
@@ -10,13 +10,24 @@ from ipaddress import IPv4Address
 import math
 import re
 import socket
+import sys
 from time import monotonic
 
 import numpy as np
+from event_ximg import IncompleteXimgFrame, XimgError, XimgStream, decode_region, matches_standard
+from event_ximg_receiver import PacketReceiver, can_receive
 
 
 class CameraReadError(RuntimeError):
     """The requested completed recording cannot be read."""
+
+
+class CameraRecordingChangedError(CameraReadError):
+    """The selected source is no longer the same stored recording."""
+
+
+class CameraCommandError(CameraReadError):
+    """The camera explicitly declined a complete command."""
 
 
 def validate_address(value):
@@ -91,7 +102,7 @@ class _Channel:
             if reply.endswith(b'\n') and not reply.rstrip(b'\r\n').endswith(b'\\'):
                 text = bytes(reply).replace(b'\\\r\n', b' ').replace(b'\\\n', b' ').decode('ascii', 'replace').strip()
                 if text.upper().startswith('ERR'):
-                    raise CameraReadError('Camera replied: ' + text[:240])
+                    raise CameraCommandError('Camera replied: ' + text[:240])
                 return text
         raise CameraReadError('The camera returned an oversized control response.')
 
@@ -168,6 +179,22 @@ def _stored(channel, cine):
     return 'STR' in _tokens(channel.get(f'c{cine}.state'))
 
 
+def _reported_camera_mac(report, host):
+    """Read the MAC of the Ethernet interface owning this exact control address."""
+    # Cameras flatten the usual multi-line ifconfig output into a quoted string.
+    # Keep each interface separate even when its address or MAC is missing.
+    records = re.split(r'\b[\w.:-]+\s+Link\s+encap\s*:\s*', report, flags=re.I)[1:]
+    matches = [record for record in records if host in
+               re.findall(r'\binet\s+addr\s*:\s*([\d.]+)\b', record, re.I)]
+    if len(matches) != 1 or not re.match(r'Ethernet\b', matches[0], re.I):
+        return None
+    addresses = re.findall(r'\bHWaddr\s+([^\s"]+)', matches[0], re.I)
+    if len(addresses) != 1 or not re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', addresses[0], re.I):
+        return None
+    mac = bytes.fromhex(addresses[0].replace(':', ''))
+    return mac.hex() if any(mac) and not mac[0] & 1 else None
+
+
 @dataclass(frozen=True)
 class CameraRecording:
     host: str
@@ -182,12 +209,16 @@ class CameraRecording:
     trigger: tuple
     pixel_format: str
     supports_eight_bit: bool = False
+    supports_ximg: bool = False
+    camera_mac: str | None = None
 
     @property
     def transfer_modes(self):
         modes = {'full'} if self.pixel_format == 'P16' else {'fast'}
         if self.supports_eight_bit:
             modes.add('fast')
+        if self.supports_ximg:
+            modes.add('ximg')
         return frozenset(modes)
 
     @property
@@ -209,9 +240,20 @@ def list_recordings(host, cancelled=lambda: False):
     try:
         if channel.get('info.pver').strip() != '16':
             raise CameraReadError('This camera must support the Phantom PH16 protocol.')
-        if 'ATTACH' not in _tokens(channel.get('info.features')):
+        features = _tokens(channel.get('info.features'))
+        if 'ATTACH' not in features:
             raise CameraReadError('This camera does not advertise the PH16 image connection used by Event Finder.')
         formats = _tokens(channel.get('info.imgformats'))
+        wired_ximg = False
+        camera_mac = None
+        if (sys.platform == 'darwin' and 'XIMG' in features
+                and {'P12L', '524'} & formats and {'P16', '272'} & formats):
+            try:
+                camera_mac = _reported_camera_mac(channel.request('ifconfig'), host)
+            except CameraCommandError:
+                # Older firmware may decline this optional information request.
+                pass
+            wired_ximg = can_receive(host, camera_mac)
         if {'P16', '272'} & formats:
             fmt = 'P16'
         elif '8' in formats:
@@ -241,7 +283,7 @@ def list_recordings(host, cancelled=lambda: False):
             if _stored(channel, cine) and _trigger(channel, cine) == stamp:
                 recordings.append(CameraRecording(host, model, serial, cine, first, last, w, h,
                                   rate if math.isfinite(rate) and rate > 0 else None, stamp, fmt,
-                                  '8' in formats))
+                                  '8' in formats, wired_ximg and w % 2 == 0, camera_mac))
         return recordings
     finally:
         channel.close()
@@ -266,9 +308,28 @@ class CameraSource:
         self._sequence = False
         self._reference = False
         self._previous = None
+        self._mode = 'full'
+        self._roi = None
+        self._ximg = None
+        self._ximg_disabled = ''
+        self._ximg_calibrated = False
+        self.ximg_frames = 0
+        self.ximg_retries = 0
+        self.ximg_standard_recoveries = 0
+        self._consecutive_incomplete = 0
+        self.transfer_notice = ''
+        self._transfer_status = None
 
     def set_cancel_check(self, cancelled):
         self._cancelled = cancelled
+
+    def set_transfer_status_callback(self, callback):
+        self._transfer_status = callback
+
+    def _notice(self, text):
+        self.transfer_notice = text
+        if self._transfer_status is not None:
+            self._transfer_status(text)
 
     @property
     def batch_size(self):
@@ -276,11 +337,18 @@ class CameraSource:
         return max(1, min(256, (16 << 20)//frame_bytes))
 
     def set_transfer_mode(self, mode):
-        if mode not in {'fast', 'full'}:
-            raise ValueError('Choose fast or full-precision camera transfer.')
+        if mode not in {'fast', 'full', 'ximg'} or (mode == 'ximg' and mode not in self.transfer_modes):
+            raise ValueError('Choose a transfer mode supported by this camera and connection.')
         self.close()
+        self._mode = mode
+        self.ximg_frames = self.ximg_retries = 0
+        self.ximg_standard_recoveries = self._consecutive_incomplete = 0
         self.pixel_format = ('8' if mode == 'fast' and 'fast' in self.transfer_modes
                              else self.recording.pixel_format)
+        if mode == 'ximg' and self._ximg_disabled:
+            self._notice(self._ximg_disabled)
+        elif mode != 'ximg':
+            self._notice(f'Standard Ethernet · {"16-bit" if self.pixel_format == "P16" else "8-bit"}')
         # The detector first reads a few widely separated reference frames.
         # Avoid starting a full transfer until the sequential pass begins.
         self._reference = True
@@ -297,23 +365,27 @@ class CameraSource:
         self._previous = None
 
     def close(self):
+        if self._ximg is not None:
+            self._ximg.receiver.close()
+            self._ximg = None
         if self.channel is not None:
             self.channel.close()
             self.channel = None
         self.block = None
         self._previous = None
         self._sequence = False
+        self._roi = None
 
     def _check_recording(self, channel):
         r = self.recording
         if not _stored(channel, r.cine) or _trigger(channel, r.cine) != r.trigger:
-            raise CameraReadError('This RAM recording changed. Reopen Camera recordings and select the current Cine.')
+            raise CameraRecordingChangedError('This RAM recording changed. Reopen Camera recordings and select the current Cine.')
 
     def _verified_channel(self):
         if self.channel is None:
             self.channel = _Channel(self.recording.host, lambda: self._cancelled())
             if self.channel.get('info.serial') != self.recording.serial:
-                raise CameraReadError('A different camera is now at this address. Reopen Camera recordings.')
+                raise CameraRecordingChangedError('A different camera is now at this address. Reopen Camera recordings.')
         self._check_recording(self.channel)
         return self.channel
 
@@ -346,13 +418,90 @@ class CameraSource:
         finally:
             self.close()
 
+    def _ximg_region(self, channel, native, roi):
+        if self._ximg is None:
+            self._notice('Opening 10 Gb Ethernet · macOS may request permission.')
+            receiver = PacketReceiver(self.recording.host, lambda: self._cancelled(), self.recording.camera_mac)
+            try:
+                self._ximg = XimgStream(receiver, self.recording, lambda: self._cancelled())
+            except BaseException:
+                receiver.close()
+                raise
+            self._notice('Using ximg · 12-bit')
+        retries = self._ximg.retries
+        try:
+            packed = self._ximg.frame(channel, native)
+        except IncompleteXimgFrame as err:
+            self._consecutive_incomplete += 1
+            if self._consecutive_incomplete >= 2:
+                raise XimgError('Two successive images remained incomplete after retransmission.') from err
+            _check(self._cancelled)
+            self._check_recording(channel)
+            x, y, w, h = roi
+            standard = channel.images(self.recording, native, 1, 1, 'P16')[0]
+            self._check_recording(channel)
+            self.ximg_standard_recoveries += 1
+            count = self.ximg_standard_recoveries
+            self._notice(f'Using ximg · 12-bit · {count:,} {"frame" if count == 1 else "frames"} '
+                         'recovered over standard Ethernet.')
+            return standard[y:y+h, x:x+w] >> 4
+        finally:
+            self.ximg_retries += self._ximg.retries - retries
+        self._consecutive_incomplete = 0
+        if not self._ximg_calibrated:
+            standard = channel.images(self.recording, native, 1, 1, 'P16')[0]
+            if not matches_standard(packed, standard):
+                raise XimgError('The 12-bit image differs from the standard readback.')
+            self._ximg_calibrated = True
+        self.ximg_frames += 1
+        return decode_region(packed, self.width, roi)
+
+    def _read_ximg_block(self, index, count, stride, roi):
+        """Preserve the same linear 12-bit intensities if the fast path fails."""
+        x, y, w, h = roi
+        output = np.empty((count, h, w), np.uint16)
+        try:
+            channel = self._verified_channel()
+            offset = 0
+            if not self._ximg_disabled:
+                try:
+                    while offset < count:
+                        native = self.first_frame + index + offset * stride
+                        output[offset] = self._ximg_region(channel, native, roi)
+                        offset += 1
+                except (CancelledError, CameraRecordingChangedError):
+                    raise
+                except (RuntimeError, OSError, ValueError) as err:
+                    _check(self._cancelled)
+                    if self._ximg is not None:
+                        self._ximg.receiver.close()
+                        self._ximg = None
+                    # A failed control request might leave a delayed reply in the socket.
+                    channel.close()
+                    self.channel = None
+                    channel = self._verified_channel()
+                    self._ximg_disabled = f'Standard Ethernet · 12-bit fallback. {err}'
+                    self._notice(self._ximg_disabled)
+            if offset < count:
+                native = self.first_frame + index + offset * stride
+                standard = channel.images(self.recording, native, count - offset, stride, 'P16')
+                np.right_shift(standard[:, y:y+h, x:x+w], 4, out=output[offset:])
+            self._check_recording(channel)
+            return output
+        except BaseException:
+            self.close()
+            raise
+
     def read_roi(self, index, roi):
+        if not 0 <= index < self.count:
+            raise ValueError('Frame is outside the recorded Cine.')
         x,y,w,h = roi
         if not (0 <= x < x+w <= self.width and 0 <= y < y+h <= self.height):
             raise ValueError('Choose a rectangle inside the recorded image.')
         _check(self._cancelled)
         frame_offset, remainder = divmod(index-self.start, self._block_stride)
-        if self.block is None or remainder or not 0 <= frame_offset < len(self.block):
+        ximg = self._mode == 'ximg'
+        if self.block is None or remainder or not 0 <= frame_offset < len(self.block) or (ximg and self._roi != roi):
             stride = count = 1
             if (self._sequence and self._scan_first <= index <= self._scan_last and
                     (index-self._scan_first) % self._scan_stride == 0):
@@ -361,12 +510,16 @@ class CameraSource:
             elif (not self._sequence and not self._reference and
                   (index == 0 or (self._previous is not None and index == self._previous+1))):
                 count = min(self.batch_size, self.count-index)
-            self.block = self._read(index, count, stride, self.pixel_format)
+            if ximg:
+                self.block = self._read_ximg_block(index, count, stride, roi)
+                self._roi = roi
+            else:
+                self.block = self._read(index, count, stride, self.pixel_format)
             self.start = index
             self._block_stride = stride
             frame_offset = 0
         self._previous = index
-        result = self.block[frame_offset, y:y+h, x:x+w].copy()
-        if index == self.count-1 or (self._sequence and index == self._scan_last):
+        result = self.block[frame_offset].copy() if ximg else self.block[frame_offset, y:y+h, x:x+w].copy()
+        if (index == self.count-1 and not (ximg and self._reference)) or (self._sequence and index == self._scan_last):
             self.close()
         return result

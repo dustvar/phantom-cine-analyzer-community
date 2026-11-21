@@ -256,6 +256,91 @@ class EventFinderUITests(unittest.TestCase):
         self.assertTrue(p.viewer.isEnabled())
         self.assertEqual(p.native.value(), -6)
 
+    def test_wired_camera_defaults_to_ximg_and_displays_fallback_across_seeks(self):
+        p = self.panel
+        self.assertFalse(p.precision.isVisible())
+        self.assertFalse(p.transfer_status.isVisible())
+        opened, transfers = [], []
+        notice = 'Using standard Ethernet at 12-bit precision after a lost frame.'
+
+        class Reader:
+            width = height = 32
+            count, first_frame, fps = 12, -4, 20000
+            transfer_modes = frozenset(('ximg', 'fast', 'full'))
+
+            def preview(self, index):
+                return np.zeros((32,32), dtype=np.uint8)
+
+            def close(self):
+                pass
+
+            def set_transfer_status_callback(self, callback):
+                self.on_status = callback
+
+            def set_transfer_mode(self, mode):
+                transfers.append(mode)
+                self.transfer_notice = notice
+                self.on_status(notice)
+
+            def read_roi(self, index, roi):
+                return np.full((roi[3], roi[2]), 200 if index == 6 else 80, dtype=np.uint16)
+
+            def validate_recording(self):
+                pass
+
+        class Camera:
+            label = 'Wired camera'
+
+            def open(self):
+                reader = Reader()
+                opened.append(reader)
+                return reader
+
+        camera = Camera()
+        p._add_source(camera)
+        self.wait(lambda: p.info and not p.activity)
+        self.assertEqual(p.precision.currentData(), 'ximg')
+        self.assertEqual([p.precision.itemData(i) for i in range(p.precision.count())], ['ximg','fast','full'])
+        self.assertIn('macOS', p.transfer_status.text())
+        self.assertEqual(transfers, [])
+        p.full.click()
+        p.analyze.click()
+        self.wait(lambda: p.scanned and not p.activity)
+        self.assertEqual(transfers, ['ximg'])
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(p.transfer_status.text(), notice)
+        p.sensitivity.setCurrentIndex(2)
+        p.analyze.click()
+        self.wait(lambda: p.scanned and not p.activity)
+        self.assertEqual(transfers, ['ximg'])
+        self.assertIn('Reusing', p.transfer_status.text())
+        self.assertIn(notice, p.transfer_status.text())
+        p._add_source(camera)
+        self.wait(lambda: p.info and not p.activity)
+        self.assertEqual(len(opened), 2)
+        self.assertIn('macOS', p.transfer_status.text())
+        p.precision.setCurrentIndex(p.precision.findData('full'))
+        self.assertFalse(p.transfer_status.isVisible())
+
+    def test_same_settings_scan_error_keeps_previous_candidates_until_source_changes(self):
+        from event_camera import CameraRecordingChangedError
+        p = self.panel
+        self.draw_and_scan()
+        old = p.hits.events
+        with patch('event_finder_ui_worker.scan_events', side_effect=OSError('Camera cable disconnected')):
+            p.analyze.click()
+            self.wait(lambda: not p.activity)
+        self.assertEqual(p.hits.events, old)
+        self.assertIsNotNone(p.view.image)
+        self.assertTrue(p.analyze.isEnabled())
+        self.assertIn('disconnected', p.status.text())
+        with patch('event_finder_ui_worker.scan_events', side_effect=CameraRecordingChangedError('Recording changed')):
+            p.analyze.click()
+            self.wait(lambda: not p.activity)
+        self.assertFalse(p.scanned)
+        self.assertIsNone(p.view.image)
+        self.assertTrue(p.retry.isVisible())
+
     def test_camera_source_uses_serial_worker_and_releases_reader(self):
         p=self.panel
         calls=[]

@@ -38,24 +38,25 @@ frame review finish. PCA checks its trigger timestamp and stored state during
 transfer to detect replacement. It sends read requests for stored frames and
 does not arm, trigger, change exposure or delete Cines.
 
-The camera path uses the standard PH16 TCP image connection. The recorded
-frames travel over the link in batches, and PCA crops the search rectangle on
-the Mac. The ROI cuts analysis work. Scan time also depends on the total amount
-of frame data transferred and the actual Ethernet speed. A saved Cine can be
-scanned independently after disconnecting the camera. The VEO 1310S was tested on a direct
-10GBASE-T link to a Mac. PCA listed a completed RAM recording at its XIP and
-read actual frames using the standard PH16 TCP image connection.
-[PH16 camera protocol, §§2–3, 4.7, 5.9–5.10](https://github.com/DiamondLightSource/ADPhantom/blob/f0dab1241fc236189cc2d124cc97d43985a4eea6/documentation/v16proto-2.3.pdf)
+## Camera transfer options
 
-## Faster camera scans
+On a compatible Mac and Phantom camera, Event Finder selects **High-speed Ethernet · 12-bit (ximg)** for
+scanning. XIMG sends packed 12-bit images over the dedicated Ethernet link.
+macOS may ask you to authorize access to the camera interface when you start
+the scan. Opening the recording and stepping through frames use the standard
+connection. For the full precision available over that connection, choose the
+16-bit option before starting the scan.
 
-The standard camera image command sends a complete image for each requested
-frame. PCA computes the measurement only on the chosen rectangle or point.
-Selecting every tenth frame requests those frames directly from the camera.
-Selecting a shorter frame range also reduces the amount transferred. Most
-uncompressed monochrome Cines on disk support reading the rectangle directly.
+PCA checks the incoming packets for each requested frame. It retries an
+incomplete image. If retries fail, PCA reads that frame over standard Ethernet
+at matching 12-bit precision. Repeated failures switch the rest of the scan
+to the standard connection. The transfer status shows which path is active. Both paths send the complete image for
+each requested frame and measure the selected rectangle or point on the Mac.
+Choosing a shorter frame range or a larger sampling interval reduces the amount
+transferred. Most uncompressed monochrome Cines on disk support reading just
+the rectangle. [Phantom camera protocol, sections 5.10 and 5.11](https://github.com/DiamondLightSource/ADPhantom/blob/f0dab1241fc236189cc2d124cc97d43985a4eea6/documentation/v16proto-2.3.pdf)
 
-**Fast (8-bit)** halves image bytes compared with a 16-bit transfer on cameras
+**Standard · 8-bit** halves image bytes compared with a 16-bit transfer on cameras
 that support both formats. Every frame remains available at a sampling interval
 of 1. Use full precision for faint changes that may disappear at 8-bit precision.
 The estimate during a scan uses the speed observed on the current connection.

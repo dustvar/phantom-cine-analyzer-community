@@ -9,7 +9,12 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from event_cine_source import EventCineSource
+from event_camera import CameraRecordingChangedError
 from event_detection import EventScanCache, scan_events
+
+
+class _CineFileChangedError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -28,7 +33,8 @@ class RecordingWorker(QThread):
     previewReady = Signal(int, object, int, object)
     scanReady = Signal(int, object)
     progress = Signal(int, int, int)
-    failed = Signal(int, str)
+    transferStatus = Signal(int, str)
+    failed = Signal(int, str, bool)
     aborted = Signal(int)
 
     def __init__(self, parent):
@@ -38,11 +44,11 @@ class RecordingWorker(QThread):
         self.cancel = Event()
         self.stopping = False
 
-    def submit(self, ticket, source, index, scan=None):
+    def submit(self, ticket, source, index, scan=None, reopen=False):
         with self.condition:
             self.cancel.set()
             self.cancel = Event()
-            self.pending = (ticket, source, index, scan, self.cancel)
+            self.pending = (ticket, source, index, scan, self.cancel, reopen)
             self.condition.notify()
 
     def interrupt(self):
@@ -58,12 +64,13 @@ class RecordingWorker(QThread):
 
     def run(self):
         cache = EventScanCache()
+        cached_transfer = ''
 
         def check_file(path, signature):
             stat = Path(path).stat()
             if (stat.st_size, stat.st_mtime_ns) != signature:
                 cache.clear()
-                raise ValueError('This Cine file changed. Reopen it before scanning.')
+                raise _CineFileChangedError('This Cine file changed. Reopen it before scanning.')
 
         reader = source = info = None
         try:
@@ -72,12 +79,14 @@ class RecordingWorker(QThread):
                     self.condition.wait_for(lambda: self.stopping or self.pending is not None)
                     if self.stopping:
                         return
-                    ticket, requested, index, scan, cancel = self.pending
+                    ticket, requested, index, scan, cancel, reopen = self.pending
                     self.pending = None
                 try:
-                    if source != requested or reader is None:
+                    if reopen or source != requested or reader is None:
                         if reader is not None:
                             reader.close()
+                        if reopen:
+                            cache.clear()
                         reader = source = None
                         if requested is None:
                             continue
@@ -109,13 +118,21 @@ class RecordingWorker(QThread):
                         roi, sensitivity, first, last, step, signal, mode = scan
                         if not 0 <= first <= last < info.count:
                             raise ValueError("The scan range is outside this recording.")
-                        if hasattr(reader, 'set_transfer_mode'):
-                            reader.set_transfer_mode(mode)
                         if isinstance(requested, str):
                             check_file(requested, info.file_signature)
                         cache_key = (requested, info.file_signature, roi, mode)
-                        if cache.contains(cache_key, first, last, step, signal) and hasattr(reader, 'validate_recording'):
-                            reader.validate_recording()
+                        cached = cache.contains(cache_key, first, last, step, signal)
+                        if cached:
+                            if hasattr(reader, 'validate_recording'):
+                                reader.validate_recording()
+                            if info.transfer_modes:
+                                self.transferStatus.emit(ticket, f'Reusing frame measurements. {cached_transfer}'.strip())
+                        else:
+                            if hasattr(reader, 'set_transfer_status_callback'):
+                                reader.set_transfer_status_callback(
+                                    lambda message, scan_ticket=ticket: self.transferStatus.emit(scan_ticket, message))
+                            if hasattr(reader, 'set_transfer_mode'):
+                                reader.set_transfer_mode(mode)
 
                         def begin_sequence():
                             if hasattr(reader, 'set_scan_stride'):
@@ -140,20 +157,27 @@ class RecordingWorker(QThread):
                         if isinstance(requested, str):
                             check_file(requested, info.file_signature)
                         else:
+                            if not cached and cache.contains(cache_key, first, last, step, signal):
+                                cached_transfer = getattr(reader, 'transfer_notice', '')
                             reader.close()
-                            reader = source = None
+                            # The high-speed reader releases its connections on close and
+                            # remembers an unavailable transfer until this source is reopened.
+                            if 'ximg' not in info.transfer_modes:
+                                reader = source = None
                         self.scanReady.emit(ticket, result)
                 except CancelledError:
                     if reader is not None and not isinstance(source, str):
                         reader.close()
-                        reader = source = None
+                        if info is None or 'ximg' not in info.transfer_modes:
+                            reader = source = None
                     self.aborted.emit(ticket)
                 except Exception as exc:
                     # A disconnected or invalidated recording needs a fresh reader on retry.
                     if reader is not None:
                         reader.close()
                     source = reader = None
-                    self.failed.emit(ticket, str(exc) or type(exc).__name__)
+                    invalidated = isinstance(exc, (CameraRecordingChangedError, _CineFileChangedError))
+                    self.failed.emit(ticket, str(exc) or type(exc).__name__, invalidated)
         finally:
             cache.clear()
             if reader is not None:

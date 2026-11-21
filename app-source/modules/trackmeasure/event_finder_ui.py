@@ -219,13 +219,18 @@ class EventFinderPanel(QWidget):
         self.coverage.setWordWrap(True)
         side.addWidget(self.coverage)
         self.precision = QComboBox()
-        self.precision.setAccessibleName('Camera transfer precision')
-        self.precision.currentIndexChanged.connect(self._sensitivity_changed)
+        self.precision.setAccessibleName('Camera transfer method and precision')
+        self.precision.currentIndexChanged.connect(self._transfer_changed)
         self.precision_label = QLabel('Transfer')
         precision_row = QHBoxLayout()
         precision_row.addWidget(self.precision_label)
         precision_row.addWidget(self.precision, 1)
         side.addLayout(precision_row)
+        self.transfer_status = QLabel()
+        self.transfer_status.setAccessibleName('Camera transfer status')
+        self.transfer_status.setTextFormat(Qt.PlainText)
+        self.transfer_status.setWordWrap(True)
+        side.addWidget(self.transfer_status)
         options = QHBoxLayout()
         options.addWidget(QLabel('Sensitivity'))
         self.sensitivity = QComboBox()
@@ -254,6 +259,7 @@ class EventFinderPanel(QWidget):
         self.retry.clicked.connect(lambda: self.seek(self.position))
         self.retry.hide()
         self.status = QLabel()
+        self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
         side.addWidget(self.status)
         side.addWidget(self.retry)
@@ -355,6 +361,7 @@ class EventFinderPanel(QWidget):
         self.view.message = 'Opening recording…' if source is not None else 'Open a recorded Cine or choose a recording on the camera.'
         self.view.update()
         self.status.setText('')
+        self.transfer_status.clear()
         with QSignalBlocker(self.shape), QSignalBlocker(self.step), QSignalBlocker(self.precision):
             self.shape.setCurrentIndex(0)
             self.view.set_point_mode(False)
@@ -369,10 +376,10 @@ class EventFinderPanel(QWidget):
             if self.worker:
                 self.worker.submit(self.ticket, None, 0)
         else:
-            self._request(self.position)
+            self._request(self.position, reopen=True)
         self._controls()
 
-    def _request(self, index, scan=None):
+    def _request(self, index, scan=None, reopen=False):
         if self.closing:
             return
         if self.worker is None:
@@ -382,11 +389,12 @@ class EventFinderPanel(QWidget):
             self.worker.failed.connect(self._failed)
             self.worker.aborted.connect(self._aborted)
             self.worker.progress.connect(self._progress)
+            self.worker.transferStatus.connect(self._transfer_status_changed)
             self.worker.start()
         self.ticket += 1
         self.cancelling = False
         self.activity = 'scan' if scan else 'preview'
-        self.worker.submit(self.ticket, self.current, index, scan)
+        self.worker.submit(self.ticket, self.current, index, scan, reopen)
 
     def seek(self, index):
         if self.current is None or self.activity == 'scan' or self.closing:
@@ -426,10 +434,16 @@ class EventFinderPanel(QWidget):
             self._set_bounds()
             with QSignalBlocker(self.precision):
                 self.precision.clear()
-                for mode, label in (('fast','Fast · 8-bit'), ('full','Full precision · 16-bit')):
+                for mode, label, hint in (
+                    ('ximg', 'High-speed Ethernet · 12-bit (ximg)',
+                     'Reads packed 12-bit images over the camera’s wired link. macOS may ask for administrator approval when a scan starts.'),
+                    ('fast', 'Standard · 8-bit', 'Transfers fewer intensity levels and reduces download time over the standard connection.'),
+                    ('full', 'Full precision · 16-bit', 'Uses the standard connection and retains all 16-bit intensity values.'),
+                ):
                     if mode in info.transfer_modes:
                         self.precision.addItem(label, mode)
-                self.precision.setToolTip('Both modes use the same frames. 8-bit transfers less data; 16-bit preserves fainter intensity changes.')
+                        self.precision.setItemData(self.precision.count()-1, hint, Qt.ToolTipRole)
+            self._update_transfer_hint()
 
         self.view.image = QImage(pixels.data, info.width, info.height, pixels.strides[0], QImage.Format_Grayscale8).copy()
         self.view.message = ''
@@ -508,6 +522,21 @@ class EventFinderPanel(QWidget):
         self.status.setText('')
         self._controls()
 
+    def _update_transfer_hint(self):
+        hint = self.precision.currentData(Qt.ToolTipRole) or ''
+        self.precision.setToolTip(hint)
+        self.transfer_status.setText('macOS may ask for permission to read camera images.'
+                                     if self.precision.currentData() == 'ximg' else '')
+
+    def _transfer_changed(self):
+        self._update_transfer_hint()
+        self._sensitivity_changed()
+
+    def _transfer_status_changed(self, ticket, message):
+        if ticket == self.ticket and self.activity == 'scan' and not self.cancelling and not self.closing:
+            self.transfer_status.setText(message)
+            self.transfer_status.setVisible(bool(message))
+
     def _clear_hits(self):
         self.scanned = False
         self.total_events = 0
@@ -520,7 +549,6 @@ class EventFinderPanel(QWidget):
     def _analyze(self):
         if not self.info or not self.roi or self.activity or self.view.image is None:
             return
-        self._clear_hits()
         first, last = self._bounds()
         step = self.step.value()
         samples = sample_count(first, last, step)
@@ -570,19 +598,23 @@ class EventFinderPanel(QWidget):
     def _aborted(self, ticket):
         if ticket == self.ticket and not self.closing:
             self.activity = ''
+            self._update_transfer_hint()
             self.status.setText('Scan cancelled.')
             self._controls()
 
-    def _failed(self, ticket, message):
+    def _failed(self, ticket, message, invalidated):
         if ticket == self.ticket and not self.closing:
+            retry_preview = self.activity != 'scan' or invalidated
             self.activity = ''
-            if not isinstance(self.current, str) or 'file changed' in message:
+            if invalidated:
                 self._clear_hits()
+            self._update_transfer_hint()
             self.status.setText(message)
-            self.view.image = None
-            self.view.message = 'Could not read the recording.'
-            self.view.update()
-            self.retry.show()
+            if retry_preview:
+                self.view.image = None
+                self.view.message = 'Could not read the recording.'
+                self.view.update()
+                self.retry.show()
             self._controls()
 
     def _scan_ready(self, ticket, result):
@@ -641,6 +673,7 @@ class EventFinderPanel(QWidget):
         show_precision = bool(ready and self.info.transfer_modes)
         self.precision_label.setVisible(show_precision)
         self.precision.setVisible(show_precision)
+        self.transfer_status.setVisible(show_precision and bool(self.transfer_status.text()))
         self.step_unit.setText('frame' if self.step.value()==1 else 'frames')
         self.precision.setEnabled(ready and self.precision.count()>1 and not scanning)
         for control in (self.shape, self.first, self.last, self.step, self.reset_range):
