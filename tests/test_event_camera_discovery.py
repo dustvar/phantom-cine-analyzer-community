@@ -14,7 +14,7 @@ class DiscoveryTests(unittest.TestCase):
             wired.return_value = [(7, IPv4Interface('172.16.6.7/16'))]
             note = discovery.empty_discovery_hint()
             self.assertIn('No camera replied on 172.16.6.7', note)
-            self.assertIn('100.100.x.x', note)
+            self.assertIn('100.100', note)
             wired.return_value.append((7, IPv4Interface('100.100.6.7/16')))
             self.assertIn('same subnet', discovery.empty_discovery_hint())
             wired.return_value = []
@@ -24,12 +24,12 @@ class DiscoveryTests(unittest.TestCase):
         net = IPv4Interface('10.3.4.3/24')
         peer = '10.3.4.25'
         self.assertEqual(discovery._parse(b'PH23 7115 9111 12345 "12345"\x00', peer, net),
-                         discovery.DiscoveredCamera(peer, '12345', '12345'))
+                         discovery.DiscoveredCamera(peer, '12345', '12345', '23'))
         self.assertEqual(discovery._parse(b'PH16 7115 8001 1234\r\n', peer, net),
                          discovery.DiscoveredCamera(peer, '1234'))
         self.assertEqual(discovery._parse(b'PH16 7115 1.0.0.5 1234 "Rig A"\x00', peer, net),
                          discovery.DiscoveredCamera(peer, '1234', 'Rig A'))
-        for data in (b'phantom?', b'PH7 7115 123 456', b'PH16 123 1 4321',
+        for data in (b'phantom?', b'PH? 7115 123 456', b'PH16 123 1 4321',
                      b'PH16 7115 2 x1234', b'PH16 7115 2 1234\r\nother',
                      b'PH16 7115 2 1234 "' + b'A' * 260 + b'"'):
             with self.subTest(data=data):
@@ -83,12 +83,35 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([c.host for c in cameras], list(reversed(hosts)))
         for i, sock in enumerate(listeners):
             net = addresses[i][1]
-            sock.bind.assert_called_once_with((str(net.ip), 0))
+            sock.bind.assert_called_once_with((str(net.ip), 7380))
             sock.setsockopt.assert_any_call(discovery.socket.IPPROTO_IP, 25, 7)
             self.assertEqual([call.args for call in sock.sendto.call_args_list], [
                 (b'phantom?', (str(net.network.broadcast_address), 7380)),
                 (b'phantom?', ('255.255.255.255', 7380))])
             sock.__exit__.assert_called_once()
+
+    def test_protocol_and_off_subnet_are_visible_without_opening_a_connection(self):
+        net = IPv4Interface('172.16.6.7/16')
+        reply = b'PH16 7115 8001 1234'
+        self.assertIsNone(discovery._parse(reply, '100.100.1.2', net))
+        mismatch = discovery._parse(reply, '100.100.1.2', net, 'en14')
+        self.assertIn('Ethernet setup', mismatch.connection_issue)
+        self.assertEqual(mismatch.setup_device, 'en14')
+        reachable = discovery._parse(reply, '172.16.1.2', net, 'en14')
+        self.assertEqual(discovery.camera_groups([mismatch, reachable]), {'1234': [reachable]})
+        unsupported = discovery._parse(b'PH42 7115 1010 321', '172.16.2.2', net, 'en14')
+        self.assertIn('PH42', unsupported.connection_issue)
+
+    def test_busy_discovery_port_falls_back_to_an_ephemeral_port(self):
+        net = IPv4Interface('172.16.6.7/16')
+        sock = MagicMock()
+        sock.__enter__.return_value = sock
+        sock.bind.side_effect = [OSError(discovery.errno.EADDRINUSE, 'port in use'), None]
+        with patch.object(discovery.socket, 'socket', return_value=sock), \
+                patch.object(discovery, 'monotonic', side_effect=[0, 2]):
+            self.assertEqual(discovery._search([(1, net)], lambda: False), [])
+        self.assertEqual([call.args for call in sock.bind.call_args_list],
+                         [(('172.16.6.7', 7380),), (('172.16.6.7', 0),)])
 
     def test_cancellation_and_no_ethernet(self):
         with patch.object(discovery.socket, 'socket') as factory:

@@ -673,6 +673,74 @@ class CameraControlPanelTests(unittest.TestCase):
         self.wait(lambda:p.view.image is not None and len([1 for c,v in self.calls if c=='connect'])==2)
         self.assertIn(('close', None),self.calls)
 
+    def test_waits_for_new_camera_after_an_empty_search_without_using_saved_host(self):
+        p = self.panel
+        p.settings.setValue('last/host', '192.0.2.99')
+        p.settings.setValue('last/serial', '999')
+        self.discovery.side_effect = [[], [DiscoveredCamera('192.0.2.33', '123')]]
+        p.discovery_retry.setInterval(160)
+        p.set_active(True)
+        self.wait(p.discovery_retry.isActive)
+        self.assertEqual(p.cameras.currentIndex(), -1)
+        self.assertTrue(p.address.isHidden())
+        self.assertFalse(p.connect_button.isEnabled())
+        self.assertFalse(self.calls)
+        self.wait(lambda: p.snapshot is not None)
+        self.assertEqual(self.calls[0], ('connect', ('192.0.2.33','123')))
+        p.connect_button.click()
+        self.wait(lambda: not p.workers)
+        self.assertFalse(p.discovery_retry.isActive())
+        self.discovery.side_effect = None
+        self.discovery.return_value = [DiscoveredCamera('192.0.2.33', '123')]
+        p.refresh.click()
+        self.wait(lambda: not p.workers)
+        self.assertIsNone(p.session)
+        self.assertEqual(len([c for c,_ in self.calls if c == 'connect']), 1)
+        self.assertFalse(self.writes())
+
+    def test_manual_selection_survives_an_in_flight_retry(self):
+        p = self.panel
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def scanning(cancelled):
+            if self.discovery.call_count == 1:
+                return []
+            entered.set()
+            release.wait(2)
+            return [DiscoveredCamera('192.0.2.12', '456')]
+        self.discovery.side_effect = scanning
+        p.discovery_retry.setInterval(20)
+        p.set_active(True)
+        self.wait(entered.is_set)
+        p.cameras.setCurrentIndex(p.cameras.count()-1)
+        p.address.setText('192.0.2.55')
+        release.set()
+        self.wait(lambda: not p.workers)
+        self.assertTrue(p.address.isVisible())
+        self.assertEqual(p.address.text(), '192.0.2.55')
+        self.assertFalse(self.calls)
+        self.assertFalse(p.discovery_retry.isActive())
+
+    def test_detects_off_network_or_unsupported_camera_without_starting_live_view(self):
+        p = self.panel
+        self.discovery.return_value = [DiscoveredCamera('100.100.3.6','412',setup_device='en14')]
+        p.set_active(True)
+        self.wait(lambda: not p.workers)
+        self.assertIn('S/N 412', p.cameras.currentText())
+        self.assertIn('Ethernet', p.connect_button.text())
+        self.assertIn('100.100.3.6', p.notice.text())
+        with patch.object(p.ethernet, 'open') as opened, patch.object(p.ethernet, 'set_candidate') as candidate:
+            p.connect_button.click()
+            opened.assert_called_once()
+            candidate.assert_called_once_with('100.100.3.6','','412','en14')
+        p.discovery_retry.stop()
+        self.discovery.return_value = [DiscoveredCamera('172.16.3.6','412',protocol='99')]
+        p.refresh.click()
+        self.wait(lambda: not p.workers)
+        self.assertIn('PH99',p.notice.text())
+        self.assertFalse(p.connect_button.isEnabled())
+        self.assertFalse(self.calls)
+
     def test_scan_excludes_only_the_camera_in_use(self):
         p = self.panel
         p.camera_in_use = lambda hosts, serial: serial == '123'

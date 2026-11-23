@@ -546,3 +546,8 @@ Camera Control 1.14.21
   which measurements it needs. Tracking graphs and reports use the selected time unit
   for trigger-relative timestamps, including frames before the trigger.
 - Show installed camera RAM and Cine recording memory in GB in Camera Control and Ethernet.
+
+1.15.3 Beta — Camera discovery
+- Camera Control watches for cameras on wired Ethernet while the panel is open.
+- Ethernet setup selects the connected cable and offers to save the common Phantom
+  camera networks on that Mac adapter for subsequent connections.

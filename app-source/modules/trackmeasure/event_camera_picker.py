@@ -2,13 +2,13 @@
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 
 from app_runtime import user_data_dir
 from event_camera import list_recordings, validate_address
-from event_camera_discovery import discover_cameras, empty_discovery_hint
+from event_camera_discovery import camera_groups, discover_cameras, empty_discovery_hint
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,7 @@ class _Camera:
     hosts: tuple
     previous: bool = False
     name: str = ''
+    issue: str = ''
 
     @property
     def label(self):
@@ -81,6 +82,8 @@ class CameraRecordingDialog(QDialog):
         self.setMinimumWidth(450)
         self.resize(515, 460)
         self.discovery = self.lookup = None
+        self.discovery_retry = QTimer(self, interval=4000, singleShot=True)
+        self.discovery_retry.timeout.connect(self._retry_discovery)
         self.workers = set()
         self.items = []
         self.settings = QSettings(str(user_data_dir()/'cameras.ini'), QSettings.IniFormat)
@@ -151,6 +154,7 @@ class CameraRecordingDialog(QDialog):
     def _toggle_manual(self, checked):
         self.network.setVisible(checked)
         if checked:
+            self.discovery_retry.stop()
             self.cameras.setCurrentRow(-1)
             self._clear_recordings()
             self.status.setText('Enter the camera address, then choose Find recordings.')
@@ -173,15 +177,22 @@ class CameraRecordingDialog(QDialog):
         worker.finished.connect(self._finished)
         worker.start()
 
-    def refresh_cameras(self):
+    def _retry_discovery(self):
+        if self.isVisible() and not self.manual.isChecked() and self.cameras.currentRow() < 0:
+            self.refresh_cameras(background=True)
+
+    def refresh_cameras(self, *, background=False):
+        self.discovery_retry.stop()
         if self.discovery is not None:
             self.discovery.requestInterruption()
-        self._clear_recordings()
-        self.cameras.clear()
-        self.manual.setChecked(False)
+        if not background:
+            self._clear_recordings()
+            self.cameras.clear()
+            self.manual.setChecked(False)
         self.refresh.setEnabled(False)
         self.discovery_note.setText('Looking for Phantom cameras on Ethernet…')
         self.discovery = _Discover(self)
+        self.discovery.background = background
         self._start(self.discovery)
 
     def _remembered(self):
@@ -194,43 +205,47 @@ class CameraRecordingDialog(QDialog):
 
     def _show_cameras(self, worker):
         self.refresh.setEnabled(True)
+        if worker.background and (self.manual.isChecked() or self.cameras.currentRow() >= 0):
+            return
+        self.cameras.clear()
         previous = self._remembered()
-        groups = {}
-        for found in worker.cameras:
-            key = found.serial or found.host
-            if key not in groups:
-                groups[key] = _Camera(found.serial, '', (found.host,), name=found.name or '')
-            else:
-                camera = groups[key]
-                groups[key] = replace(camera, hosts=tuple(dict.fromkeys((*camera.hosts, found.host))),
-                                      name=camera.name or found.name or '')
+        groups = camera_groups(worker.cameras)
         live_count = len(groups)
         cameras = []
         remembered_listed = False
-        for camera in groups.values():
-            if previous and camera.serial and camera.serial == previous.serial:
+        for peers in groups.values():
+            peer = peers[0]
+            camera = _Camera(peer.serial, '', tuple(dict.fromkeys(c.host for c in peers)),
+                             name=next((c.name for c in peers if c.name and c.name != c.serial), ''),
+                             issue=peer.connection_issue)
+            if previous and camera.serial and camera.serial == previous.serial and not camera.issue:
                 camera = replace(camera, model=previous.model,
                                  hosts=tuple(dict.fromkeys((*camera.hosts, *previous.hosts))))
-            if previous and previous.hosts[0] in camera.hosts:
+            if previous and (previous.serial == camera.serial or previous.hosts[0] in camera.hosts):
                 remembered_listed = True
             cameras.append(camera)
         if previous and not remembered_listed:
             cameras.append(previous)
         for camera in cameras:
             item = QListWidgetItem(camera.label)
-            item.setToolTip(', '.join(camera.hosts))
+            item.setToolTip(camera.issue or ', '.join(camera.hosts))
             item.setData(Qt.UserRole, camera)
             self.cameras.addItem(item)
         if live_count:
             self.discovery_note.setText('Choose a camera to see its recordings.' if live_count > 1 else '')
         else:
             self.discovery_note.setText(worker.error or 'No camera replied. Check the Ethernet connection, then refresh.')
-        if live_count == 1 and not self.manual.isChecked():
+        if live_count == 1 and not self.manual.isChecked() and not cameras[0].issue:
             self.cameras.setCurrentRow(0)
+        elif not self.manual.isChecked() and (not live_count or (live_count == 1 and cameras[0].issue)):
+            self.discovery_note.setText((cameras[0].issue if live_count else self.discovery_note.text())
+                                        + ' Searching automatically.')
+            self.discovery_retry.start()
 
     def _camera_selected(self, row):
         self._clear_recordings()
         if row >= 0:
+            self.discovery_retry.stop()
             self.manual.setChecked(False)
             self._read(self.cameras.item(row).data(Qt.UserRole))
 
@@ -249,6 +264,9 @@ class CameraRecordingDialog(QDialog):
 
     def _read(self, camera):
         self._clear_recordings()
+        if camera.issue:
+            self.status.setText(camera.issue.replace('Open Ethernet setup', 'Open Camera Control → Ethernet setup'))
+            return
         self.status.setText('Reading stored Cine slots…')
         self.lookup = _FindRecordings(camera, self)
         self._start(self.lookup)
@@ -295,6 +313,7 @@ class CameraRecordingDialog(QDialog):
             self.accept()
 
     def shutdown(self):
+        self.discovery_retry.stop()
         self.discovery = self.lookup = None
         for worker in self.workers:
             worker.requestInterruption()

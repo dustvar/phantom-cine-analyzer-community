@@ -28,7 +28,10 @@ With one camera, its completed RAM recordings appear automatically. With several
 select the camera you want, then select a RAM Cine and click **Open recording**.
 [Phantom camera protocol, section 6](https://github.com/DiamondLightSource/ADPhantom/blob/f0dab1241fc236189cc2d124cc97d43985a4eea6/documentation/v16proto-2.3.pdf)
 
-If you plug in a camera after opening the list, refresh the search. A previously used camera
+An empty list keeps searching when you plug in a camera. On a Mac with a dedicated
+adapter, **Camera Control → Ethernet setup → Set up camera network…** can save
+both standard Phantom networks on the adapter. Later cameras using either network
+can then appear automatically. A previously used camera
 can appear even when it has not answered the current search. Select it to try its last address.
 You can also enter an address manually. For a VEO, use the XIP on the label for 10 Gb Ethernet
 and the regular IP for Gigabit Ethernet. The Mac’s wired adapter needs its own address on the

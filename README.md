@@ -19,6 +19,11 @@ keys, or private build credentials are included in this repository.
   The curve affects the monitor only. Cycle the purple guides or inspect live and recorded
   frames with the mouse wheel, trackpad pinch and drag. The yellow navigator shows the
   visible area inside the full frame.
+- **Camera discovery (1.15.3 beta).** Open **Camera Control** and plug in the camera.
+  On a dedicated Mac adapter, **Ethernet setup → Set up camera network…** saves the
+  standard Phantom networks once. Camera Control keeps searching while open and opens
+  the live view when one compatible camera answers. Live preview has been verified on
+  the KT-1610 over 10 Gb Ethernet. Its capture settings are read-only in this release.
 - **Camera Control (1.15.1 beta).** The standalone Phantom C980 and VEO 1310S support live
   preview and state-dependent capture controls. The C980 rate menu includes its standard
   sensor windows. Exposure changes were verified on an armed C980 and restored after testing.

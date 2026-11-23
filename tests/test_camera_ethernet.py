@@ -38,6 +38,9 @@ class ConnectionSummaryTests(unittest.TestCase):
                   '(Hardware Port: Thunderbolt Ethernet Slot 0, Device: en7)\n'
                   '(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n')
         self.assertEqual(mac_service_names(output)['en7'], 'Office LAN')
+        helper = '(3) PCA Camera en7 (172.16)\n(Hardware Port: Thunderbolt Ethernet Slot 0, Device: en7)\n'
+        self.assertEqual(mac_service_names(output + helper)['en7'], 'Office LAN')
+        self.assertEqual(mac_service_names(helper + output)['en7'], 'Office LAN')
         self.assertEqual(mac_maximum_speed('autoselect\n1000baseT <full-duplex>\n10Gbase-T <full-duplex>'), 10000)
         self.assertEqual(mac_maximum_speed('2500Base-T <full-duplex>\n'), 2500)
         self.assertEqual(mac_maximum_speed('Unavailable'), 0)
@@ -51,6 +54,114 @@ class ConnectionSummaryTests(unittest.TestCase):
         self.assertEqual(camera_adapter('172.16.11.4', records, None), '')
         self.assertEqual(camera_adapter('172.16.11.4', records, IPv4Address('10.9.8.1')), '')
         self.assertEqual(camera_adapter('172.16.11.4', {'en6': records['en6']}, None), 'en6')
+
+    def test_connected_cable_is_the_only_default_mac_choice_including_before_dhcp(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        import camera_ethernet_ui as ethernet
+        devices = ['anpi0', 'en1', 'en4', 'en13', 'en14']
+        inventory = []
+        for name in devices:
+            nic = MagicMock()
+            nic.name.return_value = nic.humanReadableName.return_value = name
+            inventory.append((nic, ()))
+        stats = {name: SimpleNamespace(isup=True, speed=0) for name in devices}
+        links = '\n'.join(f'{d}: flags=...\n\tstatus: {"active" if d == "en14" else "inactive"}'
+                          for d in devices)
+        with (patch.object(ethernet.sys, 'platform', 'darwin'),
+              patch.object(ethernet, 'wired_interfaces', return_value=inventory),
+              patch.object(ethernet.psutil, 'net_if_stats', return_value=stats),
+              patch.object(ethernet.CameraEthernetDialog, '_mac_probe')):
+            dialog = ethernet.CameraEthernetDialog()
+            self.addCleanup(dialog.close)
+            dialog._got_names('(1) USB Ethernet\n(Hardware Port: USB Ethernet, Device: en13)\n'
+                              '(2) Thunderbolt Ethernet Slot 1\n(Hardware Port: Thunderbolt Ethernet Slot 1, Device: en14)')
+            dialog._got_links(links)
+            dialog.show()
+            self.app.processEvents()
+            self.assertEqual(dialog.interface.count(), 1)
+            self.assertEqual(dialog.interface.currentData(), 'en14')
+            self.assertEqual(dialog.adapter_summary.text(), 'Thunderbolt Ethernet Slot 1')
+            self.assertFalse(dialog.interface.isVisible())
+            self.assertEqual(dialog.link.text(), 'Connected')
+            self.assertTrue(dialog.setup.isVisible())
+            dialog.set_candidate('100.100.40.1', 'Lab camera', '42', 'en14')
+            self.assertEqual(dialog.identity.text(), 'Lab camera')
+            self.assertIn('Discovered', dialog.metadata.text())
+            self.assertEqual(dialog.camera_ip.text(), '100.100.40.1')
+            self.assertFalse(dialog.details.isVisible())
+            dialog.advanced.click()
+            dialog.show_unlinked.click()
+            self.assertEqual([dialog.interface.itemData(i) for i in range(dialog.interface.count())],
+                             ['en14', 'en13'])
+            dialog.interface.setCurrentIndex(1)
+            dialog._select_device()
+            dialog._refresh()
+            self.assertEqual(dialog.interface.currentData(), 'en13')
+            self.assertEqual(dialog.link.text(), 'No Ethernet link')
+            self.assertFalse(dialog.setup.isVisible())
+            dialog.advanced.click()
+            self.assertEqual(dialog.interface.currentData(), 'en14')
+            inventory.pop()  # Link unplugged; configured USB adapter remains, plus Apple's internal ports.
+            dialog._refresh()
+            self.assertEqual(dialog.interface.count(), 1)
+            self.assertEqual(dialog.adapter_summary.text(), 'USB Ethernet')
+            self.assertEqual(dialog.link.text(), 'No Ethernet link')
+            inventory.clear()
+            dialog._refresh()
+            self.assertEqual(dialog.interface.count(), 0)
+            self.assertEqual(dialog.adapter_summary.text(), 'No wired adapter detected')
+            self.assertFalse(dialog.setup.isVisible())
+
+    def test_setup_offers_to_save_a_temporary_alias_and_rediscovers_after_approval(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        import camera_ethernet_ui as ethernet
+        nick = MagicMock()
+        nick.name.return_value = nick.humanReadableName.return_value = 'en14'
+        base = IPv4Interface('172.16.6.7/16')
+        alias = IPv4Interface('100.100.6.7/16')
+        with (patch.object(ethernet.sys, 'platform', 'darwin'),
+              patch.object(ethernet, 'wired_interfaces', return_value=[(nick, (base, alias))]),
+              patch.object(ethernet.psutil, 'net_if_stats', return_value={'en14': SimpleNamespace(isup=True, speed=10000)}),
+              patch.object(ethernet.CameraEthernetDialog, '_mac_probe'),
+              patch.object(ethernet, 'setup_arguments', return_value=['example']) as arguments,
+              patch.object(ethernet, 'QProcess') as process):
+            dialog = ethernet.CameraEthernetDialog()
+            self.addCleanup(dialog.close)
+            dialog.show()
+            dialog._got_names('(1) Lab adapter\n(Hardware Port: Thunderbolt Ethernet Slot 1, Device: en14)')
+            dialog._got_address('Lab adapter', 'Manual Configuration\nIP address: 172.16.6.7\nSubnet mask: 255.255.0.0\n')
+            self.assertTrue(dialog.setup.isVisible())
+            self.assertTrue(dialog.details.isHidden())
+            process.assert_not_called()
+            updated = MagicMock()
+            dialog.networkChanged.connect(updated)
+            dialog.setup.click()
+            self.assertEqual(arguments.call_args.args[:2], ('en14', (base,)))
+            self.assertTrue(dialog.setup_process)
+            self.assertFalse(dialog.setup.isEnabled())
+            updated.assert_not_called()
+            job = process.return_value
+            job.readAllStandardError.return_value = b'User canceled. (-128)'
+            job.finished.connect.call_args.args[0](1, process.NormalExit)
+            dialog._poll_adapters()
+            self.app.processEvents()
+            updated.assert_not_called()
+            self.assertIsNone(dialog.setup_process)
+            self.assertEqual(process.call_count, 1)
+            dialog._got_address('Lab adapter', 'Manual Configuration\nIP address: 172.16.6.7\nSubnet mask: 255.255.0.0\n')
+            dialog.setup.click()
+            job.readAllStandardError.return_value = b''
+            finished = job.finished.connect.call_args.args[0]
+            finished(0, process.NormalExit)
+            updated.assert_called_once()
+            dialog._got_names('(1) Lab adapter\n(Hardware Port: Thunderbolt Ethernet Slot 1, Device: en14)\n'
+                              '(2) PCA Camera en14 (100.100)\n(Hardware Port: Thunderbolt Ethernet Slot 1, Device: en14)')
+            dialog._got_address('Lab adapter', 'Manual Configuration\nIP address: 172.16.6.7\nSubnet mask: 255.255.0.0\n')
+            dialog._got_address('PCA Camera en14 (100.100)', 'Manual Configuration\nIP address: 100.100.6.7\nSubnet mask: 255.255.0.0\n')
+            self.assertTrue(dialog.setup.isHidden())
+            self.assertEqual(dialog.adapter_summary.text(), 'Lab adapter')
 
     def test_connected_disconnected_and_other_adapter_views(self):
         from ipaddress import IPv4Address

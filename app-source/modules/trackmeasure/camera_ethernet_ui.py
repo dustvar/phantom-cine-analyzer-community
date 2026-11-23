@@ -1,17 +1,18 @@
 """Inspect the wired connection and compare its IPv4 subnet with a camera label."""
-from ipaddress import IPv4Address, IPv4Network
+from ipaddress import IPv4Address, IPv4Interface, IPv4Network
 import re
 import socket
 import sys
 
 import psutil
-from PySide6.QtCore import QProcess, QSignalBlocker, Qt, QTimer, QUrl
+from PySide6.QtCore import QProcess, QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtNetwork import QNetworkInterface
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QToolButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog,
+                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QStackedWidget,
+                               QToolButton, QVBoxLayout, QWidget)
 
+from camera_network_setup import setup_arguments
 from event_camera_discovery import wired_interfaces
 
 FACTORY_SUBNETS = (IPv4Network('100.100.0.0/16'), IPv4Network('172.16.0.0/16'))
@@ -53,18 +54,52 @@ def subnet_hint(text, addresses):
             'address on the camera’s subnet, using the camera’s subnet mask.')
 
 
-def mac_service_names(output):
-    names = {}
+def mac_services(output):
+    services = {}
     service = ''
     for line in output.splitlines():
-        heading = re.match(r'^\(\d+\)\s+(.+)$', line)
+        heading = re.match(r'^\((\d+|\*)\)\s+(.+)$', line)
         if heading:
-            service = heading.group(1).strip()
+            service = heading.group(2).strip()
+            if heading.group(1) == '*' or service.startswith('(*)'):
+                service = ''
             continue
         device = re.search(r', Device:\s*(en\d+)\)', line)
         if device and service:
-            names[device.group(1)] = service
-    return names
+            services.setdefault(device.group(1), []).append(service)
+    return services
+
+
+def mac_service_names(output):
+    return {device: next((n for n in group if not n.startswith('PCA Camera ')), group[0])
+            for device, group in mac_services(output).items()}
+
+
+def mac_manual_addresses(output):
+    if not output.strip() or '** Error' in output:
+        return None
+    if 'Manual Configuration' not in output.splitlines():
+        return ()
+    ip = re.search(r'^IP address:\s*([\d.]+)$', output, re.MULTILINE)
+    mask = re.search(r'^Subnet mask:\s*([\d.]+)$', output, re.MULTILINE)
+    if ip and mask:
+        try:
+            return (IPv4Interface(f'{ip.group(1)}/{mask.group(1)}'),)
+        except ValueError:
+            pass
+    return None
+
+
+def mac_link_states(output):
+    """Darwin's UP/RUNNING flags can stay set even when a cable is unplugged."""
+    states = {}
+    device = ''
+    for line in output.splitlines():
+        if line and not line[0].isspace():
+            device = line.partition(':')[0]
+        elif device and line.strip() in ('status: active', 'status: inactive'):
+            states[device] = line.strip() == 'status: active'
+    return states
 
 
 def mac_maximum_speed(output):
@@ -107,6 +142,8 @@ def camera_adapter(host, adapters, local_ip):
 
 
 class CameraEthernetDialog(QDialog):
+    networkChanged = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Camera connection')
@@ -115,13 +152,20 @@ class CameraEthernetDialog(QDialog):
         self.host = self.model = self.serial = self.camera_details = self.memory_details = ''
         self.active_device = ''
         self.follow_camera = True
+        self.candidate_host = self.candidate_device = ''
         self.service_names = {}
+        self.services = {}
+        self.saved_addresses = {}
+        self.names_inventory = None
+        self.link_states = {}
+        self.linked = set()
         self.maximums = {}
         self.probes = {}
         self.adapters = {}
         self._content = None
         self.owned = {}
         self.alias_process = None
+        self.setup_process = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 12)
         layout.setSpacing(8)
@@ -140,7 +184,14 @@ class CameraEthernetDialog(QDialog):
         self.interface = QComboBox()
         self.interface.setMinimumContentsLength(12)
         self.interface.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        form.addRow('&Adapter', self.interface)
+        self.adapter_value = QStackedWidget()
+        self.adapter_summary = QLabel()
+        self.adapter_summary.setTextFormat(Qt.PlainText)
+        self.adapter_summary.setWordWrap(True)
+        self.adapter_value.addWidget(self.adapter_summary)
+        self.adapter_value.addWidget(self.interface)
+        form.addRow('&Adapter', self.adapter_value)
+        form.labelForField(self.adapter_value).setBuddy(self.interface)
         self.link = QLabel()
         form.addRow('Link speed', self.link)
         self.maximum = QLabel()
@@ -151,6 +202,13 @@ class CameraEthernetDialog(QDialog):
         self.guidance.setTextFormat(Qt.PlainText)
         self.guidance.setWordWrap(True)
         layout.addWidget(self.guidance)
+        self.setup = QPushButton('Set up camera network…')
+        self.setup.setAutoDefault(False)
+        self.setup.setProperty('primaryAction', True)
+        self.setup.setToolTip('Save the standard Phantom network addresses on this adapter. macOS will ask for approval.')
+        self.setup.clicked.connect(self._setup_network)
+        self.setup.hide()
+        layout.addWidget(self.setup, 0, Qt.AlignLeft)
 
         self.advanced = QToolButton()
         self.advanced.setText('Network details')
@@ -171,6 +229,10 @@ class CameraEthernetDialog(QDialog):
         self.memory.setTextInteractionFlags(Qt.TextSelectableByMouse)
         detail_layout.addWidget(self.memory)
         self.memory.hide()
+        self.show_unlinked = QCheckBox('Include disconnected adapters')
+        self.show_unlinked.toggled.connect(self._refresh)
+        self.show_unlinked.hide()
+        detail_layout.addWidget(self.show_unlinked)
         self.camera_ip = QLineEdit()
         self.camera_ip.setPlaceholderText('IP or XIP from camera label')
         addresses.addRow('Adapter addresses', self.ipv4)
@@ -208,20 +270,23 @@ class CameraEthernetDialog(QDialog):
         self.interface.currentIndexChanged.connect(self._update_details)
         self.camera_ip.textChanged.connect(self._update_details)
         self.poll = QTimer(self, interval=2000)
-        self.poll.timeout.connect(self._refresh)
+        self.poll.timeout.connect(self._poll_adapters)
 
     def _toggle_details(self, expanded):
         self.advanced.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self.details.setVisible(expanded)
+        if not expanded:
+            self.show_unlinked.setChecked(False)
         self._fit_height()
 
     def set_camera(self, host, model='', serial='', details='', memory_details=''):
         values = (host or '', model or '', serial or '', details or '', memory_details or '')
-        if values == (self.host, self.model, self.serial, self.camera_details, self.memory_details):
+        if values == (self.host, self.model, self.serial, self.camera_details, self.memory_details) and not self.candidate_host:
             return
-        if self.host != values[0]:
+        if self.host != values[0] or self.candidate_host:
             self.follow_camera = True
             self.camera_ip.setText(values[0])
+        self.candidate_host = self.candidate_device = ''
         self.host, self.model, self.serial, self.camera_details, self.memory_details = values
         self.memory.setText(self.memory_details)
         self.memory.setVisible(bool(self.memory_details))
@@ -232,11 +297,29 @@ class CameraEthernetDialog(QDialog):
         if self.isVisible():
             self._refresh()
 
+    def set_candidate(self, host, name='', serial='', device=''):
+        """Show a discovered peer even when a control connection is not yet possible."""
+        self.set_camera('')
+        if not host:
+            return
+        try:
+            self.candidate_host = str(IPv4Address(host))
+        except ValueError:
+            return
+        self.candidate_device = device
+        self.follow_camera = True
+        self.camera_ip.setText(host)
+        self.identity.setText(name or 'Phantom camera found')
+        self.metadata.setText('  ·  '.join(s for s in ('Discovered', f'S/N {serial}' if serial else '') if s))
+        self.metadata.show()
+        self._refresh()
+        self.advanced.setChecked(self.setup.isHidden())
+
     def _select_device(self):
-        self.follow_camera = self.interface.currentData() == self.active_device
+        self.follow_camera = self.interface.currentData() == (self.active_device or self.candidate_device)
         self._update_details()
 
-    def _mac_probe(self, key, args, callback):
+    def _mac_probe(self, key, args, callback, program='/usr/sbin/networksetup'):
         if key in self.probes:
             return
         job = QProcess(self)
@@ -249,11 +332,35 @@ class CameraEthernetDialog(QDialog):
             callback(output)
         job.finished.connect(finished)
         job.errorOccurred.connect(lambda error: finished() if error == QProcess.FailedToStart else None)
-        job.start('/usr/sbin/networksetup', args)
+        job.start(program, args)
 
     def _got_names(self, output):
+        self.services = mac_services(output)
         self.service_names = mac_service_names(output)
         self._refresh()
+
+    def _got_address(self, service, output):
+        self.saved_addresses[service] = mac_manual_addresses(output)
+        self._update_details()
+
+    def _configured_addresses(self, device, live):
+        # An ifconfig alias works for this session only. Read the physical
+        # adapter's saved services to decide whether one-time setup is complete.
+        services = self.services.get(device, ())
+        if self.isVisible():
+            for service in services:
+                if service not in self.saved_addresses:
+                    self._mac_probe('address:' + service, ['-getinfo', service],
+                                    lambda output, s=service: self._got_address(s, output))
+        if services and all(self.saved_addresses.get(s) is not None for s in services):
+            return tuple(addr for s in services for addr in self.saved_addresses[s])
+        return live
+
+    def _got_links(self, output):
+        states = mac_link_states(output)
+        if self.link_states != states:
+            self.link_states = states
+            self._refresh()
 
     def _got_media(self, device, output):
         self.maximums[device] = mac_maximum_speed(output)
@@ -263,8 +370,50 @@ class CameraEthernetDialog(QDialog):
         if not QDesktopServices.openUrl(QUrl(self.settings_url)):
             self.note.setText('Open your computer’s network settings and select the wired adapter.')
 
+    def _setup_network(self):
+        if self.setup_process or self.alias_process:
+            return
+        self._refresh()
+        device = self.interface.currentData()
+        if not device or not self.setup.isEnabled() or self.setup.isHidden():
+            return
+        others = []
+        for adapter in QNetworkInterface.allInterfaces():
+            if adapter.name() != device:
+                for entry in adapter.addressEntries():
+                    if entry.ip().toIPv4Address() and 0 <= entry.prefixLength() <= 32:
+                        others.append(IPv4Interface((entry.ip().toString(), entry.prefixLength())))
+        try:
+            saved = self._configured_addresses(device, self.adapters[device][1])
+            args = setup_arguments(device, saved, others, camera_host=self.candidate_host or self.host)
+        except ValueError as exc:
+            QMessageBox.information(self, 'Camera network', str(exc))
+            return
+        process = self.setup_process = QProcess(self)
+        process.setProgram('/usr/bin/osascript')
+        process.setArguments(args)
+        self._update_details()
+
+        def finished(ok):
+            if self.setup_process is not process:
+                return
+            self.setup_process = None
+            error = bytes(process.readAllStandardError()).decode('utf-8', 'replace').strip()
+            process.deleteLater()
+            self.names_inventory = None
+            self.saved_addresses.clear()
+            self._refresh()
+            if ok:
+                self.networkChanged.emit()
+            elif '(-128)' not in error:
+                QMessageBox.information(self, 'Camera network', error or
+                                        'The network settings could not be saved. Check that the wired adapter is connected and retry.')
+        process.finished.connect(lambda code, status: finished(code == 0 and status == QProcess.NormalExit))
+        process.errorOccurred.connect(lambda error: finished(False) if error == QProcess.FailedToStart else None)
+        process.start()
+
     def _edit_alias(self):
-        if self.alias_process is not None:
+        if self.alias_process is not None or self.setup_process is not None:
             return
         self._refresh()
         name = self.interface.currentText()
@@ -316,6 +465,7 @@ class CameraEthernetDialog(QDialog):
         process.setProgram('/usr/bin/osascript')
         process.setArguments(args)
         self.temporary.setEnabled(False)
+        self.setup.setEnabled(False)
 
         def finished(ok):
             if self.alias_process is not process:
@@ -331,6 +481,8 @@ class CameraEthernetDialog(QDialog):
                                         'macOS did not complete the address change. Check the adapter and administrator approval.')
             process.deleteLater()
             self._refresh()
+            if ok:
+                self.networkChanged.emit()
         process.finished.connect(lambda code, status: finished(code == 0 and status == QProcess.NormalExit))
         process.errorOccurred.connect(lambda error: finished(False) if error == QProcess.FailedToStart else None)
         process.start()
@@ -340,14 +492,19 @@ class CameraEthernetDialog(QDialog):
         self.follow_camera = True
         self.metadata.setVisible(bool(self.metadata.text()))
         self.maximums.clear()
-        if sys.platform == 'darwin':
-            self._mac_probe('names', ['-listnetworkserviceorder'], self._got_names)
-        self._refresh()
+        self.names_inventory = None
+        self.saved_addresses.clear()
+        self._poll_adapters()
         self.poll.start()
 
     def hideEvent(self, event):
         self.poll.stop()
         super().hideEvent(event)
+
+    def _poll_adapters(self):
+        if sys.platform == 'darwin':
+            self._mac_probe('links', ['-a'], self._got_links, '/sbin/ifconfig')
+        self._refresh()
 
     def _refresh(self):
         try:
@@ -355,29 +512,59 @@ class CameraEthernetDialog(QDialog):
         except (OSError, psutil.Error):
             stats = {}
         found = {}
-        choices = []
-        for adapter, addresses in wired_interfaces():
+        labels = {}
+        linked = set()
+        inventory = list(wired_interfaces())
+        if sys.platform == 'darwin' and self.isVisible():
+            devices = frozenset((adapter.name(), tuple(addresses)) for adapter, addresses in inventory)
+            if devices != self.names_inventory:
+                self.names_inventory = devices
+                self._mac_probe('names', ['-listnetworkserviceorder'], self._got_names)
+        for adapter, addresses in inventory:
             device = adapter.name()
             alias = adapter.humanReadableName() or device
             label = self.service_names.get(device) or alias
             status = stats.get(alias) or stats.get(device)
             speed = status.speed if status and status.isup else 0
+            has_link = status.isup if status else bool(addresses)
+            if sys.platform == 'darwin':
+                has_link = self.link_states.get(device, bool(speed or addresses))
+                # Qt calls Apple's inactive internal ports Ethernet. A cable
+                # link or a configured network service identifies a useful NIC.
+                if device.startswith('anpi') or (not has_link and device not in self.service_names):
+                    continue
+                if label == device:
+                    label = f'Ethernet ({device})'
+            if has_link:
+                linked.add(device)
             found[device] = (speed, addresses)
-            choices.append((label, device))
+            labels[device] = label
         self.adapters = found
+        self.linked = linked
         self.owned = {device: ip for device, ip in self.owned.items() if
                       any(str(a.ip) == ip for a in found.get(device, (0, ()))[1])}
-        self.active_device = camera_adapter(self.host, found, routed_address(self.host))
+        connected = {d: record for d, record in found.items() if d in linked}
+        self.active_device = camera_adapter(self.host, connected, routed_address(self.host))
+        self.show_unlinked.setVisible(bool(linked and found.keys() - linked))
+        visible = found.keys() if not linked or self.show_unlinked.isChecked() else linked
+        choices = sorted(((labels[d], d) for d in visible),
+                         key=lambda item: (item[1] not in linked, item[0].casefold(), item[1]))
         selected = self.interface.currentData()
-        if self.follow_camera and self.active_device:
-            selected = self.active_device
+        preferred = self.active_device or self.candidate_device
+        if self.follow_camera or selected not in visible:
+            # Prefer a live link with a Phantom network when several cables are connected.
+            camera_network = next((d for _, d in choices if d in linked and any(
+                a.ip in net for a in found[d][1] for net in FACTORY_SUBNETS)), '')
+            selected = preferred if preferred in visible else camera_network or (choices[0][1] if choices else '')
         with QSignalBlocker(self.interface):
             if choices != [(self.interface.itemText(i), self.interface.itemData(i)) for i in range(self.interface.count())]:
                 self.interface.clear()
                 for label, device in choices:
                     self.interface.addItem(label, device)
-            if selected in found:
-                self.interface.setCurrentIndex(self.interface.findData(selected))
+            self.interface.setCurrentIndex(self.interface.findData(selected))
+        self.adapter_value.setCurrentWidget(self.interface if len(choices) > 1 else self.adapter_summary)
+        self.adapter_summary.setText(labels.get(selected, 'No wired adapter detected'))
+        self.adapter_summary.setToolTip(selected or '')
         self._update_details()
 
     def _update_details(self):
@@ -385,15 +572,33 @@ class CameraEthernetDialog(QDialog):
         speed, addresses = self.adapters.get(device, (0, ()))
         self.interface.setToolTip(device)
         self.interface.setPlaceholderText('No active Ethernet adapter')
-        self.link.setText(speed_text(speed) if device else 'No Ethernet link')
+        self.link.setText(speed_text(speed) if speed and device in self.linked else
+                          'Connected' if device in self.linked else 'No Ethernet link')
         if sys.platform == 'darwin' and self.isVisible() and device and device not in self.maximums:
             self._mac_probe('media:' + device, ['-listvalidmedia', device],
                             lambda output, d=device: self._got_media(d, output))
         maximum = self.maximums.get(device, 0)
         self.maximum.setText(f'Up to {speed_text(maximum)}' if maximum else '')
         self.summary_form.setRowVisible(self.maximum, bool(maximum))
-        if not device:
+        missing = any(not any(a.ip in net for a in addresses) for net in FACTORY_SUBNETS)
+        saved = self._configured_addresses(device, addresses)
+        needs_setup = any(not any(a.network == net for a in saved) for net in FACTORY_SUBNETS)
+        known_factory = not self.candidate_host or any(IPv4Address(self.candidate_host) in net for net in FACTORY_SUBNETS)
+        can_setup = (sys.platform == 'darwin' and not self.host and device in self.linked and
+                     re.fullmatch(r'en[0-9]{1,4}', device) and needs_setup and known_factory)
+        self.setup.setVisible(bool(can_setup))
+        self.setup.setEnabled(self.setup_process is None and self.alias_process is None)
+        if self.setup_process is not None:
+            hint = 'Waiting for macOS to save the network settings…'
+        elif can_setup:
+            hint = 'Set up this adapter once to find Phantom cameras on either standard camera network.'
+        elif device not in self.linked:
             hint = 'Connect a powered camera to a wired Ethernet adapter.'
+        elif self.candidate_host:
+            hint = subnet_hint(self.candidate_host, addresses)
+        elif not self.host:
+            hint = ('Camera cable connected. This adapter is ready for discovery.' if addresses
+                    else 'Camera cable connected. This adapter needs an IPv4 address for discovery.')
         elif self.host and not self.active_device:
             hint = 'The wired adapter carrying camera traffic could not be identified. Check Network details below.'
         elif self.active_device and device != self.active_device:
@@ -410,16 +615,18 @@ class CameraEthernetDialog(QDialog):
                           else 'Connect an Ethernet adapter to check addresses.')
         if self.temporary is not None:
             self.temporary.setText('Remove address…' if device in self.owned else 'Temporary address…')
-            missing = any(not any(a.ip in net for a in addresses) for net in FACTORY_SUBNETS)
             hint = ('Remove the secondary address added by PCA.' if device in self.owned else
                     'Add a secondary IPv4 address with macOS approval.' if missing else
                     'Both Phantom networks are already configured.')
             self.temporary.setToolTip(hint)
             self.temporary.setEnabled(bool(re.fullmatch(r'en[0-9]{1,4}', device))
-                                      and (missing or device in self.owned) and self.alias_process is None)
+                                      and (missing or device in self.owned) and self.alias_process is None
+                                      and self.setup_process is None)
 
         content = (self.identity.text(), self.metadata.text(), self.memory_details, self.link.text(),
-                   self.maximum.text(), hint, self.ipv4.text(), self.note.text())
+                   self.maximum.text(), self.guidance.text(), self.ipv4.text(), self.note.text(),
+                   frozenset(self.linked), self.adapter_summary.text(), self.show_unlinked.isHidden(),
+                   self.setup.isHidden())
         if self.isVisible() and content != self._content:
             self._content = content
             self._fit_height()

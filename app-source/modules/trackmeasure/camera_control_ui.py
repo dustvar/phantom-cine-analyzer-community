@@ -16,6 +16,7 @@ from camera_curve_ui import MonitorCurveEditor
 from camera_capture_widgets import (TRIGGER_STYLE, add_custom, duration, geometry_label,
                                     number, preset_field)
 from event_camera import validate_address
+from event_camera_discovery import camera_groups
 from event_camera_picker import _Discover
 from view_inspection import LiveInspectionView
 
@@ -74,6 +75,10 @@ class CameraControlPanel(QWidget):
         self.camera_in_use = camera_in_use
         self.active = False
         self.needs_discovery = False
+        self.selected_serial = ''
+        self.auto_connect = True
+        self.discovery_retry = QTimer(self, interval=4000, singleShot=True)
+        self.discovery_retry.timeout.connect(self._retry_discovery)
         self.workers = set()
         self.discovery = self.session = self.snapshot = None
         self.read_pending = False
@@ -119,6 +124,7 @@ class CameraControlPanel(QWidget):
         top.addLayout(heading, 1)
         self.cameras = QComboBox()
         self.cameras.setAccessibleName('Camera connection')
+        self.cameras.setPlaceholderText('Looking for a camera…')
         self.cameras.setMinimumContentsLength(17)
         self.cameras.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.cameras.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -126,11 +132,12 @@ class CameraControlPanel(QWidget):
         top.addWidget(self.cameras)
         self.refresh = QPushButton('Refresh')
         self.refresh.setAccessibleName('Refresh cameras')
-        network = QPushButton('Ethernet')
+        network = QPushButton('Ethernet setup')
         network.setAccessibleName('Ethernet setup')
         network.setToolTip('Check the wired link speed and camera subnet.')
         self.ethernet = CameraEthernetDialog(self)
-        network.clicked.connect(self.ethernet.open)
+        network.clicked.connect(self._open_ethernet)
+        self.ethernet.networkChanged.connect(self._discover)
         self.ethernet.finished.connect(lambda: self._discover())
         self.connect_button = QPushButton('Connect')
         top.addWidget(network)
@@ -264,6 +271,7 @@ class CameraControlPanel(QWidget):
         layout.addWidget(self.notice)
         self.preview_on = False
         self.cameras.currentIndexChanged.connect(self._source_changed)
+        self.cameras.activated.connect(self._camera_chosen)
         self.refresh.clicked.connect(self._discover)
         self.connect_button.clicked.connect(self._connect_clicked)
         self.address.returnPressed.connect(self._connect_clicked)
@@ -298,6 +306,10 @@ class CameraControlPanel(QWidget):
         self.active = active
         self.needs_discovery = active
         if active:
+            self.selected_serial = ''
+            self.auto_connect = True
+            self.cameras.clear()
+            self.cameras.setPlaceholderText('Looking for a camera…')
             if not self.workers:
                 self._discover()
         else:
@@ -311,6 +323,7 @@ class CameraControlPanel(QWidget):
         return all(w.isFinished() for w in self.workers)
 
     def _stop(self):
+        self.discovery_retry.stop()
         self.curve_editor.hide()
         if self.discovery is not None:
             self.discovery.requestInterruption()
@@ -346,13 +359,34 @@ class CameraControlPanel(QWidget):
         self.ethernet.set_camera('')
         self._controls()
 
-    def _discover(self):
+    def _open_ethernet(self):
+        if not self.snapshot:
+            peer = self.cameras.currentData(Qt.UserRole + 1)
+            if peer:
+                name = peer.name if peer.name != peer.serial else ''
+                self.ethernet.set_candidate(peer.host, name, peer.serial, peer.setup_device)
+            else:
+                self.ethernet.set_candidate('')
+        self.ethernet.open()
+
+    def _manual_selected(self):
+        return self.cameras.currentIndex() >= 0 and self.cameras.currentData() is None
+
+    def _retry_discovery(self):
+        if self.cameras.view().isVisible():
+            self.discovery_retry.start()
+        elif not self._manual_selected():
+            self._discover(background=True)
+
+    def _discover(self, *, background=False):
         if not self.active or self.session or self.discovery:
             return
+        self.discovery_retry.stop()
         self.needs_discovery = False
         self.discovery = _Discover(self)
-        self.cameras.clear()
-        self.notice.setText('Looking for Phantom cameras on Ethernet…')
+        self.discovery.background = background
+        if not background:
+            self.notice.setText('Looking for Phantom cameras on Ethernet…')
         self._controls()
         self._start(self.discovery)
 
@@ -372,42 +406,92 @@ class CameraControlPanel(QWidget):
         worker.deleteLater()
 
     def _list_cameras(self, worker):
+        # A periodic search must not interrupt a manual address or a menu selection.
+        if worker.background and (self._manual_selected() or self.cameras.view().isVisible()):
+            if not self._manual_selected():
+                self.discovery_retry.start()
+            return
+        current = self.cameras.currentData()
+        manual = self._manual_selected()
         previous = self.settings.value('last/host', '', type=str)
         previous_serial = self.settings.value('last/serial', '', type=str)
         previous_model = self.settings.value('last/model', '', type=str)
-        groups = {}
-        for cam in worker.cameras:
-            groups.setdefault(cam.serial, []).append(cam)
-        for serial, group in groups.items():
-            hosts = tuple(dict.fromkeys(c.host for c in group))
-            name = next((c.name for c in group if c.name and c.name != serial), '')
-            model = previous_model if serial == previous_serial else ''
-            self.cameras.addItem(f'{name or model or "Phantom"} · S/N {serial}', (hosts, serial))
-        if previous and previous_serial not in groups and not any(previous == c.host for c in worker.cameras):
-            try:
-                host = validate_address(previous)
-            except ValueError:
-                pass
-            else:
-                self.cameras.addItem(f'{previous_model or "Phantom"} · Previously used',
-                                     ((host,), previous_serial))
-        self.cameras.addItem('Enter address manually…', None)
+        groups = camera_groups(worker.cameras)
+        selected = 0 if groups and not self.selected_serial else -1
+        with QSignalBlocker(self.cameras):
+            self.cameras.clear()
+            for serial, group in groups.items():
+                hosts = tuple(dict.fromkeys(c.host for c in group))
+                name = next((c.name for c in group if c.name and c.name != serial), '')
+                model = previous_model if serial == previous_serial else ''
+                label = f'{name or model or "Phantom"} · S/N {serial}'
+                if group[0].connection_issue:
+                    label += ' · Setup needed' if group[0].needs_network_setup else f' · PH{group[0].protocol}'
+                row = self.cameras.count()
+                self.cameras.addItem(label, (hosts, serial))
+                self.cameras.setItemData(row, group[0], Qt.UserRole + 1)
+                if self.selected_serial == serial or (current and current[1] == serial):
+                    selected = row
+            if previous and previous_serial not in groups and not any(previous == c.host for c in worker.cameras):
+                try:
+                    host = validate_address(previous)
+                except ValueError:
+                    pass
+                else:
+                    self.cameras.addItem(f'{previous_model or "Phantom"} · Previously used',
+                                         ((host,), previous_serial))
+                    if current == ((host,), previous_serial):
+                        selected = self.cameras.count() - 1
+            self.cameras.addItem('Enter address manually…', None)
+            self.cameras.setPlaceholderText('Waiting for a camera…')
+            self.cameras.setCurrentIndex(self.cameras.count()-1 if manual else selected)
         self._source_changed()
-        self.notice.setText(worker.error or ('Select a camera and connect.' if groups
-                            else 'No camera replied. Check the Ethernet connection or enter its address.'))
-        if len(groups) == 1:
+        selected_peer = self.cameras.currentData(Qt.UserRole + 1)
+        if not manual:
+            if not groups:
+                self.notice.setText((worker.error or 'No camera replied on Ethernet.') + ' Searching automatically.')
+            elif selected_peer and selected_peer.connection_issue:
+                self.notice.setText(selected_peer.connection_issue)
+            else:
+                self.notice.setText('Select a camera and connect.')
+        if self.auto_connect and len(groups) == 1 and selected_peer and not selected_peer.connection_issue:
             self._connect_clicked()
+        elif not manual and (not groups or any(c.needs_network_setup for c in worker.cameras)):
+            self.discovery_retry.start()
+
+    def _camera_chosen(self):
+        data = self.cameras.currentData()
+        self.selected_serial = data[1] if data else ''
+        peer = self.cameras.currentData(Qt.UserRole + 1)
+        if self._manual_selected():
+            self.notice.setText('Enter the address printed on the camera, then connect.')
+        else:
+            self.notice.setText(peer.connection_issue if peer and peer.connection_issue else 'Select Connect to open live view.')
 
     def _source_changed(self):
-        self.address.setVisible(self.snapshot is None and self.cameras.count() > 0
-                                and self.cameras.currentData() is None)
+        self.address.setVisible(self.snapshot is None and self._manual_selected())
+        if self._manual_selected():
+            self.discovery_retry.stop()
+        peer = self.cameras.currentData(Qt.UserRole + 1)
+        if self.session is None:
+            self.connect_button.setText('Set up Ethernet…' if peer and peer.needs_network_setup else 'Connect')
+            enabled = self.cameras.currentIndex() >= 0 and (not peer or not peer.connection_issue or peer.needs_network_setup)
+            self.connect_button.setEnabled(bool(enabled and self.active and not self.workers and not self.discovery))
 
     def _connect_clicked(self):
         if self.session:
+            self.auto_connect = False
             self._stop()
             return
-        if not self.active or self.discovery or self.workers:
+        if not self.active or self.discovery or self.workers or self.cameras.currentIndex() < 0:
             return
+        peer = self.cameras.currentData(Qt.UserRole + 1)
+        if peer and peer.connection_issue:
+            self.notice.setText(peer.connection_issue)
+            if peer.needs_network_setup:
+                self._open_ethernet()
+            return
+        self.discovery_retry.stop()
         data = self.cameras.currentData()
         if data is None:
             try:
@@ -420,6 +504,7 @@ class CameraControlPanel(QWidget):
         if self.camera_in_use and self.camera_in_use(hosts, serial):
             self.notice.setText('Event Finder is scanning this camera. Finish or cancel that scan before starting live view.')
             return
+        self.auto_connect = True
         self.session = CameraWorker(hosts, serial, self)
         self.session.reply.connect(self._reply)
         self.pending = 'connect'
@@ -435,12 +520,12 @@ class CameraControlPanel(QWidget):
         self.cameras.setVisible(not ready)
         self.refresh.setVisible(not ready)
         self._source_changed()
-        self.cameras.setEnabled(self.active and not self.session and not self.discovery)
+        self.cameras.setEnabled(self.active and not self.session and self.cameras.count() > 0)
         self.address.setEnabled(self.cameras.isEnabled())
         self.refresh.setEnabled(self.active and not self.session and not self.workers and not self.discovery)
-        self.connect_button.setText('Disconnect' if self.session else 'Connect')
-        self.connect_button.setEnabled(self.active and not self.pending and not self.discovery
-                                      and (self.session is not None or not self.workers))
+        if self.session:
+            self.connect_button.setText('Disconnect')
+            self.connect_button.setEnabled(self.active and not self.pending)
         self.preview_button.setEnabled(ready)
         self.preview_button.setText('Pause preview' if self.preview_on else 'Resume preview')
         self.fps.setEnabled(editing and self.snapshot.internal_clock)
@@ -510,8 +595,12 @@ class CameraControlPanel(QWidget):
                 self.notice.setText(error)
             return
         if result is None:
+            retry = self.active and not self._manual_selected() and (
+                self.snapshot is not None or self.cameras.currentData(Qt.UserRole + 1) is not None)
             self._stop()
             self.notice.setText(error or 'Camera disconnected.')
+            if retry:
+                self.discovery_retry.start()
             return
         if command == 'apply':
             self.sending.clear()
