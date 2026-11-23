@@ -2,16 +2,16 @@
 from math import ceil, floor
 from time import monotonic
 
-from PySide6.QtCore import QSettings, QSize, Qt, QSignalBlocker, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QSignalBlocker, QTimer, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+                               QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from app_runtime import user_data_dir
 from camera_control_ui_worker import CameraWorker
 from camera_ethernet_ui import CameraEthernetDialog
-from camera_monitor import LINEAR_CURVE, MonitorLevels
+from camera_monitor import LINEAR_CURVE, MonitorLevels, auto_curve
 from camera_curve_ui import MonitorCurveEditor
 from camera_capture_widgets import (TRIGGER_STYLE, add_custom, duration, geometry_label,
                                     number, preset_field)
@@ -22,11 +22,13 @@ from view_inspection import LiveInspectionView
 
 
 class _Preview(LiveInspectionView):
+    frameAvailable = Signal(bool)
+
     def __init__(self):
         super().__init__()
         self.image = self.pixels = None
         self.levels = MonitorLevels()
-        self.mode = 'auto'
+        self.mode = 'linear'
         self.curve = LINEAR_CURVE
         self.message = 'Connect a camera to see the live image.'
         self.setAccessibleName('Live camera image')
@@ -39,6 +41,7 @@ class _Preview(LiveInspectionView):
     def clear(self, message):
         self.image = self.pixels = None
         self.levels.reset()
+        self.frameAvailable.emit(False)
         self.message = message
         self.refresh_image()
 
@@ -49,11 +52,14 @@ class _Preview(LiveInspectionView):
             self.set_frame(self.pixels)
 
     def set_frame(self, pixels):
+        first_frame = self.pixels is None
         self.pixels = pixels
         array = self.levels.render(pixels, self.mode, curve=self.curve)
         height, width = array.shape
         self.image = QImage(array.data, width, height, int(array.strides[0]),
                             QImage.Format_Grayscale8).copy()
+        if first_frame:
+            self.frameAvailable.emit(True)
         self.refresh_image()
 
 
@@ -165,12 +171,21 @@ class CameraControlPanel(QWidget):
         self.preview_info = _label()
         self.preview_button = QPushButton('Pause preview')
         self.preview_button.setToolTip('Pause the monitor while the camera continues operating.')
-        self.curve_editor = MonitorCurveEditor(lambda: self.view.levels.gain, self)
-        self.brightness_button = QPushButton('Brightness · Auto')
-        self.brightness_button.setAccessibleName('Edit monitor brightness curve')
-        self.brightness_button.setToolTip('Open the monitor brightness curve and presets. '
-                                          'Adjustments affect the preview only.')
-        self.brightness_button.clicked.connect(lambda: self.curve_editor.toggle_at(self.brightness_button))
+        self.curve_editor = MonitorCurveEditor(self)
+        self.auto_button = QPushButton('Auto')
+        self.auto_button.setAccessibleName('Auto monitor brightness')
+        self.auto_button.setToolTip('Set the monitor curve from this frame. Click again to update it. '
+                                    'Raw Cine recordings keep their original pixels.')
+        self.auto_button.setEnabled(False)
+        self.view.frameAvailable.connect(self.auto_button.setEnabled)
+        self.auto_button.clicked.connect(self._auto_brightness)
+        self.brightness_button = QPushButton('Linear')
+        self.brightness_button.setAccessibleName('Monitor brightness presets')
+        self.brightness_button.setToolTip('Choose or edit the monitor brightness curve.')
+        self.brightness_menu = QMenu(self.brightness_button)
+        self.brightness_button.setMenu(self.brightness_menu)
+        self._populate_brightness_menu()
+        self.brightness_menu.triggered.connect(self._select_brightness)
         self.curve_editor.changed.connect(self._brightness_changed)
         action_bar = QWidget()
         action_bar.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
@@ -178,8 +193,10 @@ class CameraControlPanel(QWidget):
         preview_actions.setContentsMargins(0, 0, 0, 0)
         preview_actions.setSpacing(6)
         preview_actions.addStretch()
-        preview_actions.addWidget(self.brightness_button)
         preview_actions.addWidget(self.preview_button)
+        preview_actions.addSpacing(4)
+        preview_actions.addWidget(self.auto_button)
+        preview_actions.addWidget(self.brightness_button)
         live_row.addRow(self.preview_info, action_bar)
         left.addLayout(live_row)
 
@@ -295,9 +312,37 @@ class CameraControlPanel(QWidget):
         worker.finished.connect(self._finished)
         worker.start()
 
+    def _auto_brightness(self):
+        pixels = self.view.pixels
+        if pixels is not None:
+            self.curve_editor.set_auto_curve(auto_curve(pixels))
+
+    def _populate_brightness_menu(self):
+        preset = self.curve_editor.preset
+        for index in range(preset.count()):
+            action = self.brightness_menu.addAction(preset.itemText(index))
+            action.setData(index)
+            action.setCheckable(True)
+            action.setChecked(index == preset.currentIndex())
+            action.setVisible(preset.model().item(index).isEnabled())
+            action.setToolTip(preset.itemData(index, Qt.ToolTipRole))
+        self.brightness_menu.addSeparator()
+        self.brightness_menu.addAction('Edit curve…')
+
+    def _select_brightness(self, action):
+        if action.data() is None:
+            self.curve_editor.open_at(self.brightness_button)
+        else:
+            self.curve_editor.preset.setCurrentIndex(action.data())
+
     def _brightness_changed(self, mode, curve):
-        label = 'Auto' if mode == 'auto' else self.curve_editor.preset.currentText()
-        self.brightness_button.setText(f'Brightness · {label}')
+        preset = self.curve_editor.preset
+        self.brightness_button.setText(preset.currentText())
+        for action in self.brightness_menu.actions():
+            index = action.data()
+            if index is not None:
+                action.setChecked(index == preset.currentIndex())
+                action.setVisible(preset.model().item(index).isEnabled())
         self.view.set_mode(mode, curve)
 
     def set_active(self, active):
@@ -325,6 +370,7 @@ class CameraControlPanel(QWidget):
     def _stop(self):
         self.discovery_retry.stop()
         self.curve_editor.hide()
+        self.brightness_menu.close()
         if self.discovery is not None:
             self.discovery.requestInterruption()
             self.discovery = None
@@ -353,6 +399,7 @@ class CameraControlPanel(QWidget):
         self.preview_info.clear()
         self.notice.clear()
         self.view.clear('Connect a camera to see the live image.')
+        self.curve_editor.reset_default()
         self.camera_title.setText('Camera Control')
         self.camera_specs.clear()
         self.camera_specs.hide()
@@ -510,6 +557,7 @@ class CameraControlPanel(QWidget):
         self.pending = 'connect'
         self.notice.setText('Connecting to the camera…')
         self.view.clear('Connecting…')
+        self.curve_editor.reset_default()
         self._controls()
         self._start(self.session)
 

@@ -2,7 +2,7 @@
 from dataclasses import replace
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal, QSignalBlocker, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal, QSignalBlocker
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
                                QPushButton, QVBoxLayout, QWidget)
@@ -11,11 +11,11 @@ from camera_monitor import LINEAR_CURVE, active_curve
 
 
 MODES = (
-    ('Auto brightness', 'auto', 'Adapts to the scene and lifts shadows for the monitor.'),
-    ('Standard', 'standard', 'Uses a fixed sRGB curve for a natural monitor image.'),
     ('Linear', 'linear', 'Shows the sensor signal directly. Half signal gives half the display value.'),
+    ('Standard', 'standard', 'Uses a fixed sRGB curve for the monitor.'),
     ('Lift shadows', 'shadows', 'Brightens darker tones with a fixed curve.'),
     ('Contrast', 'contrast', 'Deepens shadows and brightens highlights with an S-curve.'),
+    ('Auto (held)', 'auto', 'Reuses the curve from your last click on Auto.'),
     ('Custom', 'custom', 'Uses the points you set on the curve.'),
 )
 
@@ -170,10 +170,10 @@ class MonitorCurveGraph(QWidget):
 class MonitorCurveEditor(QDialog):
     changed = Signal(str, object)
 
-    def __init__(self, gain, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool)
         self.setWindowTitle('Monitor brightness')
-        self.gain = gain
+        self.auto_curve = None
         self.custom = LINEAR_CURVE
         self.resize(320, 314)
         layout = QVBoxLayout(self)
@@ -185,36 +185,42 @@ class MonitorCurveEditor(QDialog):
         for name, mode, tip in MODES:
             self.preset.addItem(name, mode)
             self.preset.setItemData(self.preset.count()-1, tip, Qt.ToolTipRole)
+        self.preset.model().item(self.preset.findData('auto')).setEnabled(False)
         header.addWidget(self.preset, 1)
         self.reset = QPushButton('Reset')
         self.reset.setAccessibleName('Reset monitor brightness to default')
-        self.reset.setToolTip('Clear custom points and restore Auto brightness.')
+        self.reset.setToolTip('Clear Auto and custom curves and restore Linear.')
         self.reset.setAutoDefault(False)
         header.addWidget(self.reset)
         layout.addLayout(header)
         self.graph = MonitorCurveGraph()
         layout.addWidget(self.graph, 1)
-        note = QLabel('Drag the line to add a point. Delete removes it. Preview only.')
+        note = QLabel('Drag the line to add a point. Delete removes it. These adjustments apply only to the monitor.')
         note.setWordWrap(True)
         layout.addWidget(note)
         self.preset.currentIndexChanged.connect(self._preset_changed)
         self.graph.edited.connect(self._curve_edited)
         self.reset.clicked.connect(self.reset_default)
-        self.timer = QTimer(self)
-        self.timer.setInterval(160)
-        self.timer.timeout.connect(self._refresh)
         self._refresh()
 
     def _refresh(self):
-        if self.graph.dragging:
-            return
         mode = self.preset.currentData()
         self.preset.setToolTip(self.preset.currentData(Qt.ToolTipRole))
-        self.graph.set_curve(active_curve(mode, self.gain(), self.custom))
+        curve = self.auto_curve if mode == 'auto' else self.custom
+        self.graph.set_curve(active_curve(mode, curve))
+
+    def set_auto_curve(self, curve):
+        self.auto_curve = curve
+        index = self.preset.findData('auto')
+        self.preset.model().item(index).setEnabled(True)
+        with QSignalBlocker(self.preset):
+            self.preset.setCurrentIndex(index)
+        # Pressing Auto again samples a new frame, even when Auto is already selected.
+        self._preset_changed()
 
     def _preset_changed(self):
         self._refresh()
-        self.changed.emit(self.preset.currentData(), self.custom)
+        self.changed.emit(self.preset.currentData(), self.graph.curve)
 
     def _curve_edited(self, curve):
         self.custom = curve
@@ -225,16 +231,15 @@ class MonitorCurveEditor(QDialog):
 
     def reset_default(self):
         self.custom = LINEAR_CURVE
+        self.auto_curve = None
+        self.preset.model().item(self.preset.findData('auto')).setEnabled(False)
         with QSignalBlocker(self.preset):
-            self.preset.setCurrentIndex(self.preset.findData('auto'))
+            self.preset.setCurrentIndex(self.preset.findData('linear'))
         self.graph.selected = None
         self._preset_changed()
         self.graph.update()
 
-    def toggle_at(self, button):
-        if self.isVisible():
-            self.hide()
-            return
+    def open_at(self, button):
         available = button.screen().availableGeometry()
         anchor = button.mapToGlobal(QPoint(0, 0))
         x = min(max(anchor.x(), available.left()), max(available.left(), available.right()-self.width()))
@@ -244,12 +249,3 @@ class MonitorCurveEditor(QDialog):
         self.move(x, max(available.top(), y))
         self.show()
         self.raise_()
-
-    def showEvent(self, event):
-        self._refresh()
-        self.timer.start()
-        super().showEvent(event)
-
-    def hideEvent(self, event):
-        self.timer.stop()
-        super().hideEvent(event)

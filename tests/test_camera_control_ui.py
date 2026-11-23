@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QMessageBox, QPushButton
 from camera_capture_modes import RateOption, published_modes
 from camera_control import ControlStatus, StoredCine
 from camera_identity import CameraIdentity
+from camera_monitor import auto_curve
 from camera_control_ui import CameraControlPanel
 from event_camera_discovery import DiscoveredCamera
 
@@ -263,6 +264,13 @@ class CameraControlPanelTests(unittest.TestCase):
         p = self.panel
         pixels = np.tile(np.arange(256, dtype=np.uint8), (8, 1))
         p.view.set_frame(pixels)
+        # Exercise the actual dropdown, including the action that opens the editor.
+        def open_editor():
+            menu = p.brightness_button.menu()
+            action = next(a for a in menu.actions() if a.text() == 'Edit curve…')
+            QTest.mouseClick(menu, Qt.LeftButton, pos=menu.actionGeometry(action).center())
+
+        QTimer.singleShot(30, open_editor)
         QTest.mouseClick(p.brightness_button, Qt.LeftButton)
         editor = p.curve_editor
         self.wait(editor.isVisible)
@@ -283,9 +291,51 @@ class CameraControlPanelTests(unittest.TestCase):
             editor.preset.setCurrentIndex(editor.preset.findData(name))
             self.assertEqual(p.view.mode, name)
         editor.reset.click()
-        self.assertEqual(p.view.mode, 'auto')
+        self.assertEqual(p.view.mode, 'linear')
         self.assertEqual(editor.custom.points, ((0., 0.), (1., 1.)))
         self.assertEqual(self.calls, [])
+
+    def test_auto_uses_current_unadjusted_frame_and_holds_until_requested_again(self):
+        p = self.panel
+        self.assertEqual(p.brightness_button.text(), 'Linear')
+        self.assertFalse(p.auto_button.isEnabled())
+        self.start()
+        QTest.mouseClick(p.preview_button, Qt.LeftButton)
+        self.assertFalse(p.preview_on)
+        dark = np.tile(np.arange(64, dtype=np.uint8), (4, 1))
+        raw = dark.copy()
+        p.view.set_frame(dark)
+        self.assertEqual(p.view.image.pixelColor(20, 0).red(), 20)
+        editor = p.curve_editor
+        editor.preset.setCurrentIndex(editor.preset.findData('shadows'))
+        QTest.mouseClick(p.auto_button, Qt.LeftButton)
+        held = auto_curve(raw)
+        self.assertEqual(p.brightness_button.text(), 'Auto (held)')
+        self.assertEqual(p.view.curve, held)
+        np.testing.assert_array_equal(dark, raw)
+        code = p.view.image.pixelColor(20, 0).red()
+        bright = np.full_like(dark, 220)
+        bright[0, 20] = 20
+        p.view.set_frame(bright)
+        self.assertEqual(p.view.curve, held)
+        self.assertEqual(p.view.image.pixelColor(20, 0).red(), code)
+        self.choose(p.brightness_button, 'Linear')
+        self.assertEqual(p.view.image.pixelColor(20, 0).red(), 20)
+        self.choose(p.brightness_button, 'Auto (held)')
+        self.assertEqual(p.view.curve, held)
+        QTest.mouseClick(p.auto_button, Qt.LeftButton)
+        self.assertEqual(p.view.curve, auto_curve(bright))
+        self.assertNotEqual(p.view.curve, held)
+        self.assertIs(p.view.pixels, bright)
+        p.connect_button.click()
+        self.wait(lambda: not p.workers)
+        self.assertFalse(p.auto_button.isEnabled())
+        self.assertEqual(p.view.mode, 'linear')
+        self.assertIsNone(editor.auto_curve)
+        p.connect_button.click()
+        self.wait(lambda: p.view.image is not None)
+        self.assertEqual(p.brightness_button.text(), 'Linear')
+        self.assertFalse(any(c in ('apply', 'arm', 'trigger', 'csr') for c, _ in self.calls))
 
     def test_trigger_position_sends_once_on_mouse_release_and_supports_keyboard_steps(self):
         self.settings = replace(armed(), post_frames=249)

@@ -1,6 +1,5 @@
 """Live monitor tone mapping for linear Phantom images. Capture pixels stay in camera RAM."""
 from dataclasses import dataclass
-from math import exp, log
 from time import monotonic
 
 import numpy as np
@@ -37,10 +36,32 @@ PRESET_CURVES = {
 }
 
 
-def active_curve(mode, gain, custom):
-    if mode == 'auto':
-        return MonitorCurve(base_gain=round(gain, 1))
-    return PRESET_CURVES.get(mode, custom)
+def active_curve(mode, selected=LINEAR_CURVE):
+    return PRESET_CURVES.get(mode, selected)
+
+
+def auto_curve(pixels):
+    """Meter one linear preview frame and return a fixed, editable display curve."""
+    # A lit subject may occupy only a few percent of a black sensor field.
+    # Exclude digital black, but require enough signal to rule out hot pixels.
+    lit_count = np.count_nonzero(pixels)
+    minimum_lit = max(32, (pixels.size + 9999) // 10000)
+    if not lit_count or lit_count < min(minimum_lit, (pixels.size + 1) // 2):
+        return LINEAR_CURVE
+    signal = pixels if lit_count == pixels.size else pixels[pixels != 0]
+    full = np.iinfo(pixels.dtype).max
+    middle, white = np.percentile(signal, (50, 95)) / full
+    if middle == 1.:
+        return LINEAR_CURVE
+
+    # Invert MonitorCurve.base's soft shoulder to place the median at 20%
+    # linear light (about 48% display brightness). Limit amplification in
+    # near-black scenes and protect bright detail that is still recoverable.
+    gain = .25 * (1. - middle) / max(middle, 1. / full)
+    if white < .985:
+        highlight_gain = (.82 / (1. - .82)) * (1. - white) / white
+        gain = min(gain, highlight_gain)
+    return MonitorCurve(base_gain=float(np.clip(gain, .25, 12.)))
 
 
 def _sample(pixels):
@@ -60,13 +81,12 @@ class MonitorLevels:
         self.reset()
 
     def reset(self):
-        self.gain = 1.
         self.measured_at = None
         self.signal = ''
         self._depth = None
         self._key = self._lut = None
 
-    def render(self, pixels, mode='auto', now=None, *, curve=LINEAR_CURVE):
+    def render(self, pixels, mode='linear', now=None, *, curve=LINEAR_CURVE):
         """Return an 8-bit display image using the original sensor precision."""
         now = monotonic() if now is None else now
         depth = pixels.dtype.itemsize * 8
@@ -77,12 +97,6 @@ class MonitorLevels:
         if self.measured_at is None or now - self.measured_at >= .15:
             sample = _sample(pixels)
             white = np.percentile(sample, 99) / full
-            target = np.clip(.65 / max(white, .001), 1., 12.)
-            if self.measured_at is None:
-                self.gain = float(target)
-            else:
-                fraction = 1. - exp(-(now - self.measured_at) / .35)
-                self.gain = exp(log(self.gain) + fraction * (log(target) - log(self.gain)))
             self.measured_at = now
             self.signal = ''
             if white < .055:
@@ -92,7 +106,7 @@ class MonitorLevels:
 
         if mode == 'linear':
             return pixels if depth == 8 else (pixels >> 8).astype(np.uint8)
-        display_curve = active_curve(mode, self.gain, curve)
+        display_curve = active_curve(mode, curve)
         key = (depth, display_curve)
         if self._key != key:
             x = np.linspace(0., 1., min(1 << depth, 4096))

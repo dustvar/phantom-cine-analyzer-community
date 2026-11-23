@@ -14,9 +14,12 @@ keys, or private build credentials are included in this repository.
   The left rail puts Calibrate in its own Setup section above analysis and measurement.
   Info, Adjust and the tracking inspector open from the header and close with a second click.
   The Settings menu contains interface color and help.
-- **Camera monitor.** Brightness opens an editable curve with Auto, Linear, Standard, shadow
-  and contrast presets. Drag the displayed line to add a control point. Reset restores Auto.
-  The curve affects the monitor only. Cycle the purple guides or inspect live and recorded
+- **Camera monitor (1.15.4 beta).** Each camera connection opens in **Linear**, which maps
+  signal proportionally to display brightness. Click **Auto** to set the curve from the
+  frame on screen. That curve holds until you change it or click Auto again. Use the
+  adjacent menu for presets or to edit the curve. Reset returns to Linear.
+  These controls affect the live monitor only. Raw Cine recordings retain their original pixels.
+  Cycle the purple guides or inspect live and recorded
   frames with the mouse wheel, trackpad pinch and drag. The yellow navigator shows the
   visible area inside the full frame.
 - **Camera discovery (1.15.3 beta).** Open **Camera Control** and plug in the camera.

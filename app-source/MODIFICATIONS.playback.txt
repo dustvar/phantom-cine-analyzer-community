@@ -551,3 +551,8 @@ Camera Control 1.14.21
 - Camera Control watches for cameras on wired Ethernet while the panel is open.
 - Ethernet setup selects the connected cable and offers to save the common Phantom
   camera networks on that Mac adapter for subsequent connections.
+
+1.15.4 Beta — Live monitor brightness
+- Start each camera connection in Linear. Auto measures the displayed frame once
+  and holds the resulting curve. The adjacent menu offers presets and curve editing.
+- Reset returns the monitor to Linear. Raw Cine pixels retain their recorded values.
