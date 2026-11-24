@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QAbstractSlider,
     QSpinBox, QDialog, QDialogButtonBox, QSizePolicy, QMessageBox)
 
 
-from terminal_workspace import NAVIGATION, PixelBrand, StartWorkspace, glyph, navigation_button
+from terminal_workspace import NAVIGATION, TOOLBAR_SPACING, PixelBrand, StartWorkspace, glyph, navigation_button
 
 
 class IntentionalWheelEditing(QObject):
@@ -134,7 +134,7 @@ class CompactWorkspaceMixin:
         self.workspace_header.setObjectName('workspace_header')
         header = QHBoxLayout(self.workspace_header)
         header.setContentsMargins(0, 0, 6, 0)
-        header.setSpacing(6)
+        header.setSpacing(TOOLBAR_SPACING)
         self.brand = PixelBrand(self.workspace_header)
         header.addWidget(self.brand)
         self.workspace_caption = QLabel('Viewer')
@@ -161,7 +161,7 @@ class CompactWorkspaceMixin:
         outer.addWidget(self.workspace_header, 0, 0, 1, 2)
         outer.setColumnStretch(1, 1)
         outer.setContentsMargins(6, 6, 6, 6)
-        outer.setSpacing(6)
+        outer.setSpacing(TOOLBAR_SPACING)
         self.tab_splitter.widget(0).layout().setContentsMargins(0,0,0,0)
         cine_grid.setContentsMargins(0,0,0,0)
         self.welcome = StartWorkspace(self.workspace_grid_widget, self._choose_image,
@@ -191,17 +191,16 @@ class CompactWorkspaceMixin:
         tracking = analysis and self.current_tool is self.track_tool
         loaded = bool(self.cine_path)
         welcome = analysis and not loaded
-        # Other tools have their own source picker and capture status.
+        manager = getattr(self, 'pane_layout_manager', None)
+        multi_cine_controls = {self.workspace_count_label}
+        if manager is not None:
+            multi_cine_controls.update((manager.choice, manager.layout_label))
+        multiple = manager is not None and manager.count() > 1
+        # Showing a hidden layout picker even briefly can force a narrow window wider.
         for index in range(self._viewer_source_row.count()):
             widget = self._viewer_source_row.itemAt(index).widget()
             if widget is not None:
-                widget.setVisible(analysis and loaded)
-        manager = getattr(self, 'pane_layout_manager', None)
-        if manager is not None and manager.count() < 2:
-            manager.choice.hide()
-            manager.layout_label.hide()
-        if not hasattr(self, 'pane_layout_manager') or not self.vm or len(self.vm.workspace_contexts) < 2:
-            self.workspace_count_label.hide()
+                widget.setVisible(analysis and loaded and (multiple or widget not in multi_cine_controls))
         self.welcome.setVisible(welcome)
         if welcome:
             self.welcome.raise_()
@@ -263,6 +262,7 @@ class CompactWorkspaceMixin:
         layout.addWidget(self.report_button, row, 0)
         self.rail_settings = QToolButton()
         self.rail_settings.setObjectName('rail_tool')
+        self.rail_settings.setProperty('pcaMenu', True)
         self.rail_settings.setText('Settings')
         self.rail_settings.setIcon(glyph('settings'))
         self.rail_settings.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -282,7 +282,7 @@ class CompactWorkspaceMixin:
         self.inspector_controls.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         inspectors = QHBoxLayout(self.inspector_controls)
         inspectors.setContentsMargins(0, 0, 0, 0)
-        inspectors.setSpacing(1)
+        inspectors.setSpacing(TOOLBAR_SPACING)
         self.details_buttons = []
         for index, (text, description) in enumerate((
             ('Info', 'Camera metadata and frame timing'),

@@ -10,9 +10,9 @@ from unittest.mock import patch
 import numpy as np
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QPoint, QTimer, Qt
+from PySide6.QtCore import QPoint, QRect, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import (QApplication, QGroupBox, QMessageBox, QPushButton, QStyle,
+from PySide6.QtWidgets import (QApplication, QGroupBox, QMessageBox, QPushButton, QScrollArea, QStyle,
                                QStyleOptionGroupBox, QStyleOptionSlider)
 
 from camera_capture_modes import RateOption, published_modes
@@ -416,6 +416,55 @@ class CameraControlPanelTests(unittest.TestCase):
         self.start()
         self.assertEqual(p.exposure.value(), 80.)
         self.assertEqual(self.writes(), [dict(exposure_us=20.)])
+
+    def test_monitor_footer_geometry_is_stable_and_reflows_for_each_panel_width(self):
+        p = self.panel
+        theme = Path(__file__).resolve().parents[1] / 'app-source/modules/trackmeasure/styles.css'
+        p.setStyleSheet(theme.read_text(encoding='utf-8'))
+        status = 'Live · 30.0 preview fps  ·  1920 × 1080  ·  Highlights near white'
+        p.preview_info.setText(status)
+        rail = p.findChild(QScrollArea, 'camera_settings_scroll')
+        buttons = (p.preview_button, p.auto_button, p.brightness_button)
+
+        def bounds(widget):
+            return QRect(widget.mapTo(p, QPoint()), widget.size())
+
+        for width in (720, 850, 1024, 1280, 1500):
+            p.resize(width, 690)
+            self.app.processEvents()
+            view, sidebar, info = map(bounds, (p.view, rail, p.preview_info))
+            transport, auto, preset = initial = list(map(bounds, buttons))
+            self.assertEqual(p.width(), width)
+            self.assertEqual({b.height() for b in initial}, {32})
+            self.assertEqual(len({b.y() for b in initial}), 1)
+            self.assertEqual(auto.x() - transport.right() - 1, 6)
+            self.assertEqual(preset.x() - auto.right() - 1, 6)
+            self.assertEqual(preset.right(), view.right())
+            self.assertEqual(sidebar.left() - view.right() - 1, 6)
+            self.assertEqual(sidebar.top(), view.top())
+            self.assertEqual(sidebar.bottom(), preset.bottom())
+            self.assertEqual(info.left(), view.left())
+            self.assertEqual(info.y() - view.bottom() - 1, 6)
+            if width <= 850:
+                self.assertEqual(info.right(), view.right())
+                self.assertEqual(transport.top() - info.bottom() - 1, 6)
+            else:
+                self.assertEqual(info.center().y(), transport.center().y())
+                self.assertEqual(transport.x() - info.right() - 1, 6)
+            p.preview_button.setText('Resume preview')
+            p.curve_editor.preset.setCurrentIndex(p.curve_editor.preset.findData('shadows'))
+            self.app.processEvents()
+            self.assertEqual(list(map(bounds, buttons)), initial)
+            self.assertGreaterEqual(transport.width(), p.preview_button.fontMetrics().horizontalAdvance('Resume preview') + 20)
+            self.assertGreaterEqual(preset.width(), p.brightness_button.fontMetrics().horizontalAdvance('Lift shadows') + 30)
+            p.preview_button.setText('Pause preview')
+            p.curve_editor.reset_default()
+
+        self.assertTrue(p.notice.isHidden())
+        p._set_notice('Camera ready.')
+        self.assertTrue(p.notice.isVisible())
+        p._set_notice()
+        self.assertTrue(p.notice.isHidden())
 
     def test_section_titles_fit_inside_frames_above_their_first_controls(self):
         theme = Path(__file__).resolve().parents[1] / 'app-source/modules/trackmeasure/styles.css'

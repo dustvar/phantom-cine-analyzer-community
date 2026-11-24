@@ -10,6 +10,9 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 from app_runtime import APP_VERSION
 
 
+TOOLBAR_SPACING = 6
+
+
 # Each icon is drawn on the same 24-unit grid; Qt owns hover and focus feedback.
 GLYPHS = {
     'camera': [[(2,6),(15,6),(15,18),(2,18),(2,6)],[(15,10),(21,7),(21,17),(15,14)]],

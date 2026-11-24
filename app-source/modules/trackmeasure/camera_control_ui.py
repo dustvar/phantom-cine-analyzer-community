@@ -2,11 +2,12 @@
 from math import ceil, floor
 from time import monotonic
 
-from PySide6.QtCore import QSettings, QSize, Qt, QSignalBlocker, QTimer, Signal
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QSignalBlocker, QTimer, Signal
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSlider, QSpinBox, QStyle,
+                               QStyleOptionButton, QVBoxLayout, QWidget)
 
 from app_runtime import user_data_dir
 from camera_control_ui_worker import CameraWorker
@@ -18,6 +19,7 @@ from camera_capture_widgets import (TRIGGER_STYLE, add_custom, duration, geometr
 from event_camera import validate_address
 from event_camera_discovery import camera_groups
 from event_camera_picker import _Discover
+from terminal_workspace import TOOLBAR_SPACING
 from view_inspection import LiveInspectionView
 
 
@@ -61,6 +63,68 @@ class _Preview(LiveInspectionView):
         if first_frame:
             self.frameAvailable.emit(True)
         self.refresh_image()
+
+
+class _MonitorButton(QPushButton):
+    """Keep the monitor toolbar steady when switching transport and tone labels."""
+
+    def __init__(self, text, labels):
+        super().__init__(text)
+        self.labels = labels
+
+    def sizeHint(self):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        widest = max(self.labels, key=option.fontMetrics.horizontalAdvance)
+        content = option.fontMetrics.size(Qt.TextShowMnemonic, widest)
+        return self.style().sizeFromContents(QStyle.CT_PushButton, option, content, self)
+
+
+class _MonitorFooter(QWidget):
+    def __init__(self, status, buttons):
+        super().__init__()
+        self.setObjectName('camera_monitor_footer')
+        self.status = status
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.actions = QWidget()
+        controls = QHBoxLayout(self.actions)
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(TOOLBAR_SPACING)
+        for button in buttons:
+            controls.addWidget(button)
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(TOOLBAR_SPACING)
+        self.grid.setColumnStretch(0, 1)
+        self.stacked = None
+        self._arrange()
+
+    def _arrange(self):
+        text_width = self.status.fontMetrics().horizontalAdvance(self.status.text())
+        required = text_width + TOOLBAR_SPACING + self.actions.sizeHint().width()
+        stacked = bool(text_width and self.width() < required)
+        if stacked == self.stacked:
+            return
+        self.stacked = stacked
+        if self.grid.indexOf(self.status) >= 0:
+            self.grid.removeWidget(self.status)
+            self.grid.removeWidget(self.actions)
+        if stacked:
+            self.grid.addWidget(self.status, 0, 0, 1, 2)
+            self.grid.addWidget(self.actions, 1, 0, 1, 2, Qt.AlignRight)
+        else:
+            self.grid.addWidget(self.status, 0, 0)
+            self.grid.addWidget(self.actions, 0, 1, Qt.AlignRight)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._arrange()
+
+    def event(self, event):
+        if event.type() == QEvent.LayoutRequest:
+            self._arrange()
+        return super().event(event)
 
 
 def _label(text=''):
@@ -113,7 +177,9 @@ class CameraControlPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(TOOLBAR_SPACING)
         top = QHBoxLayout()
+        top.setSpacing(TOOLBAR_SPACING)
         self.camera_title = QLabel('Camera Control')
         self.camera_title.setTextFormat(Qt.PlainText)
         font = self.camera_title.font()
@@ -158,18 +224,15 @@ class CameraControlPanel(QWidget):
         self.address.hide()
 
         body = QHBoxLayout()
+        body.setSpacing(TOOLBAR_SPACING)
         layout.addLayout(body, 1)
         left = QVBoxLayout()
+        left.setSpacing(TOOLBAR_SPACING)
         body.addLayout(left, 1)
         self.view = _Preview()
         left.addWidget(self.view, 1)
-        live_row = QFormLayout()
-        live_row.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        live_row.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        live_row.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        live_row.setVerticalSpacing(4)
         self.preview_info = _label()
-        self.preview_button = QPushButton('Pause preview')
+        self.preview_button = _MonitorButton('Pause preview', ('Pause preview', 'Resume preview'))
         self.preview_button.setToolTip('Pause the monitor while the camera continues operating.')
         self.curve_editor = MonitorCurveEditor(self)
         self.auto_button = QPushButton('Auto')
@@ -179,7 +242,9 @@ class CameraControlPanel(QWidget):
         self.auto_button.setEnabled(False)
         self.view.frameAvailable.connect(self.auto_button.setEnabled)
         self.auto_button.clicked.connect(self._auto_brightness)
-        self.brightness_button = QPushButton('Linear')
+        preset = self.curve_editor.preset
+        self.brightness_button = _MonitorButton('Linear', [preset.itemText(i) for i in range(preset.count())])
+        self.brightness_button.setProperty('pcaMenu', True)
         self.brightness_button.setAccessibleName('Monitor brightness presets')
         self.brightness_button.setToolTip('Choose or edit the monitor brightness curve.')
         self.brightness_menu = QMenu(self.brightness_button)
@@ -187,18 +252,8 @@ class CameraControlPanel(QWidget):
         self._populate_brightness_menu()
         self.brightness_menu.triggered.connect(self._select_brightness)
         self.curve_editor.changed.connect(self._brightness_changed)
-        action_bar = QWidget()
-        action_bar.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        preview_actions = QHBoxLayout(action_bar)
-        preview_actions.setContentsMargins(0, 0, 0, 0)
-        preview_actions.setSpacing(6)
-        preview_actions.addStretch()
-        preview_actions.addWidget(self.preview_button)
-        preview_actions.addSpacing(4)
-        preview_actions.addWidget(self.auto_button)
-        preview_actions.addWidget(self.brightness_button)
-        live_row.addRow(self.preview_info, action_bar)
-        left.addLayout(live_row)
+        left.addWidget(_MonitorFooter(self.preview_info, (self.preview_button, self.auto_button,
+                                                          self.brightness_button)))
 
         scroll = QScrollArea()
         scroll.setObjectName('camera_settings_scroll')
@@ -277,6 +332,7 @@ class CameraControlPanel(QWidget):
         self.trigger_button.setToolTip('Send a software trigger to the armed camera.')
         actions.addWidget(self.state)
         record_buttons = QHBoxLayout()
+        record_buttons.setSpacing(TOOLBAR_SPACING)
         record_buttons.addWidget(self.arm_button, 1)
         record_buttons.addWidget(self.trigger_button, 1)
         actions.addLayout(record_buttons)
@@ -285,6 +341,7 @@ class CameraControlPanel(QWidget):
         scroll.setWidget(sidebar)
         body.addWidget(scroll)
         self.notice = _label()
+        self.notice.hide()
         layout.addWidget(self.notice)
         self.preview_on = False
         self.cameras.currentIndexChanged.connect(self._source_changed)
@@ -306,6 +363,10 @@ class CameraControlPanel(QWidget):
         self.arm_button.clicked.connect(self._arm)
         self.trigger_button.clicked.connect(self._trigger)
         self._controls()
+
+    def _set_notice(self, message=''):
+        self.notice.setText(message)
+        self.notice.setVisible(bool(message))
 
     def _start(self, worker):
         self.workers.add(worker)
@@ -397,7 +458,7 @@ class CameraControlPanel(QWidget):
         self.before.setText('Before')
         self.after.setText('After')
         self.preview_info.clear()
-        self.notice.clear()
+        self._set_notice()
         self.view.clear('Connect a camera to see the live image.')
         self.curve_editor.reset_default()
         self.camera_title.setText('Camera Control')
@@ -433,7 +494,7 @@ class CameraControlPanel(QWidget):
         self.discovery = _Discover(self)
         self.discovery.background = background
         if not background:
-            self.notice.setText('Looking for Phantom cameras on Ethernet…')
+            self._set_notice('Looking for Phantom cameras on Ethernet…')
         self._controls()
         self._start(self.discovery)
 
@@ -446,7 +507,7 @@ class CameraControlPanel(QWidget):
         elif worker is self.session:
             message = self.notice.text()
             self._stop()
-            self.notice.setText(message)
+            self._set_notice(message)
         elif self.active and self.needs_discovery and not self.workers:
             self._discover()
         self._controls()
@@ -496,11 +557,11 @@ class CameraControlPanel(QWidget):
         selected_peer = self.cameras.currentData(Qt.UserRole + 1)
         if not manual:
             if not groups:
-                self.notice.setText((worker.error or 'No camera replied on Ethernet.') + ' Searching automatically.')
+                self._set_notice((worker.error or 'No camera replied on Ethernet.') + ' Searching automatically.')
             elif selected_peer and selected_peer.connection_issue:
-                self.notice.setText(selected_peer.connection_issue)
+                self._set_notice(selected_peer.connection_issue)
             else:
-                self.notice.setText('Select a camera and connect.')
+                self._set_notice('Select a camera and connect.')
         if self.auto_connect and len(groups) == 1 and selected_peer and not selected_peer.connection_issue:
             self._connect_clicked()
         elif not manual and (not groups or any(c.needs_network_setup for c in worker.cameras)):
@@ -511,9 +572,9 @@ class CameraControlPanel(QWidget):
         self.selected_serial = data[1] if data else ''
         peer = self.cameras.currentData(Qt.UserRole + 1)
         if self._manual_selected():
-            self.notice.setText('Enter the address printed on the camera, then connect.')
+            self._set_notice('Enter the address printed on the camera, then connect.')
         else:
-            self.notice.setText(peer.connection_issue if peer and peer.connection_issue else 'Select Connect to open live view.')
+            self._set_notice(peer.connection_issue if peer and peer.connection_issue else 'Select Connect to open live view.')
 
     def _source_changed(self):
         self.address.setVisible(self.snapshot is None and self._manual_selected())
@@ -534,7 +595,7 @@ class CameraControlPanel(QWidget):
             return
         peer = self.cameras.currentData(Qt.UserRole + 1)
         if peer and peer.connection_issue:
-            self.notice.setText(peer.connection_issue)
+            self._set_notice(peer.connection_issue)
             if peer.needs_network_setup:
                 self._open_ethernet()
             return
@@ -544,18 +605,18 @@ class CameraControlPanel(QWidget):
             try:
                 host = validate_address(self.address.text())
             except ValueError as exc:
-                self.notice.setText(str(exc))
+                self._set_notice(str(exc))
                 return
             data = ((host,), '')
         hosts, serial = data
         if self.camera_in_use and self.camera_in_use(hosts, serial):
-            self.notice.setText('Event Finder is scanning this camera. Finish or cancel that scan before starting live view.')
+            self._set_notice('Event Finder is scanning this camera. Finish or cancel that scan before starting live view.')
             return
         self.auto_connect = True
         self.session = CameraWorker(hosts, serial, self)
         self.session.reply.connect(self._reply)
         self.pending = 'connect'
-        self.notice.setText('Connecting to the camera…')
+        self._set_notice('Connecting to the camera…')
         self.view.clear('Connecting…')
         self.curve_editor.reset_default()
         self._controls()
@@ -633,20 +694,19 @@ class CameraControlPanel(QWidget):
                     info = f'Live · {rate:.1f} preview fps  ·  {result.shape[1]} × {result.shape[0]}'
                     if self.view.levels.signal:
                         info += '  ·  ' + self.view.levels.signal
-                    self.preview_info.setWordWrap(False)
                     self.preview_info.setText(info)
                     self.frames, self.preview_clock = 0, now
             self._schedule()
             return
         if command == 'stop_preview':
             if error:
-                self.notice.setText(error)
+                self._set_notice(error)
             return
         if result is None:
             retry = self.active and not self._manual_selected() and (
                 self.snapshot is not None or self.cameras.currentData(Qt.UserRole + 1) is not None)
             self._stop()
-            self.notice.setText(error or 'Camera disconnected.')
+            self._set_notice(error or 'Camera disconnected.')
             if retry:
                 self.discovery_retry.start()
             return
@@ -660,7 +720,7 @@ class CameraControlPanel(QWidget):
             self.frames, self.preview_clock = 0, monotonic()
             self.next_status = monotonic() + 1.
             self.preview_info.setText('Starting live preview…')
-            self.notice.clear()
+            self._set_notice()
             index = self.cameras.currentIndex()
             if index >= 0 and self.cameras.itemData(index) is not None:
                 self.cameras.setItemText(index, f'{result.model} · S/N {result.serial}')
@@ -671,9 +731,9 @@ class CameraControlPanel(QWidget):
         elif command == 'status':
             self.next_status = monotonic() + 1.
         elif error:
-            self.notice.setText(error)
+            self._set_notice(error)
         elif command in ('apply', 'arm', 'trigger', 'csr'):
-            self.notice.setText({'apply':'Capture settings read back from the camera.',
+            self._set_notice({'apply':'Capture settings read back from the camera.',
                                  'arm':'Arm command accepted.', 'trigger':'Trigger command accepted.',
                                  'csr':'Black reference command accepted.'}[command])
         self._controls()
@@ -760,7 +820,6 @@ class CameraControlPanel(QWidget):
 
     def _pause_preview(self, message):
         self.preview_on = False
-        self.preview_info.setWordWrap(True)
         self.preview_info.setText(message)
         if self.session:
             self.session.submit('stop_preview')
@@ -798,7 +857,7 @@ class CameraControlPanel(QWidget):
         if not self.rate_presets.isEnabled() or self.snapshot is None:
             return
         if option not in self.snapshot.rate_options():
-            self.notice.setText('The available capture modes changed. Reopen the frame-rate table and choose a resolution.')
+            self._set_notice('The available capture modes changed. Reopen the frame-rate table and choose a resolution.')
             return
         self._set_rate(option.fps, option.mode)
 
@@ -885,7 +944,7 @@ class CameraControlPanel(QWidget):
         target = mode or self._mode()
         limit = self.snapshot.max_rate_for(target)
         if limit is not None and rate > limit:
-            self.notice.setText(f'This image size supports up to {number(limit)} fps. Choose a preset to change size.')
+            self._set_notice(f'This image size supports up to {number(limit)} fps. Choose a preset to change size.')
             self._sync_editors()
             self._controls()
             return
@@ -902,7 +961,7 @@ class CameraControlPanel(QWidget):
                 # still a hard upper bound. The camera validates the actual value.
                 longest = floor(1e9 / rate) / 1000
                 if self.snapshot.exposure_dead_us is not None or longest < (self.snapshot.min_exposure_us or .001):
-                    self.notice.setText('This rate leaves too little time for the minimum exposure. Choose a lower rate.')
+                    self._set_notice('This rate leaves too little time for the minimum exposure. Choose a lower rate.')
                     self._sync_editors()
                     self._controls()
                     return

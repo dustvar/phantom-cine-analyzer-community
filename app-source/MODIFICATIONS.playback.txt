@@ -556,3 +556,10 @@ Camera Control 1.14.21
 - Start each camera connection in Linear. Auto measures the displayed frame once
   and holds the resulting curve. The adjacent menu offers presets and curve editing.
 - Reset returns the monitor to Linear. Raw Cine pixels retain their recorded values.
+
+1.15.5 Beta — Camera monitor layout
+- Align the preview controls to the image edge and use consistent button gaps.
+  The controls hold their positions when playback or brightness labels change.
+- Give live status its own row when space is tight. Center the dropdown arrows
+  on the monitor preset, Open, Save and Settings controls.
+- Keep narrow windows at their selected width when switching analysis tools.

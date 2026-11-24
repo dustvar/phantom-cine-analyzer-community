@@ -6,6 +6,7 @@ import math
 from PySide6.QtCore import Qt,QTimer,QPointF,QSignalBlocker
 from PySide6.QtGui import QKeySequence,QShortcut,QColor,QTransform
 from PySide6.QtWidgets import QWidget,QHBoxLayout,QToolButton,QMenu,QStyle,QLabel,QFileDialog,QMessageBox,QApplication
+from terminal_workspace import TOOLBAR_SPACING
 from workspace_job import (capture_context,restore_tool,save_job,read_job,resolve_media,validate_context)
 
 # Only presentation choices: graph calculations remain the existing application's.
@@ -19,11 +20,18 @@ TOOL_BUTTONS=('viewer_tool','track_tool','two_pt_tool','three_pt_tool','two_line
 
 class WorkspaceJobMixin:
     def _create_job_bar(self):
-        self.job_path='';self._job_base_title=self.windowTitle();bar=QWidget();layout=QHBoxLayout(bar);layout.setContentsMargins(0,0,0,0);layout.setSpacing(4)
+        self.job_path = ''
+        self._job_base_title = self.windowTitle()
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(TOOLBAR_SPACING)
         self.open_job_button=QToolButton(bar);self.save_job_button=QToolButton(bar)
         for button,label,icon in ((self.open_job_button,'Open',QStyle.SP_DirOpenIcon),(self.save_job_button,'Save',QStyle.SP_DialogSaveButton)):
             button.setText(label);button.setIcon(self.style().standardIcon(icon));button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            button.setPopupMode(QToolButton.InstantPopup);button.setFixedHeight(38)
+            button.setProperty('pcaMenu', True)
+            button.setPopupMode(QToolButton.InstantPopup)
+            button.setFixedHeight(38)
             button.setAccessibleName(label+' complete job');layout.addWidget(button)
         self.open_job_menu=QMenu(self.open_job_button);self.open_job_button.setMenu(self.open_job_menu)
         self.open_job_action=self.open_job_menu.addAction('Open Job…',lambda:self.open_job_dialog())

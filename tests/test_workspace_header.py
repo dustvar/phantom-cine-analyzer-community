@@ -5,6 +5,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QFileDialog, QPushButton
+from terminal_workspace import TOOLBAR_SPACING
 import test_guided_workspace as workspace
 
 
@@ -86,6 +87,13 @@ class WorkspaceHeaderTests(unittest.TestCase):
                     right = position.x() + button.width() - 1
                     self.assertEqual(position.y(), w.open_job_button.mapTo(w, QPoint(0, 0)).y())
                     self.assertEqual(button.height(), w.open_job_button.height())
+
+                # These buttons span three nested layouts and should read as one row.
+                actions = [*buttons, w.open_job_button, w.save_job_button]
+                for previous, following in zip(actions, actions[1:]):
+                    left = previous.mapTo(w, QPoint(0, 0)).x() + previous.width()
+                    right = following.mapTo(w, QPoint(0, 0)).x()
+                    self.assertEqual(right - left, TOOLBAR_SPACING)
 
     def test_inspector_resize_close_and_keyboard_switching(self):
         w = self.w
