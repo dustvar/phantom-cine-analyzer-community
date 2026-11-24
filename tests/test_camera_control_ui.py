@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QGroupBox, QMessageBox, QPushButton
 from camera_capture_modes import RateOption, published_modes
 from camera_control import ControlStatus, StoredCine
 from camera_identity import CameraIdentity
-from camera_monitor import auto_curve
+from camera_monitor import PRESET_CURVES, auto_curve
 from camera_control_ui import CameraControlPanel
 from event_camera_discovery import DiscoveredCamera
 
@@ -264,17 +264,31 @@ class CameraControlPanelTests(unittest.TestCase):
         p = self.panel
         pixels = np.tile(np.arange(256, dtype=np.uint8), (8, 1))
         p.view.set_frame(pixels)
-        # Exercise the actual dropdown, including the action that opens the editor.
-        def open_editor():
-            menu = p.brightness_button.menu()
-            action = next(a for a in menu.actions() if a.text() == 'Edit curve…')
-            QTest.mouseClick(menu, Qt.LeftButton, pos=menu.actionGeometry(action).center())
-
-        QTimer.singleShot(30, open_editor)
-        QTest.mouseClick(p.brightness_button, Qt.LeftButton)
         editor = p.curve_editor
-        self.wait(editor.isVisible)
-        editor.preset.setCurrentIndex(editor.preset.findData('linear'))
+        self.assertFalse(editor.isVisible())
+
+        def click_preset(label):
+            def select():
+                menu = p.brightness_button.menu()
+                action = next(a for a in menu.actions() if a.text() == label)
+                QTest.mouseClick(menu, Qt.LeftButton, pos=menu.actionGeometry(action).center())
+            QTimer.singleShot(30, select)
+            QTest.mouseClick(p.brightness_button, Qt.LeftButton)
+            self.wait(lambda: editor.isVisible() and editor.preset.currentText() == label
+                      and not p.brightness_menu.isVisible())
+
+        # Reselecting the current preset must open the graph as well.
+        click_preset('Linear')
+        editor.move(40, 45)
+        position = editor.pos()
+        click_preset('Contrast')
+        self.assertEqual(editor.graph.curve, PRESET_CURVES['contrast'])
+        self.assertEqual(editor.graph.curve, p.view.curve)
+        self.assertEqual(editor.pos(), position)
+        editor.close()
+        p.view.set_frame(pixels)
+        self.assertFalse(editor.isVisible())
+        click_preset('Linear')
         self.assertEqual(p.view.image.pixelColor(128, 1).red(), 128)
         graph = editor.graph
         start = graph.point_at(.5, .5).toPoint()
@@ -311,6 +325,8 @@ class CameraControlPanelTests(unittest.TestCase):
         QTest.mouseClick(p.auto_button, Qt.LeftButton)
         held = auto_curve(raw)
         self.assertEqual(p.brightness_button.text(), 'Auto (held)')
+        self.assertTrue(editor.isVisible())
+        self.assertEqual(editor.graph.curve, held)
         self.assertEqual(p.view.curve, held)
         np.testing.assert_array_equal(dark, raw)
         code = p.view.image.pixelColor(20, 0).red()

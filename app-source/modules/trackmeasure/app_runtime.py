@@ -8,7 +8,7 @@ import shutil
 import sys
 import time
 
-APP_VERSION = '1.15.5'
+APP_VERSION = '1.15.6'
 APP_NAME = 'Phantom Cine Analyzer Additional Features'
 
 

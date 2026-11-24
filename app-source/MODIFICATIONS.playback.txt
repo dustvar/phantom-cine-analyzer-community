@@ -563,3 +563,7 @@ Camera Control 1.14.21
 - Give live status its own row when space is tight. Center the dropdown arrows
   on the monitor preset, Open, Save and Settings controls.
 - Keep narrow windows at their selected width when switching analysis tools.
+
+1.15.6 Beta — Monitor tone curve
+- Choosing a brightness preset or pressing Auto opens the editable curve for
+  the displayed monitor setting. An open curve stays where you placed it.

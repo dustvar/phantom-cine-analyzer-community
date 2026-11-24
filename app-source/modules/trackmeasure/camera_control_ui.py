@@ -377,6 +377,7 @@ class CameraControlPanel(QWidget):
         pixels = self.view.pixels
         if pixels is not None:
             self.curve_editor.set_auto_curve(auto_curve(pixels))
+            self.curve_editor.open_at(self.brightness_button)
 
     def _populate_brightness_menu(self):
         preset = self.curve_editor.preset
@@ -391,10 +392,10 @@ class CameraControlPanel(QWidget):
         self.brightness_menu.addAction('Edit curve…')
 
     def _select_brightness(self, action):
-        if action.data() is None:
-            self.curve_editor.open_at(self.brightness_button)
-        else:
-            self.curve_editor.preset.setCurrentIndex(action.data())
+        index = action.data()
+        if index is not None:
+            self.curve_editor.preset.setCurrentIndex(index)
+        self.curve_editor.open_at(self.brightness_button)
 
     def _brightness_changed(self, mode, curve):
         preset = self.curve_editor.preset

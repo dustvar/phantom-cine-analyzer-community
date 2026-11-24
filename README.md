@@ -14,10 +14,10 @@ keys, or private build credentials are included in this repository.
   The left rail puts Calibrate in its own Setup section above analysis and measurement.
   Info, Adjust and the tracking inspector open from the header and close with a second click.
   The Settings menu contains interface color and help.
-- **Camera monitor (1.15.4 beta).** Each camera connection opens in **Linear**, which maps
+- **Camera monitor (1.15.6 beta).** Each camera connection opens in **Linear**, which maps
   signal proportionally to display brightness. Click **Auto** to set the curve from the
-  frame on screen. That curve holds until you change it or click Auto again. Use the
-  adjacent menu for presets or to edit the curve. Reset returns to Linear.
+  frame on screen. That curve holds until you change it or click Auto again. Choosing Auto or a preset opens
+  its tone graph. Drag the line to add a control point, or use Reset to return to Linear.
   These controls affect the live monitor only. Raw Cine recordings retain their original pixels.
   Cycle the purple guides or inspect live and recorded
   frames with the mouse wheel, trackpad pinch and drag. The yellow navigator shows the

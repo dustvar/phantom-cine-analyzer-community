@@ -172,7 +172,7 @@ class MonitorCurveEditor(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool)
-        self.setWindowTitle('Monitor brightness')
+        self.setWindowTitle('Monitor tone curve')
         self.auto_curve = None
         self.custom = LINEAR_CURVE
         self.resize(320, 314)
@@ -240,6 +240,9 @@ class MonitorCurveEditor(QDialog):
         self.graph.update()
 
     def open_at(self, button):
+        if self.isVisible():
+            self.raise_()
+            return
         available = button.screen().availableGeometry()
         anchor = button.mapToGlobal(QPoint(0, 0))
         x = min(max(anchor.x(), available.left()), max(available.left(), available.right()-self.width()))
